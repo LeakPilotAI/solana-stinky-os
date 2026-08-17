@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "stinky-core"
+version = "0.1.0"
+description = "Core shared library for Stinky OS – events, transport, quality, models"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+authors = [{ name = "Stinky Labs" }]
+dependencies = [
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "orjson>=3.10",
+    "uuid6>=2024.7",
+    "structlog>=24.1",
+    "tenacity>=8.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
+    "ruff>=0.5",
+    "mypy>=1.10",
+    "types-orjson",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/stinky_core"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["stinky_core"]
