@@ -93,10 +93,11 @@ class DurableEventStore:
                 for idx in MARKET_INSPECTIONS_INDEXES:
                     await session.execute(text(idx))
             try:
-                from stinky_core.memory import MEMORY_DDL, MEMORY_INDEXES
+                from stinky_core.memory import MEMORY_ALTERS, MEMORY_DDL, MEMORY_INDEXES
             except ImportError:
                 MEMORY_DDL = None
                 MEMORY_INDEXES = ()
+                MEMORY_ALTERS = ()
             if MEMORY_DDL:
                 for stmt in MEMORY_DDL.split(";"):
                     s = stmt.strip()
@@ -104,6 +105,11 @@ class DurableEventStore:
                         await session.execute(text(s))
                 for idx in MEMORY_INDEXES:
                     await session.execute(text(idx))
+                for alt in MEMORY_ALTERS or ():
+                    try:
+                        await session.execute(text(alt))
+                    except Exception:
+                        pass
             await session.commit()
         self._ready = True
         logger.info("durable.schema_ready")

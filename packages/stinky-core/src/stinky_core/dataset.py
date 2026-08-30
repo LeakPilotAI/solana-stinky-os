@@ -11,7 +11,7 @@ from stinky_core.admission import FILTER_VERSION
 from stinky_core.intelligence import INTEL_VERSION, Investigation
 from stinky_core.outcomes import LABEL_VERSION, Outcome
 
-DATASET_VERSION = "dataset-v1.0.0"
+DATASET_VERSION = "dataset-v1.1.0"
 
 
 def decision_row(
@@ -57,8 +57,19 @@ def decision_row(
         "wallet_status": inv.wallets.status if inv else None,
         "pattern_confidence": inv.patterns.pattern_confidence if inv else None,
         "entity_links": (inv.entities or {}).get("link_count") if inv and getattr(inv, "entities", None) else None,
+        "liquidity_usd": inv.activity.liquidity_usd if inv else None,
+        "market_cap_usd": inv.activity.market_cap_usd if inv else None,
+        "wallet_features": inv.wallets.to_dict() if inv else None,
+        "creator_features": inv.creator.to_dict() if inv else None,
+        "entity_features": dict(inv.entities) if inv else None,
+        "pattern_features": inv.patterns.to_dict() if inv else None,
+        "synthetic_features": inv.synthetic.to_dict() if inv else None,
+        "rug_features": inv.rug.to_dict() if inv else None,
+        "fingerprint": inv.fingerprint if inv else None,
+        "data_quality": dict(inv.data_quality) if inv else None,
         "alert_ok": bool(alert_ok),
         "alert_reason": alert_reason,
+        "future_outcome": (oc or {}).get("label"),
         "outcome_label": (oc or {}).get("label"),
         "peak_multiple": (oc or {}).get("peak_multiple"),
         "missing_data": list(inv.missing_data) if inv else ["investigation"],

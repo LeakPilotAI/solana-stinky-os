@@ -21,10 +21,10 @@ from stinky_core.inspect import (
 )
 from stinky_core.pools import is_rankable_wallet
 from stinky_core.evidence import EvidenceBundle, item as eitem
-from stinky_core.fingerprint import book_fingerprint
+from stinky_core.fingerprint import book_fingerprint, fingerprint_features
 from stinky_core.memory import IntelligenceMemory
 
-INTEL_VERSION = "intel-v1.3.0-failclosed"
+INTEL_VERSION = "intel-v1.4.0-remember"
 SCORE_VERSION = "score-v1.1.0-intel-not-volume"
 RUNNER_VERSION = "runner-potential-v1.1.0-intel-not-volume"
 
@@ -115,6 +115,11 @@ class CreatorProfile:
     serial_risk: str | None = None
     entity_id: str | None = None
     confidence: float | None = None
+    success_rate: float | None = None
+    median_seconds_between_launches: float | None = None
+    recurring_buyers: int | None = None
+    first_seen: str | None = None
+    last_seen: str | None = None
     missing: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -147,6 +152,7 @@ class PatternResult:
     confidence_value: float | None
     evidence: list[dict[str, Any]]
     missing: list[str] = field(default_factory=list)
+    resemblance: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -155,6 +161,7 @@ class PatternResult:
             "confidence_value": self.confidence_value,
             "pattern_evidence": self.evidence,
             "missing": list(self.missing),
+            "resemblance": dict(self.resemblance),
         }
 
 
@@ -230,8 +237,10 @@ class Investigation:
     would_change: list[str] = field(default_factory=list)
     entities: dict[str, Any] = field(default_factory=dict)
     fingerprint: str | None = None
+    fingerprint_features: dict[str, Any] = field(default_factory=dict)
     decision_timestamp: str | None = None
     evidence: dict[str, Any] = field(default_factory=dict)
+    data_quality: dict[str, Any] = field(default_factory=dict)
     model_version: str = INTEL_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -256,8 +265,10 @@ class Investigation:
             "would_change_conclusion": list(self.would_change),
             "entities": dict(self.entities),
             "fingerprint": self.fingerprint,
+            "fingerprint_features": dict(self.fingerprint_features),
             "decision_timestamp": self.decision_timestamp,
             "evidence": dict(self.evidence),
+            "data_quality": dict(self.data_quality),
             "model_version": self.model_version,
             "inspect_version": INSPECT_VERSION,
             "score_interpretation": self.score.interpretation,
@@ -299,6 +310,11 @@ def build_creator_profile(raw: Mapping[str, Any] | None) -> CreatorProfile:
         serial_risk=serial,
         entity_id=str(raw["entity_id"]) if raw.get("entity_id") else None,
         confidence=conf,
+        success_rate=_f(raw.get("success_rate")),
+        median_seconds_between_launches=_f(raw.get("median_seconds_between_launches")),
+        recurring_buyers=_i(raw.get("recurring_buyers")),
+        first_seen=str(raw["first_seen"]) if raw.get("first_seen") else None,
+        last_seen=str(raw["last_seen"]) if raw.get("last_seen") else None,
         missing=missing,
     )
 
@@ -429,6 +445,19 @@ def match_patterns(
     hist = historical or {}
     resemble = _i(hist.get("similar_runner_count"))
     sample = _i(hist.get("sample_count"))
+    resemblance = {
+        "sample_count": sample,
+        "runner_matches": _i(hist.get("runner_matches")),
+        "held_matches": _i(hist.get("held_matches")),
+        "fade_matches": _i(hist.get("fade_matches")),
+        "unknown_matches": _i(hist.get("unknown_matches")),
+        "matching_historical_mints": list(hist.get("matching_historical_mints") or []),
+        "pattern_support": dict(hist.get("pattern_support") or {}),
+        "runner_pattern": bool(hist.get("runner_pattern")),
+        "fade_pattern": bool(hist.get("fade_pattern")),
+        "confidence": hist.get("confidence", "UNKNOWN"),
+        "calibrated_probability": False,
+    }
     if resemble is None:
         missing.append("historical_similarity")
         hist_val = None
@@ -441,24 +470,38 @@ def match_patterns(
             "explanation": f"Fingerprint seen {sample} times as-of; need ≥5 to claim resemblance",
         })
     else:
-        hist_val = min(1.0, 0.15 + 0.04 * resemble)
-        evidence.append({"kind": "historical_resemblance", "value": resemble, "explanation": f"Resembles {resemble} stored runner-like tokens (as-of, sample {sample})"})
-        if resemble >= 1:
-            matches.append({"kind": "historical_resemblance", "confidence": hist_val})
+        hist_val = min(1.0, 0.15 + 0.04 * (resemble or 0))
+        rn = _i(hist.get("runner_matches")) or 0
+        fd = _i(hist.get("fade_matches")) or 0
+        hd = _i(hist.get("held_matches")) or 0
+        un = _i(hist.get("unknown_matches")) or 0
+        evidence.append({
+            "kind": "historical_resemblance",
+            "value": resemble,
+            "explanation": (
+                f"Resembles {sample} stored tokens as-of: "
+                f"{rn} RUNNER / {hd} HELD / {fd} FADE / {un} UNKNOWN (not a probability)"
+            ),
+        })
+        if hist.get("runner_pattern"):
+            matches.append({"kind": "historical_resemblance", "family": "runner_support", "confidence": hist_val, "sample": sample})
+        if hist.get("fade_pattern"):
+            matches.append({"kind": "historical_failure_resemblance", "family": "fade_support", "confidence": hist_val, "sample": sample})
 
     if wallets.status == "UNKNOWN" and creator.status == "UNKNOWN":
         missing.append("pattern_inputs")
-        return PatternResult(matches=[], pattern_confidence="UNKNOWN", confidence_value=None, evidence=evidence, missing=missing)
+        return PatternResult(matches=[], pattern_confidence="UNKNOWN", confidence_value=None, evidence=evidence, missing=missing, resemblance=resemblance)
 
     conf = min(1.0, 0.2 + 0.15 * len(matches))
     if hist_val is None and not matches:
-        return PatternResult(matches=[], pattern_confidence="UNKNOWN", confidence_value=None, evidence=evidence, missing=missing)
+        return PatternResult(matches=[], pattern_confidence="UNKNOWN", confidence_value=None, evidence=evidence, missing=missing, resemblance=resemblance)
     return PatternResult(
         matches=matches,
         pattern_confidence=str(round(conf, 2)),
         confidence_value=round(conf, 2),
         evidence=evidence,
         missing=missing,
+        resemblance=resemblance,
     )
 
 
@@ -649,6 +692,8 @@ def compose_stinky_score(
         conf += 0.05
     elif patterns.pattern_confidence == "UNKNOWN":
         missing.append("patterns")
+    if any(m.get("kind") == "historical_failure_resemblance" for m in patterns.matches):
+        minus(-6, "resembles stored fade fingerprints (sample ≥ 5, not a probability)", "pattern_component")
 
     if synthetic.level == "UNKNOWN":
         missing.append("synthetic")
@@ -703,6 +748,70 @@ def compose_stinky_score(
         actionable=False,
         interpretation="INSUFFICIENT_EVIDENCE",
     )
+
+
+def _layer_quality(status: str, missing: list[str], confidence: float | None) -> dict[str, Any]:
+    if status == "UNKNOWN":
+        grade = "UNKNOWN"
+    elif status == "OBSERVED":
+        grade = "LOW"
+    elif missing:
+        grade = "MEDIUM"
+    else:
+        grade = "HIGH"
+    return {
+        "status": status,
+        "confidence": grade if confidence is None else ("HIGH" if confidence >= 0.7 else "MEDIUM" if confidence >= 0.4 else "LOW"),
+        "completeness": 0.0 if status == "UNKNOWN" else (0.4 if status == "OBSERVED" else 0.8),
+        "missing_fields": list(missing),
+    }
+
+
+def build_data_quality(
+    *,
+    wallets: WalletIntel,
+    creator: CreatorProfile,
+    synthetic: RiskResult,
+    rug: RiskResult,
+    patterns: PatternResult,
+    entities: Mapping[str, Any],
+    activity: MarketActivity,
+    fee_status: str,
+) -> dict[str, Any]:
+    layers = {
+        "market": _layer_quality(
+            "OBSERVED" if activity.volume_m5_usd is not None else "UNKNOWN",
+            [] if activity.volume_m5_usd is not None else ["volume_m5"],
+            0.9 if activity.volume_m5_usd is not None else None,
+        ),
+        "wallets": _layer_quality(wallets.status, wallets.missing, None),
+        "creator": _layer_quality(creator.status, creator.missing, creator.confidence),
+        "synthetic": _layer_quality(synthetic.level if synthetic.level != "UNKNOWN" else "UNKNOWN", synthetic.missing, synthetic.confidence),
+        "rug": _layer_quality(rug.level if rug.level != "UNKNOWN" else "UNKNOWN", rug.missing, rug.confidence),
+        "patterns": _layer_quality(
+            "UNKNOWN" if patterns.pattern_confidence == "UNKNOWN" else "OBSERVED",
+            patterns.missing,
+            patterns.confidence_value,
+        ),
+        "entities": _layer_quality(str(entities.get("status") or "UNKNOWN"), list(entities.get("missing") or []), None),
+        "fees": _layer_quality("KNOWN" if fee_status == "VERIFIED" else "UNKNOWN", [] if fee_status == "VERIFIED" else ["global_fees_sol"], None),
+    }
+    critical = [layers["wallets"]["confidence"], layers["creator"]["confidence"], layers["synthetic"]["confidence"]]
+    order = {"UNKNOWN": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3}
+    weakest = min(critical, key=lambda g: order.get(g, 0))
+    observed = sum(1 for v in layers.values() if v["status"] not in ("UNKNOWN",))
+    completeness = round(observed / max(1, len(layers)), 2)
+    return {
+        "overall": weakest,
+        "weakest_critical": "wallets" if layers["wallets"]["confidence"] == weakest else (
+            "creator" if layers["creator"]["confidence"] == weakest else "synthetic"
+        ),
+        "data_completeness": completeness,
+        "source_coverage": {k: v["status"] for k, v in layers.items()},
+        "layers": layers,
+        "freshness": "as_of_decision",
+        "note": "Overall respects the weakest critical evidence. UNKNOWN is not bullish.",
+    }
 
 
 def _has_intelligence(wallets: WalletIntel, creator: CreatorProfile, activity: MarketActivity) -> bool:
@@ -845,6 +954,24 @@ def investigate(
         smart_wallet_count=wallets.smart_wallet_count,
         creator_launches=creator.launches,
         repeated_size_share=activity.repeated_size_share,
+        liquidity_usd=activity.liquidity_usd,
+        buy_sell_imbalance=activity.buy_sell_imbalance,
+        entity_link_count=int(entities.get("link_count") or 0) if entities.get("status") == "KNOWN" else None,
+        synthetic_level=synthetic.level,
+    )
+    feats = fingerprint_features(
+        top4_wallet_volume_share=activity.top4_wallet_volume_share,
+        unique_wallets=activity.unique_wallets if activity.unique_wallets is not None else wallets.unique_wallets,
+        volume_m5_usd=activity.volume_m5_usd,
+        smart_wallet_count=wallets.smart_wallet_count,
+        creator_launches=creator.launches,
+        repeated_size_share=activity.repeated_size_share,
+        liquidity_usd=activity.liquidity_usd,
+        market_cap_usd=activity.market_cap_usd,
+        buy_sell_imbalance=activity.buy_sell_imbalance,
+        entity_link_count=int(entities.get("link_count") or 0) if entities.get("status") == "KNOWN" else None,
+        synthetic_level=synthetic.level,
+        meaningful_buyer_count=wallets.meaningful_buyer_count,
     )
     if memory is not None and hist is None:
         hist = memory.pattern_match_as_of(fp, as_of=as_of, exclude_mint=mint)
@@ -916,6 +1043,7 @@ def investigate(
         would_change=would,
         entities=entities,
         fingerprint=fp,
+        fingerprint_features=feats,
         decision_timestamp=str(as_of) if as_of is not None else None,
     )
     inv.pipeline_status = pipeline_status(gate1_passed=True, investigation=inv)
@@ -941,6 +1069,10 @@ def investigate(
         patterns=patterns, entities=entities, fee_status=fee_status,
         promote=inv.promote, insufficient=inv.insufficient_evidence, would_change=would,
     ).to_dict()
+    inv.data_quality = build_data_quality(
+        wallets=wallets, creator=creator, synthetic=synthetic, rug=rug,
+        patterns=patterns, entities=entities, activity=activity, fee_status=fee_status,
+    )
     return inv
 
 

@@ -15,7 +15,7 @@ from typing import Any, Iterable
 
 from stinky_core.pools import is_rankable_wallet
 
-MEMORY_VERSION = "memory-v1.1.0-hydrate"
+MEMORY_VERSION = "memory-v1.2.0-remember"
 
 MEMORY_DDL = """
 CREATE TABLE IF NOT EXISTS wallet_observations (
@@ -117,6 +117,15 @@ CREATE TABLE IF NOT EXISTS intelligence_decisions (
     row JSONB NOT NULL
 );
 """
+# Extra columns for existing Postgres installs (007). CREATE TABLE IF NOT EXISTS
+# above will not add them to an already-created table.
+MEMORY_ALTERS = (
+    "ALTER TABLE wallet_observations ADD COLUMN IF NOT EXISTS side TEXT DEFAULT 'buy'",
+    "ALTER TABLE wallet_observations ADD COLUMN IF NOT EXISTS entry_price DOUBLE PRECISION",
+    "ALTER TABLE wallet_observations ADD COLUMN IF NOT EXISTS exit_size DOUBLE PRECISION",
+    "ALTER TABLE wallet_observations ADD COLUMN IF NOT EXISTS exit_price DOUBLE PRECISION",
+    "ALTER TABLE wallet_observations ADD COLUMN IF NOT EXISTS ret_pct DOUBLE PRECISION",
+)
 MEMORY_INDEXES: tuple[str, ...] = ()
 
 MEMORY_INSERT_WALLET_OBS = """
@@ -197,6 +206,18 @@ def _before(ts: datetime | None, as_of: datetime | None) -> bool:
     return ts < as_of
 
 
+def _maybe_float(v: Any) -> float | None:
+    if v is None or v is True or v is False:
+        return None
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    if x != x:
+        return None
+    return x
+
+
 @dataclass
 class WalletObservation:
     wallet: str
@@ -205,6 +226,11 @@ class WalletObservation:
     role: str = "early_buyer"
     sol_spent: float | None = None
     source: str = "observed"
+    side: str = "buy"
+    entry_price: float | None = None
+    exit_size: float | None = None
+    exit_price: float | None = None
+    ret_pct: float | None = None
 
 
 @dataclass
@@ -258,6 +284,11 @@ class IntelligenceMemory:
         role: str = "early_buyer",
         sol_spent: float | None = None,
         source: str = "observed",
+        side: str = "buy",
+        entry_price: float | None = None,
+        exit_size: float | None = None,
+        exit_price: float | None = None,
+        ret_pct: float | None = None,
     ) -> bool:
         ts = _parse_ts(observed_at)
         w = (wallet or "").strip()
@@ -269,7 +300,11 @@ class IntelligenceMemory:
             if (existing.wallet, existing.mint, existing.role) == key:
                 return False
         self.wallet_obs.append(
-            WalletObservation(wallet=w, mint=m, observed_at=ts, role=role, sol_spent=sol_spent, source=source)
+            WalletObservation(
+                wallet=w, mint=m, observed_at=ts, role=role, sol_spent=sol_spent, source=source,
+                side=side or "buy", entry_price=entry_price, exit_size=exit_size,
+                exit_price=exit_price, ret_pct=ret_pct,
+            )
         )
         return True
 
@@ -406,22 +441,42 @@ class IntelligenceMemory:
                 for o in self.wallet_outcomes
                 if o.subject == w and o.mint != exclude and o.mint in mints and _before(o.labeled_at, cutoff)
             ]
+            obs = [
+                o for o in self.wallet_obs
+                if o.wallet == w and o.mint != exclude and _before(o.observed_at, cutoff)
+            ]
             runners = sum(1 for o in labels if o.label == "RUNNER")
             fades = sum(1 for o in labels if o.label == "FADE")
             held = sum(1 for o in labels if o.label == "HELD")
             unknown = sum(1 for o in labels if o.label == "UNKNOWN")
             resolved = runners + fades + held
             hit = (runners / resolved) if resolved else None
+            rets = [o.ret_pct for o in obs if o.ret_pct is not None]
+            avg_ret = (sum(rets) / len(rets)) if rets else None
+            med_ret = (sorted(rets)[len(rets) // 2] if rets else None)
+            first_seen = min((o.observed_at for o in obs), default=None)
+            last_seen = max((o.observed_at for o in obs), default=None)
             out[w] = {
                 "early_buy_count": len(mints),
                 "tokens_purchased": len(mints),
+                "tokens_observed": len(mints),
+                "early_entries": len(mints),
                 "hit_rate": hit,
-                "avg_return_pct": None,  # never fabricate returns
+                "avg_return_pct": avg_ret,  # only from stored returns, never fabricated
+                "median_return_pct": med_ret,
                 "runners": runners,
                 "fades": fades,
                 "held": held,
                 "unknown": unknown,
+                "runner_count": runners,
+                "held_count": held,
+                "fade_count": fades,
+                "unknown_count": unknown,
+                "runner_participations": runners,
+                "sample_size": len(mints),
                 "sample_resolved": resolved,
+                "first_seen": first_seen.isoformat() if first_seen else None,
+                "last_seen": last_seen.isoformat() if last_seen else None,
                 "as_of": cutoff.isoformat() if cutoff else None,
                 "exclude_mint": exclude or None,
                 "source": MEMORY_VERSION,
@@ -454,6 +509,17 @@ class IntelligenceMemory:
         fades = sum(1 for o in labels if o.label == "FADE")
         held = sum(1 for o in labels if o.label == "HELD")
         unknown = sum(1 for o in labels if o.label == "UNKNOWN")
+        resolved = runners + fades + held
+        success_rate = (runners / resolved) if resolved >= 3 else None
+        times = sorted(o.observed_at for o in launches)
+        gaps = [(times[i] - times[i - 1]).total_seconds() for i in range(1, len(times))]
+        median_gap = sorted(gaps)[len(gaps) // 2] if gaps else None
+        prior_mints = {o.mint for o in launches}
+        buyer_counts: dict[str, int] = {}
+        for o in self.wallet_obs:
+            if o.mint in prior_mints and o.role == "early_buyer" and _before(o.observed_at, cutoff):
+                buyer_counts[o.wallet] = buyer_counts.get(o.wallet, 0) + 1
+        recurring = sum(1 for n in buyer_counts.values() if n >= 2)
         return {
             "known": True,
             "entity_id": None,
@@ -463,6 +529,11 @@ class IntelligenceMemory:
             "historical_fades": fades,
             "historical_held": held,
             "historical_unknown": unknown,
+            "success_rate": success_rate,
+            "median_seconds_between_launches": median_gap,
+            "recurring_buyers": recurring,
+            "first_seen": times[0].isoformat() if times else None,
+            "last_seen": times[-1].isoformat() if times else None,
             "as_of": cutoff.isoformat() if cutoff else None,
             "source": MEMORY_VERSION,
         }
@@ -507,6 +578,10 @@ class IntelligenceMemory:
                 "wallet_b": b,
                 "kind": "co_buy",
                 "shared_mints": shared,
+                "prior_mint_count": shared,
+                "evidence_count": shared,
+                "first_seen": None,
+                "last_seen": None,
                 "confidence": conf,
                 "reason": "co_early_buy" if shared < 8 else "strong_co_early_buy",
                 "evidence": {"mints": sorted(mints)[:12], "sample": shared},
@@ -575,6 +650,18 @@ class IntelligenceMemory:
         fp = (fingerprint or "").strip()
         if not fp:
             return {"similar_runner_count": None, "sample_count": 0, "confidence": "UNKNOWN", "missing": ["fingerprint"]}
+        informative = [p for p in fp.split("|") if p and not p.endswith("U")]
+        if len(informative) < 3:
+            return {
+                "similar_runner_count": None,
+                "sample_count": 0,
+                "confidence": "UNKNOWN",
+                "missing": ["fingerprint_informative"],
+                "note": "fingerprint has too few observed bands to claim resemblance",
+                "runner_pattern": False,
+                "fade_pattern": False,
+                "calibrated_probability": False,
+            }
         cutoff = _parse_ts(as_of)
         exclude = (exclude_mint or "").strip()
         prior = [
@@ -587,25 +674,42 @@ class IntelligenceMemory:
         ]
         runners = sum(1 for o in labels if o.label == "RUNNER")
         fades = sum(1 for o in labels if o.label == "FADE")
+        held = sum(1 for o in labels if o.label == "HELD")
+        unknown = sum(1 for o in labels if o.label == "UNKNOWN")
         sample = len(prior)
-        if sample < min_sample:
-            return {
-                "similar_runner_count": None,
-                "sample_count": sample,
-                "success_count": runners,
-                "failure_count": fades,
-                "confidence": "UNKNOWN",
-                "missing": ["historical_similarity_sample"],
-                "note": f"fingerprint seen {sample} times as-of; need ≥{min_sample} to claim resemblance",
-            }
-        return {
-            "similar_runner_count": runners,
+        matching = [r.mint for r in prior]
+        support = {
+            "RUNNER": runners,
+            "HELD": held,
+            "FADE": fades,
+            "UNKNOWN": unknown,
+        }
+        base = {
+            "similar_runner_count": None,
             "sample_count": sample,
+            "runner_matches": runners,
+            "held_matches": held,
+            "fade_matches": fades,
+            "unknown_matches": unknown,
+            "matching_historical_mints": matching[:24],
+            "pattern_support": support,
+            "runner_pattern": False,
+            "fade_pattern": False,
             "success_count": runners,
             "failure_count": fades,
-            "confidence": round(min(0.8, 0.2 + 0.08 * sample), 2),
+            "confidence": "UNKNOWN",
             "missing": [],
+            "calibrated_probability": False,
         }
+        if sample < min_sample:
+            base["missing"] = ["historical_similarity_sample"]
+            base["note"] = f"fingerprint seen {sample} times as-of; need ≥{min_sample} to claim resemblance"
+            return base
+        base["similar_runner_count"] = runners
+        base["confidence"] = round(min(0.8, 0.2 + 0.08 * sample), 2)
+        base["runner_pattern"] = runners >= 3 and runners > fades
+        base["fade_pattern"] = fades >= 3 and fades > runners
+        return base
 
     def ingest_decision(
         self,
@@ -626,7 +730,14 @@ class IntelligenceMemory:
                 spent_f = float(spent) if spent is not None else None
             except (TypeError, ValueError):
                 spent_f = None
-            self.record_wallet(wallet=w, mint=mint, observed_at=ts, sol_spent=spent_f)
+            self.record_wallet(
+                wallet=w, mint=mint, observed_at=ts, sol_spent=spent_f,
+                side=str(b.get("side") or b.get("type") or "buy"),
+                entry_price=_maybe_float(b.get("entry_price") if b.get("entry_price") is not None else b.get("price")),
+                exit_size=_maybe_float(b.get("exit_size")),
+                exit_price=_maybe_float(b.get("exit_price")),
+                ret_pct=_maybe_float(b.get("ret_pct") if b.get("ret_pct") is not None else b.get("return_pct")),
+            )
         if creator:
             self.record_creator(creator=creator, mint=mint, observed_at=ts)
         if fingerprint:
@@ -641,7 +752,9 @@ class IntelligenceMemory:
 
         wallet_obs = [
             {"wallet": o.wallet, "mint": o.mint, "observed_at": _iso(o.observed_at),
-             "role": o.role, "sol_spent": o.sol_spent, "source": o.source}
+             "role": o.role, "sol_spent": o.sol_spent, "source": o.source,
+             "side": o.side, "entry_price": o.entry_price, "exit_size": o.exit_size,
+             "exit_price": o.exit_price, "ret_pct": o.ret_pct}
             for o in self.wallet_obs
         ]
         wallet_outcomes = [
@@ -697,6 +810,11 @@ class IntelligenceMemory:
                 role=str(d.get("role") or "early_buyer"),
                 sol_spent=d.get("sol_spent") if d.get("sol_spent") is None else float(d.get("sol_spent")),
                 source=str(d.get("source") or "observed"),
+                side=str(d.get("side") or "buy"),
+                entry_price=_maybe_float(d.get("entry_price")),
+                exit_size=_maybe_float(d.get("exit_size")),
+                exit_price=_maybe_float(d.get("exit_price")),
+                ret_pct=_maybe_float(d.get("ret_pct")),
             ):
                 n += 1
         return n

@@ -722,6 +722,7 @@ class VolumeMonitor:
         buyers: list[dict[str, Any]] | None,
         creator: str | None,
         fingerprint: str | None,
+        features: dict[str, Any] | None = None,
     ) -> None:
         try:
             from stinky_core.memory import (
@@ -769,7 +770,7 @@ class VolumeMonitor:
                             "fingerprint": fingerprint,
                             "mint": mint,
                             "observed_at": observed_at,
-                            "features": json.dumps({}),
+                            "features": json.dumps(features or {}),
                         },
                     )
                 await session.commit()
@@ -866,6 +867,7 @@ class VolumeMonitor:
                     buyers=buyers_rows,
                     creator=migration.creator,
                     fingerprint=inv.fingerprint,
+                    features=inv.fingerprint_features,
                 )
                 await self._persist_memory_decision(
                     mint=mint,
@@ -873,6 +875,7 @@ class VolumeMonitor:
                     buyers=buyers_rows,
                     creator=migration.creator,
                     fingerprint=inv.fingerprint,
+                    features=inv.fingerprint_features,
                 )
             except Exception:
                 pass

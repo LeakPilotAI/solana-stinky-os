@@ -16,6 +16,7 @@ from stinky_core.intelligence import (
     investigate,
 )
 from stinky_core.memory import IntelligenceMemory
+from stinky_core.sqlstore import SqliteMemoryStore
 
 MINT_A = "MintAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAApump"
 MINT_B = "MintBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBpump"
@@ -299,3 +300,136 @@ def test_dataset_unique_mint():
     assert len(result["dataset"]) == 1
     assert result["dataset"][0]["calibrated_probability"] is False
     assert result["dataset"][0]["promote"] is False
+    assert "wallet_features" in result["dataset"][0]
+    assert "data_quality" in result["dataset"][0]
+
+
+def test_wallet_as_of_excludes_future_and_current_and_does_not_fabricate_returns():
+    mem = IntelligenceMemory()
+    mem.record_wallet(wallet=W, mint=MINT_A, observed_at=T0, ret_pct=80.0)
+    mem.record_wallet(wallet=W, mint=MINT_B, observed_at=T0 + timedelta(days=1), ret_pct=20.0)
+    mem.record_outcome(mint=MINT_A, labeled_at=T0 + timedelta(hours=2), label="RUNNER", wallets=[W])
+    mem.record_outcome(mint=MINT_B, labeled_at=T0 + timedelta(days=1, hours=2), label="FADE", wallets=[W])
+    early = mem.wallet_performance_as_of([W], as_of=T0 + timedelta(hours=1), exclude_mint=MINT_C)
+    assert early[W]["tokens_observed"] == 1
+    assert early[W]["hit_rate"] is None  # outcome not yet labeled
+    assert early[W]["avg_return_pct"] == 80.0
+    later = mem.wallet_performance_as_of([W], as_of=T0 + timedelta(days=2), exclude_mint=MINT_C)
+    assert later[W]["sample_resolved"] == 2
+    assert later[W]["runners"] == 1
+    assert later[W]["fades"] == 1
+    self_excl = mem.wallet_performance_as_of([W], as_of=T0 + timedelta(days=2), exclude_mint=MINT_B)
+    assert self_excl[W]["tokens_observed"] == 1
+
+
+def test_creator_as_of_launch_n_cannot_see_n():
+    mem = IntelligenceMemory()
+    for i, mint in enumerate((MINT_A, MINT_B, MINT_C)):
+        mem.record_creator(creator=CREATOR, mint=mint, observed_at=T0 + timedelta(days=i))
+        mem.record_outcome(mint=mint, labeled_at=T0 + timedelta(days=i, hours=6), label="RUNNER", creator=CREATOR)
+    at_c = mem.creator_profile_as_of(CREATOR, as_of=T0 + timedelta(days=2), exclude_mint=MINT_C)
+    assert at_c["launch_count"] == 2
+    assert at_c["historical_runners"] == 2
+    assert at_c["success_rate"] is None  # resolved 2 < 3
+    after = mem.creator_profile_as_of(CREATOR, as_of=T0 + timedelta(days=3), exclude_mint=MINT_D)
+    assert after["launch_count"] == 3
+    assert after["success_rate"] == 1.0
+
+
+def test_duplicate_wallet_observation_ignored():
+    mem = IntelligenceMemory()
+    assert mem.record_wallet(wallet=W, mint=MINT_A, observed_at=T0) is True
+    assert mem.record_wallet(wallet=W, mint=MINT_A, observed_at=T0 + timedelta(minutes=1)) is False
+    assert len(mem.wallet_obs) == 1
+
+
+def test_empty_fingerprint_is_not_resemblance():
+    mem = IntelligenceMemory()
+    empty = book_fingerprint()
+    for i, mint in enumerate((MINT_A, MINT_B, MINT_C, MINT_D, "MintEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEpump")):
+        mem.record_fingerprint(fingerprint=empty, mint=mint, observed_at=T0 + timedelta(days=i))
+        mem.record_outcome(mint=mint, labeled_at=T0 + timedelta(days=i, hours=1), label="RUNNER", fingerprint=empty)
+    hit = mem.pattern_match_as_of(empty, as_of=T0 + timedelta(days=10), exclude_mint="MintFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFpump")
+    assert hit["confidence"] == "UNKNOWN"
+    assert hit.get("runner_pattern") is False
+
+
+def test_historical_resemblance_reports_outcome_distribution():
+    mem = IntelligenceMemory()
+    fp = book_fingerprint(
+        top4_wallet_volume_share=0.3, unique_wallets=20, volume_m5_usd=180_000,
+        smart_wallet_count=1, creator_launches=5, repeated_size_share=0.1,
+        liquidity_usd=40_000, buy_sell_imbalance=0.55, entity_link_count=2, synthetic_level="LOW",
+    )
+    mints = [MINT_A, MINT_B, MINT_C, MINT_D, "MintEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEpump", "MintFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFpump"]
+    labels = ["RUNNER", "RUNNER", "RUNNER", "HELD", "FADE", "UNKNOWN"]
+    for i, (mint, lab) in enumerate(zip(mints, labels)):
+        mem.record_fingerprint(fingerprint=fp, mint=mint, observed_at=T0 + timedelta(days=i))
+        mem.record_outcome(mint=mint, labeled_at=T0 + timedelta(days=i, hours=1), label=lab, fingerprint=fp)
+    hit = mem.pattern_match_as_of(fp, as_of=T0 + timedelta(days=20), exclude_mint="MintGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGpump")
+    assert hit["sample_count"] == 6
+    assert hit["runner_matches"] == 3
+    assert hit["held_matches"] == 1
+    assert hit["fade_matches"] == 1
+    assert hit["unknown_matches"] == 1
+    assert hit["runner_pattern"] is True
+    assert hit["fade_pattern"] is False
+    assert hit["calibrated_probability"] is False
+    assert len(hit["matching_historical_mints"]) == 6
+
+
+def test_sqlite_restart_hydration_reconstructs_as_of():
+    import tempfile, os
+    fd, path = tempfile.mkstemp(suffix=".sqlite")
+    os.close(fd)
+    try:
+        store = SqliteMemoryStore(path)
+        mem = IntelligenceMemory()
+        mem.record_wallet(wallet=W, mint=MINT_A, observed_at=T0)
+        mem.record_wallet(wallet=W, mint=MINT_B, observed_at=T0)
+        mem.record_wallet(wallet=W, mint=MINT_C, observed_at=T0)
+        mem.record_outcome(mint=MINT_A, labeled_at=T0 + timedelta(hours=1), label="RUNNER", wallets=[W])
+        mem.record_outcome(mint=MINT_B, labeled_at=T0 + timedelta(hours=1), label="RUNNER", wallets=[W])
+        mem.record_outcome(mint=MINT_C, labeled_at=T0 + timedelta(hours=1), label="RUNNER", wallets=[W])
+        mem.record_creator(creator=CREATOR, mint=MINT_A, observed_at=T0)
+        before = store.counts()
+        store.persist(mem)
+        after = store.counts()
+        store.close()
+        store2 = SqliteMemoryStore(path)
+        mem2 = store2.load()
+        store2.close()
+        perf = mem2.wallet_performance_as_of([W], as_of=T0 + timedelta(days=1), exclude_mint=MINT_D)
+        assert perf[W]["sample_resolved"] == 3
+        assert perf[W]["hit_rate"] == 1.0
+        inv = investigate(
+            {
+                "mint": MINT_D,
+                "volume_usd": 180_000,
+                "buyers": _buyers(W),
+                "decision_timestamp": (T0 + timedelta(days=1)).isoformat(),
+                "creator": CREATOR,
+            },
+            memory=mem2,
+        )
+        assert inv.has_intelligence is True
+        assert inv.promote is True or inv.pipeline_status in ("QUALIFIED", "ALERT")
+        assert after["wallet_observations"] >= before["wallet_observations"]
+        assert after["wallet_observations"] == 3
+    finally:
+        os.unlink(path)
+
+
+def test_data_quality_unknown_when_no_intel():
+    inv = investigate({"mint": MINT_A, "volume_usd": 180_000})
+    assert inv.data_quality["overall"] in ("UNKNOWN", "LOW")
+    assert inv.data_quality["layers"]["wallets"]["confidence"] == "UNKNOWN"
+    assert inv.promote is False
+
+
+def test_returns_never_invented_without_stored_pct():
+    mem = IntelligenceMemory()
+    mem.record_wallet(wallet=W, mint=MINT_A, observed_at=T0, entry_price=None, exit_price=None)
+    perf = mem.wallet_performance_as_of([W], as_of=T0 + timedelta(hours=1), exclude_mint=MINT_B)
+    assert perf[W]["avg_return_pct"] is None
+    assert perf[W]["median_return_pct"] is None

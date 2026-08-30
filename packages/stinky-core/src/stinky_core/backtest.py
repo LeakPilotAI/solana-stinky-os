@@ -179,6 +179,7 @@ def backtest_candidates(
                 buyers=buyers,
                 creator=str(m["creator"]) if m.get("creator") else None,
                 fingerprint=fp,
+                features=inv.fingerprint_features if inv else None,
             )
             labeled_at = _parse_ts(m.get("labeled_at") or m.get("outcome_at"))
             if labeled_at is None and m.get("observation_complete"):
@@ -241,7 +242,7 @@ def backtest_candidates(
     recall = (runners / outcome_runner_all) if outcome_runner_all else None
     unknown_rate = (outcome_unknown_all / total) if total else None
     return {
-        "engine": "stinky-backtest-v1.3.0-failclosed",
+        "engine": "stinky-backtest-v1.4.0-remember",
         "filter_version": FILTER_VERSION,
         "memory_version": mem.version,
         "input": len(unique) + dropped_dupes,

@@ -1,4 +1,4 @@
-# Overlay intel-v1.3.0-failclosed onto D:\Work\Project-Genesis
+# Overlay intel-v1.4.0-remember onto D:\Work\Project-Genesis
 # Usage (from the extracted overlay folder):
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\APPLY-intel.ps1
 
@@ -10,6 +10,7 @@ if (-not (Test-Path $dst)) { throw "Project not found: $dst" }
 $paths = @(
   "packages\stinky-core\src\stinky_core\memory.py",
   "packages\stinky-core\src\stinky_core\fingerprint.py",
+  "packages\stinky-core\src\stinky_core\sqlstore.py",
   "packages\stinky-core\src\stinky_core\evidence.py",
   "packages\stinky-core\src\stinky_core\dataset.py",
   "packages\stinky-core\src\stinky_core\inspect.py",
@@ -24,10 +25,12 @@ $paths = @(
   "services\sentinel\src\sentinel\durable.py",
   "services\sentinel\src\sentinel\volume.py",
   "services\sentinel\migrations\006_intelligence_memory.sql",
+  "services\sentinel\migrations\007_memory_enrich.sql",
   "services\api\src\stinky_api\main.py",
   "docs\FILTER_ENGINE.md",
   "docs\adr\ADR-012-asof-intelligence-memory.md",
-  "docs\adr\ADR-013-unknown-is-not-bullish.md"
+  "docs\adr\ADR-013-unknown-is-not-bullish.md",
+  "docs\adr\ADR-014-remember.md"
 )
 
 foreach ($rel in $paths) {
@@ -41,7 +44,7 @@ foreach ($rel in $paths) {
 }
 
 Write-Host ""
-Write-Host "Applied intel-v1.3.0-failclosed. Restart:"
+Write-Host "Applied intel-v1.4.0-remember. Restart:"
 Write-Host "  powershell -File D:\Work\Project-Genesis\stop-stinky.ps1"
 Write-Host "  powershell -File D:\Work\Project-Genesis\start-stinky.ps1"
-Write-Host "Verify: Gate 1 unchanged at `$150k. UNKNOWN does not promote. Volume is not bullish."
+Write-Host "Verify: Gate 1 unchanged at `$150k. Memory hydrates from Postgres. UNKNOWN does not promote."

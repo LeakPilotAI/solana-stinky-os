@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from typing import Annotated
+from typing import Annotated, Any
 
 import httpx
 import structlog
@@ -101,11 +101,68 @@ async def investigate_endpoint(payload: dict) -> dict:
         "would_change_conclusion": inv.would_change,
         "missing_data": inv.missing_data,
         "fingerprint": inv.fingerprint,
+        "data_quality": inv.data_quality,
+        "resemblance": inv.patterns.resemblance,
         "filter_version": decision.filter_version or FILTER_VERSION,
         "investigation": inv.to_dict(),
         "alert_ok": alert_ok,
         "alert_reason": alert_reason,
     }
+
+
+@app.post("/v1/memory/as-of")
+async def memory_as_of(payload: dict) -> dict:
+    """As-of wallet/creator/pattern/entity query. Hydrate from snapshot. Never fabricates."""
+    from stinky_core.memory import IntelligenceMemory
+
+    mem = IntelligenceMemory()
+    snap = payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else None
+    loaded = mem.hydrate(snap) if snap else {}
+    as_of = payload.get("as_of") or payload.get("decision_timestamp")
+    exclude = payload.get("exclude_mint") or payload.get("mint")
+    wallets = payload.get("wallets") if isinstance(payload.get("wallets"), list) else []
+    creator = payload.get("creator")
+    fingerprint = payload.get("fingerprint")
+    return {
+        "memory_version": mem.version,
+        "hydrated": loaded,
+        "as_of": as_of,
+        "exclude_mint": exclude,
+        "wallets": mem.wallet_performance_as_of(wallets, as_of=as_of, exclude_mint=exclude) if wallets else {},
+        "creator": mem.creator_profile_as_of(creator, as_of=as_of, exclude_mint=exclude) if creator else None,
+        "entities": mem.relationships_as_of(wallets, as_of=as_of, exclude_mint=exclude) if wallets else {"status": "UNKNOWN", "links": [], "link_count": 0},
+        "patterns": mem.pattern_match_as_of(fingerprint, as_of=as_of, exclude_mint=exclude) if fingerprint else {"confidence": "UNKNOWN", "missing": ["fingerprint"]},
+        "stats": mem.to_stats(),
+        "calibrated_probability": False,
+    }
+
+
+@app.get("/v1/memory/stats")
+async def memory_stats(session: Annotated[AsyncSession, Depends(get_session)]) -> dict:
+    """Live table counts. Empty/unavailable is reported, never invented."""
+    from sqlalchemy import text
+
+    tables = (
+        "wallet_observations",
+        "wallet_outcome_labels",
+        "creator_observations",
+        "creator_outcome_labels",
+        "wallet_relationships",
+        "pattern_fingerprints",
+        "pattern_outcomes",
+        "market_inspections",
+    )
+    counts: dict[str, Any] = {}
+    available = True
+    for t in tables:
+        try:
+            n = (await session.execute(text(f"SELECT COUNT(*) FROM {t}"))).scalar()
+            counts[t] = int(n or 0)
+        except Exception as exc:
+            counts[t] = None
+            counts[f"{t}_error"] = type(exc).__name__
+            available = False
+    return {"available": available, "counts": counts, "source": "postgres" if available else "unavailable"}
 
 
 @app.get("/v1/system/filter-stats")
