@@ -25,6 +25,35 @@ from sentinel.publisher import LaunchPublisher
 from sentinel.qualify import qualify_fresh_pump_migration
 from sentinel.score import EntitySignals, SmartMoneySignals, score_alert_candidate
 
+try:
+    from stinky_core.admission import FILTER_VERSION
+    from stinky_core.fees import (
+        FEE_OBSERVATIONS_DDL,
+        FEE_OBSERVATIONS_INDEXES,
+        FEE_OBSERVATIONS_INSERT,
+        RESOLVER_VERSION,
+        FeeObservation,
+        FeeResolver,
+        unknown_observation,
+    )
+except ImportError:  # pragma: no cover
+    import sys
+    from pathlib import Path
+
+    _CORE = Path(__file__).resolve().parents[4] / "packages" / "stinky-core" / "src"
+    if str(_CORE) not in sys.path:
+        sys.path.insert(0, str(_CORE))
+    from stinky_core.admission import FILTER_VERSION
+    from stinky_core.fees import (
+        FEE_OBSERVATIONS_DDL,
+        FEE_OBSERVATIONS_INDEXES,
+        FEE_OBSERVATIONS_INSERT,
+        RESOLVER_VERSION,
+        FeeObservation,
+        FeeResolver,
+        unknown_observation,
+    )
+
 logger = structlog.get_logger(__name__)
 
 def _allowed_dexes() -> set[str]:
@@ -55,122 +84,52 @@ def _is_pump_mint(mint: str) -> bool:
     return mint.lower().endswith("pump")
 
 
-def _birdeye_api_key() -> str | None:
-    """Read Birdeye key from settings or env. Never log the value."""
-    import os
-    for name in ("birdeye_api_key", "BIRDEYE_API_KEY", "STINKY_BIRDEYE_API_KEY"):
-        v = getattr(settings, name, None) if not name.isupper() else None
-        if not v:
-            v = os.environ.get(name) or os.environ.get(name.upper())
-        if v and str(v).strip() and str(v).strip() not in ("changeme", "your_key_here"):
-            return str(v).strip()
-    return None
+def _fee_rpc_urls() -> tuple[str, ...]:
+    urls: list[str] = []
+    for u in (
+        getattr(settings, "public_rpc_url", None),
+        "https://solana-rpc.publicnode.com",
+        getattr(settings, "solana_rpc_url", None),
+    ):
+        if not u:
+            continue
+        s = str(u).strip()
+        if not s or "helius" in s.lower():
+            continue
+        if s not in urls:
+            urls.append(s)
+    return tuple(urls) or ("https://solana-rpc.publicnode.com",)
 
 
-def _parse_fee_number(val: object) -> float | None:
-    if val is None:
-        return None
-    try:
-        f = float(val)
-    except (TypeError, ValueError):
-        return None
-    if f != f or f < 0:  # NaN / negative
-        return None
-    # lamports-scale safety
-    if f > 1_000_000:
-        f = f / 1_000_000_000.0
-    return f
+def _new_fee_resolver() -> FeeResolver:
+    return FeeResolver(rpc_urls=_fee_rpc_urls(), max_txs=80)
+
+
+async def resolve_global_fees(
+    mint: str,
+    *,
+    protocol: str | None = None,
+    pool: str | None = None,
+) -> FeeObservation:
+    """Authoritative fees only. Never fabricates. Unknown stays unknown."""
+    mint_s = (mint or "").strip()
+    if not mint_s:
+        return unknown_observation("", error="INVALID_MINT")
+
+    def _sync() -> FeeObservation:
+        return _new_fee_resolver().resolve(mint_s, protocol=protocol, pool=pool)
+
+    return await asyncio.to_thread(_sync)
 
 
 async def fetch_pump_fees_sol(client: httpx.AsyncClient, mint: str) -> float | None:
-    """Authoritative global fees paid (SOL) via Birdeye; fail-closed if unavailable.
+    """Verified global fees only. Unknown / unverified → None. Never a guess.
 
-    Sources (in order):
-      1) GET /defi/v3/token/fee/single?address=&intervals=alltime
-      2) GET /defi/v3/token/meme/detail/single?address=
-      3) GET /defi/token_overview?address=
-
-    Requires BIRDEYE_API_KEY / STINKY_BIRDEYE_API_KEY. Missing key or missing field -> None.
+    `client` is unused; kept so existing call sites stay compatible.
     """
-    key = _birdeye_api_key()
-    if not key:
-        logger.warning("fees.birdeye_key_missing mint=%s", mint)
-        return None
-
-    headers = {
-        "Accept": "application/json",
-        "X-API-KEY": key,
-        "x-chain": "solana",
-    }
-    # Order matters: many plans allow meme/detail + token_overview but not fee/single.
-    urls = [
-        (
-            f"https://public-api.birdeye.so/defi/v3/token/meme/detail/single?address={mint}",
-            ("data",),
-        ),
-        (
-            f"https://public-api.birdeye.so/defi/token_overview?address={mint}",
-            ("data",),
-        ),
-        (
-            f"https://public-api.birdeye.so/defi/v3/token/fee/single?address={mint}&intervals=alltime",
-            ("data",),
-        ),
-    ]
-    for url, nests in urls:
-        try:
-            resp = await client.get(url, timeout=10.0, headers=headers)
-            if resp.status_code in (401, 403):
-                # Plan may allow meme/overview but not fee/single ? try next endpoint
-                logger.warning(
-                    "fees.birdeye_endpoint_denied",
-                    status=resp.status_code,
-                    path=url.split("?")[0],
-                )
-                continue
-            if resp.status_code == 429:
-                logger.warning("fees.birdeye_rate_limited mint=%s", mint)
-                continue
-            if resp.status_code != 200:
-                continue
-            payload = resp.json()
-            if not isinstance(payload, dict):
-                continue
-            nodes: list[object] = [payload]
-            data = payload.get("data")
-            if isinstance(data, dict):
-                nodes.append(data)
-                # fee/single may nest alltime
-                for subk in ("alltime", "fee", "fees", "overview"):
-                    sub = data.get(subk)
-                    if isinstance(sub, dict):
-                        nodes.append(sub)
-            for node in nodes:
-                if not isinstance(node, dict):
-                    continue
-                for key_name in (
-                    "global_fees_paid",
-                    "globalFeesPaid",
-                    "fees_paid",
-                    "total_fees",
-                    "total_fees_sol",
-                    "fees_sol",
-                ):
-                    if key_name in node and node[key_name] is not None:
-                        parsed = _parse_fee_number(node[key_name])
-                        if parsed is not None:
-                            logger.info(
-                                "fees.birdeye_ok",
-                                mint=mint,
-                                global_fees_sol=parsed,
-                                source=url.split("?")[0].split("/")[-1],
-                            )
-                            return parsed
-        except Exception as exc:
-            logger.debug("fees.birdeye_error", mint=mint, error=str(exc)[:160])
-            continue
-    return None
-
+    _ = client
+    obs = await resolve_global_fees(mint, protocol="pumpswap")
+    return obs.global_fees_sol if obs.fees_verified else None
 
 
 DEXSCREENER_TOKEN_URL = "https://api.dexscreener.com/latest/dex/tokens/{mint}"
@@ -278,28 +237,25 @@ class VolumeMonitor:
     """Poll DexScreener after migration until threshold hit or timeout."""
 
     def _passes_pump_quality(
-        self, mint: str, snap: VolumeSnapshot, fees_sol: float | None
+        self,
+        mint: str,
+        snap: VolumeSnapshot,
+        fees_sol: float | None,
+        *,
+        fees_verified: bool | None = None,
     ) -> tuple[bool, str]:
         """Pump-only + HARD min global fees via canonical qualify(). Fail-closed.
 
-        global_fees = pump.fun cumulative total_fees (SOL) from public coin API.
-        Missing / NaN / negative / < MIN ? reject. Never default unknown to 0-accept.
+        A bare number is NOT verification. Only the FeeResolver may set
+        fees_verified=True.
         """
-        min_fees = float(getattr(settings, "min_fees_sol", 5.0) or 5.0)
-        # Fail closed: only mark verified when we have a finite non-negative number
-        # from the authoritative pump.fun fee fetch. Missing ? REJECT.
-        # Only true after qualify pass ? missing fees never emit
-        # Fail-closed: verified only when we have a finite non-negative fee reading.
-        fees_verified = (
-            fees_sol is not None
-            and fees_sol == fees_sol  # not NaN
-            and fees_sol >= 0
-        )
+        min_fees = float(getattr(settings, "min_fees_sol", 1.0) or 1.0)
+        verified = True if fees_verified is True else (False if fees_verified is False else None)
         result = qualify_fresh_pump_migration(
             mint=mint,
             dex_id=snap.dex_id,
-            global_fees_paid_sol=fees_sol,
-            global_fees_verified=True if fees_verified else None,
+            global_fees_paid_sol=fees_sol if verified is True else None,
+            global_fees_verified=verified,
             min_fees_sol=min_fees,
             require_pump_mint_suffix=bool(
                 getattr(settings, "require_pump_mint_suffix", True)
@@ -323,6 +279,7 @@ class VolumeMonitor:
         fees_sol: float | None,
         fees_verified: bool,
         snap: "VolumeSnapshot | None" = None,
+        fees_source: str | None = None,
     ) -> None:
         """Persist one quality decision for operator audit (fail-soft)."""
         try:
@@ -345,18 +302,22 @@ class VolumeMonitor:
                     ),
                     {
                         "mint": mint,
-                        "ver": "axiom-parity-v1.0.0-fees5",
+                        "ver": FILTER_VERSION,
                         "accepted": bool(accepted),
                         "protocol": (snap.dex_id if snap else None),
-                        "fees": fees_sol,
-                        "fees_src": "birdeye_global_fees_paid",
+                        "fees": fees_sol if fees_verified else None,
+                        "fees_src": fees_source or RESOLVER_VERSION,
                         "fees_ver": bool(fees_verified),
                         "liq": (snap.liquidity_usd if snap else None),
                         "vol": (snap.volume_m5_usd if snap else None),
                         "reason": None if accepted else (reason or "REJECTED"),
                         "failed": "[]" if accepted else f'[{{"reason": "{(reason or "REJECTED").replace(chr(34), "")}"}}]',
                         "passed": "[]" if not accepted else '[{"name":"quality"}]',
-                        "prov": f'{{"source":"volume._passes_pump_quality","threshold_usd":{float(self._threshold)}}}',
+                        "prov": (
+                            f'{{"source":"volume._passes_pump_quality",'
+                            f'"threshold_usd":{float(self._threshold)},'
+                            f'"resolver_version":"{RESOLVER_VERSION}"}}'
+                        ),
                     },
                 )
                 await session.commit()
@@ -364,6 +325,22 @@ class VolumeMonitor:
             logger.warning(
                 "filter_eval.persist_failed",
                 mint=mint,
+                error=f"{type(exc).__name__}: {exc}"[:200],
+            )
+
+    async def _persist_fee_observation(self, obs: FeeObservation) -> None:
+        """Append-only fee observation. Never overwrite history."""
+        try:
+            async with self._sessions() as session:
+                await session.execute(text(FEE_OBSERVATIONS_DDL))
+                for idx in FEE_OBSERVATIONS_INDEXES:
+                    await session.execute(text(idx))
+                await session.execute(text(FEE_OBSERVATIONS_INSERT), obs.persist_params())
+                await session.commit()
+        except Exception as exc:
+            logger.warning(
+                "fee_observation.persist_failed",
+                mint=obs.mint,
                 error=f"{type(exc).__name__}: {exc}"[:200],
             )
 
@@ -588,23 +565,32 @@ class VolumeMonitor:
             while elapsed < self._max_watch:
                 snap = await self._client.fetch_volume(mint)
                 if snap:
-                    # fees for quality gate (best effort)
-                    fees_sol = await fetch_pump_fees_sol(self._client._http, mint)
+                    # Skip expensive on-chain fee resolve if DEX already blocked.
+                    if snap.dex_id and not _dex_allowed(snap.dex_id):
+                        obs = unknown_observation(
+                            mint,
+                            protocol=snap.dex_id,
+                            source="skipped.denied_protocol",
+                            error="PROTOCOL_DISABLED",
+                        )
+                    else:
+                        obs = await resolve_global_fees(
+                            mint, protocol=snap.dex_id, pool=snap.pair_address
+                        )
+                    await self._persist_fee_observation(obs)
+                    fees_sol = obs.global_fees_sol if obs.fees_verified else None
                     snap.fees_sol = fees_sol
-                    ok, reason = self._passes_pump_quality(mint, snap, fees_sol)
-                    fees_verified = (
-                        fees_sol is not None
-                        and fees_sol == fees_sol
-                        and fees_sol >= 0
+                    ok, reason = self._passes_pump_quality(
+                        mint, snap, fees_sol, fees_verified=obs.fees_verified
                     )
-                    # Record every structural decision once per snapshot cycle
                     await self._record_filter_eval(
                         mint=mint,
                         accepted=bool(ok),
                         reason=reason,
                         fees_sol=fees_sol,
-                        fees_verified=fees_verified,
+                        fees_verified=bool(obs.fees_verified),
                         snap=snap,
+                        fees_source=obs.fees_source,
                     )
                     await self._persist_market_snapshot(mint, snap)
                     logger.info(
@@ -628,7 +614,7 @@ class VolumeMonitor:
                             dex_id=snap.dex_id,
                             fees_sol=fees_sol,
                             required_min_fees_sol=float(
-                                getattr(settings, "min_fees_sol", 5.0) or 5.0
+                                getattr(settings, "min_fees_sol", 1.0) or 1.0
                             ),
                         )
                         # Permanent reject for structural failures.
@@ -654,19 +640,23 @@ class VolumeMonitor:
 
     async def _emit_pass(self, migration: DetectedMigration, snap: VolumeSnapshot) -> None:
         # Re-verify HARD fees gate at emit time (fail-closed). Never trust a stale snap.
-        fees_sol = snap.fees_sol
-        if fees_sol is None:
-            fees_sol = await fetch_pump_fees_sol(self._client._http, migration.mint)
-            snap.fees_sol = fees_sol
-        ok, reason = self._passes_pump_quality(migration.mint, snap, fees_sol)
-        fees_verified = fees_sol is not None and fees_sol == fees_sol and fees_sol >= 0
+        obs = await resolve_global_fees(
+            migration.mint, protocol=snap.dex_id, pool=snap.pair_address
+        )
+        await self._persist_fee_observation(obs)
+        fees_sol = obs.global_fees_sol if obs.fees_verified else None
+        snap.fees_sol = fees_sol
+        ok, reason = self._passes_pump_quality(
+            migration.mint, snap, fees_sol, fees_verified=obs.fees_verified
+        )
         await self._record_filter_eval(
             mint=migration.mint,
             accepted=bool(ok),
             reason=reason,
             fees_sol=fees_sol,
-            fees_verified=fees_verified,
+            fees_verified=bool(obs.fees_verified),
             snap=snap,
+            fees_source=obs.fees_source,
         )
         if not ok:
             logger.info(
@@ -674,11 +664,12 @@ class VolumeMonitor:
                 mint=migration.mint,
                 reason=reason,
                 fees_sol=fees_sol,
-                required_min_fees_sol=float(getattr(settings, "min_fees_sol", 5.0) or 5.0),
+                fees_verified=obs.fees_verified,
+                fees_source=obs.fees_source,
+                required_min_fees_sol=float(getattr(settings, "min_fees_sol", 1.0) or 1.0),
             )
             return
 
-        fees_verified = fees_sol is not None
         logger.info(
             "volume.threshold_hit",
             mint=migration.mint,
@@ -687,7 +678,8 @@ class VolumeMonitor:
             pool=migration.pool,
             pair=snap.pair_address,
             fees_sol=fees_sol,
-            global_fees_verified=fees_verified,
+            global_fees_verified=obs.fees_verified,
+            fees_source=obs.fees_source,
         )
 
         # Smart-money + entity context (collector + entity-resolver)
@@ -826,8 +818,8 @@ class VolumeMonitor:
                 "symbol": snap.symbol,
                 "fees_sol": fees_sol,
                 "global_fees_paid_sol": fees_sol,
-                "global_fees_verified": fees_verified,
-                "global_fees_source": "birdeye_global_fees_paid",
+                "global_fees_verified": bool(obs.fees_verified),
+                "global_fees_source": obs.fees_source,
             },
             producer="sentinel-volume",
         )
@@ -855,9 +847,9 @@ class VolumeMonitor:
                 "dex_id": snap.dex_id,
                 "fees_sol": fees_sol,
                 "global_fees_paid_sol": fees_sol,
-                "global_fees_verified": fees_verified,
-                "global_fees_source": "birdeye_global_fees_paid",
-                "global_fees_calculation_version": "v1_pump_total_fees",
+                "global_fees_verified": bool(obs.fees_verified),
+                "global_fees_source": obs.fees_source,
+                "global_fees_calculation_version": RESOLVER_VERSION,
                 "stinky_score": result.score,
                 "confidence": result.confidence,
                 "score_model": result.model_version,

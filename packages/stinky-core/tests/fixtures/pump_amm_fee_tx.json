@@ -1,0 +1,42 @@
+{
+  "transaction": {
+    "message": {
+      "accountKeys": [
+        "3PTjRhqj9s4KDsRVZmbaYbfrTHnFtzkmoBGgfrvuexsC",
+        "5cjcW9wExnJJiqgLjq7DEG75Pm6JBgE1hNv4B2vHXUW6",
+        "9rPYyANsfQZw3DnDmKE3YCQF5E8oD89UXoHn9JFEhJUz",
+        "11111111111111111111111111111111"
+      ]
+    }
+  },
+  "meta": {
+    "err": null,
+    "fee": 55000,
+    "preBalances": [1000000000, 1000000, 1000000, 1],
+    "postBalances": [1000000000, 1000000, 1000000, 1],
+    "preTokenBalances": [
+      {
+        "owner": "5cjcW9wExnJJiqgLjq7DEG75Pm6JBgE1hNv4B2vHXUW6",
+        "mint": "So11111111111111111111111111111111111111112",
+        "uiTokenAmount": { "uiAmount": 1.0 }
+      },
+      {
+        "owner": "9rPYyANsfQZw3DnDmKE3YCQF5E8oD89UXoHn9JFEhJUz",
+        "mint": "So11111111111111111111111111111111111111112",
+        "uiTokenAmount": { "uiAmount": 2.0 }
+      }
+    ],
+    "postTokenBalances": [
+      {
+        "owner": "5cjcW9wExnJJiqgLjq7DEG75Pm6JBgE1hNv4B2vHXUW6",
+        "mint": "So11111111111111111111111111111111111111112",
+        "uiTokenAmount": { "uiAmount": 1.000235313 }
+      },
+      {
+        "owner": "9rPYyANsfQZw3DnDmKE3YCQF5E8oD89UXoHn9JFEhJUz",
+        "mint": "So11111111111111111111111111111111111111112",
+        "uiTokenAmount": { "uiAmount": 2.000235313 }
+      }
+    ]
+  }
+}

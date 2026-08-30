@@ -19,6 +19,13 @@ from stinky_core.admission import (
     evaluate_market,
     filter_stats,
 )
+from stinky_core.fees import (
+    RESOLVER_VERSION as FEE_RESOLVER_VERSION,
+    FeeObservation,
+    FeeResolver,
+    FeeStatus,
+    coerce_fees_verified,
+)
 from stinky_core.identity import AlertLedger, UniqueMintIndex, alert_candidate_key, canonical_mint
 
 __all__ = [
@@ -28,13 +35,18 @@ __all__ = [
     "CANONICAL_PROTOCOLS",
     "EARLY_GATE_CONFIG",
     "FILTER_VERSION",
+    "FEE_RESOLVER_VERSION",
     "EligibilityResult",
     "FilterConfig",
     "FilterDecision",
     "FilterStats",
     "ReasonCode",
     "StinkyFilterEngine",
+    "FeeObservation",
+    "FeeResolver",
+    "FeeStatus",
     "can_alert",
+    "coerce_fees_verified",
     "evaluate_admission",
     "evaluate_market",
     "filter_stats",

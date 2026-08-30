@@ -1,7 +1,7 @@
-"""High-volume pump discovery ? backfills mints migration WS may have missed.
+"""High-volume pump discovery — backfills mints migration WS may have missed.
 
 Polls DexScreener public endpoints for Solana pump mints with strong 5m volume,
-persists market_snapshots, runs the same Birdeye fee gate, and hands qualified
+persists market_snapshots, runs the same FeeResolver gate, and hands qualified
 mints to VolumeMonitor so Live Runners / Alerts / Trending stay consistent.
 """
 
@@ -16,7 +16,7 @@ import structlog
 
 from sentinel.config import settings
 from sentinel.models import DetectedMigration
-from sentinel.volume import DexScreenerClient, fetch_pump_fees_sol
+from sentinel.volume import DexScreenerClient, resolve_global_fees
 
 if TYPE_CHECKING:
     from sentinel.volume import VolumeMonitor
@@ -144,24 +144,32 @@ class HighVolumeDiscovery:
         if callable(persist):
             await persist(mint, snap)
 
-        fees = await fetch_pump_fees_sol(self._client._http, mint)
+        obs = await resolve_global_fees(mint, protocol=snap.dex_id, pool=snap.pair_address)
+        persist_obs = getattr(self._volume, "_persist_fee_observation", None)
+        if callable(persist_obs):
+            await persist_obs(obs)
+        fees = obs.global_fees_sol if obs.fees_verified else None
         snap.fees_sol = fees
-        ok, reason = self._volume._passes_pump_quality(mint, snap, fees)
-        fees_verified = fees is not None and fees == fees and fees >= 0
+        ok, reason = self._volume._passes_pump_quality(
+            mint, snap, fees, fees_verified=obs.fees_verified
+        )
 
         await self._volume._record_filter_eval(
             mint=mint,
             accepted=bool(ok),
             reason=reason if not ok else "DISCOVERY_PASS",
             fees_sol=fees,
-            fees_verified=fees_verified,
+            fees_verified=bool(obs.fees_verified),
             snap=snap,
+            fees_source=obs.fees_source,
         )
         logger.info(
             "discovery.evaluated",
             mint=mint,
             volume_m5_usd=round(vol, 2),
             fees_sol=fees,
+            fees_verified=obs.fees_verified,
+            fees_source=obs.fees_source,
             quality_ok=ok,
             quality_reason=reason,
         )

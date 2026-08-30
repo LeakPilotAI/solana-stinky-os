@@ -148,6 +148,8 @@ async def _trending_m5(
                           SELECT DISTINCT ON (mint)
                             mint,
                             global_fees_sol,
+                            global_fees_verified,
+                            global_fees_source,
                             accepted,
                             rejection_reason
                           FROM filter_evaluations
@@ -164,6 +166,8 @@ async def _trending_m5(
                           h.dex_id,
                           h.captured_at,
                           f.global_fees_sol AS fees_sol,
+                          f.global_fees_verified AS global_fees_verified,
+                          f.global_fees_source AS global_fees_source,
                           f.accepted AS fees_accepted,
                           f.rejection_reason AS fees_rejection,
                           mt.creator,
@@ -225,6 +229,8 @@ async def _trending_m5(
                               h.dex_id,
                               h.captured_at,
                               NULL::double precision AS fees_sol,
+                              NULL::boolean AS global_fees_verified,
+                              NULL::text AS global_fees_source,
                               NULL::boolean AS fees_accepted,
                               NULL::text AS fees_rejection,
                               mt.creator,
@@ -273,15 +279,28 @@ async def _trending_m5(
                         d[k] = float(d[k])
                     except (TypeError, ValueError):
                         d[k] = None
-            # HARD FEE GATE: fail-closed when configured
-            if min_fees_sol > 0:
-                ff = d.get("fees_sol")
-                if ff is None or ff != ff or ff < 0:
-                    continue
-                if ff + 1e-9 < float(min_fees_sol):
-                    continue
-            d["global_fees_paid_sol"] = d.get("fees_sol")
-            d["global_fees_verified"] = d.get("fees_sol") is not None
+            # HARD FEE GATE via canonical engine. A bare number is not verified.
+            gated = queries.apply_canonical_gate(
+                {
+                    **d,
+                    "protocol": d.get("dex_id") or "pumpfun",
+                    "global_fees_sol": d.get("fees_sol"),
+                    "global_fees_verified": d.get("global_fees_verified"),
+                    "global_fees_source": d.get("global_fees_source"),
+                    "migrated": True,
+                    "tab": "migrated",
+                },
+                min_fees_sol=float(min_fees_sol) if min_fees_sol else 1.0,
+            )
+            if not gated.get("eligible"):
+                continue
+            d["global_fees_paid_sol"] = gated.get("global_fees_sol")
+            d["global_fees_sol"] = gated.get("global_fees_sol")
+            d["global_fees_verified"] = bool(gated.get("global_fees_verified"))
+            d["eligible"] = True
+            d["rejection_reason"] = None
+            d["reason_codes"] = gated.get("reason_codes") or []
+            d["filter_version"] = gated.get("filter_version")
             out.append(d)
             if len(out) >= limit:
                 break

@@ -39,22 +39,32 @@ A token with `fees < 1 SOL` MUST NOT enter candidate lists, Live Runners, Discor
 
 **Name:** `global_fees_sol`
 
-**Meaning:** Cumulative / all-time fees associated with the token on pump.fun, expressed in SOL.
+**Meaning:** Cumulative / all-time protocol global fees associated with the
+token, expressed in SOL. **Not** creator fees, pool fees, tx fees, or volume.
 
-**Source (current):** pump.fun public coin API
+**Resolver:** `stinky_core.fees.FeeResolver` (`fee-resolver-v1.0.0`).
 
-- `https://frontend-api-v3.pump.fun/coins/{mint}`
-- `https://frontend-api.pump.fun/coins/{mint}`
+**Sources (in order, all explicit):**
 
-**Fields tried (in order):** `total_fees`, `total_fees_sol`, `fees_sol`, `fee_sol` (and nested under `coin` / `data` / `result`).
+1. pump.fun public coin API fields `total_fees`, `total_fees_sol`, `fees_sol`,
+   `fee_sol`, `global_fees_paid`, `global_fees_sol`, `accumulated_fees`.
+2. On-chain SOL/WSOL credited to published pump.fun protocol fee recipients
+   (pump family including mayhem). Lower bound. PASS if observed ≥ 1 SOL.
 
-**Not acceptable substitutes:** creator fees, pool fees, estimated fees, transaction count, volume, liquidity, protocol revenue.
+**Not acceptable substitutes:** creator fees, pool fees, estimated fees,
+transaction count, volume, liquidity, protocol revenue, `volume * bps`.
 
-When the public coin payload does not include those fields the candidate is `FEES_UNKNOWN` and **cannot alert**.
+When neither source can establish a verified value the candidate is
+`FEES_UNKNOWN` and **cannot alert**. Incomplete on-chain scans below 1 SOL
+are UNKNOWN, not BELOW_MIN.
 
-**Unit normalization:** if a raw numeric value is `> 1_000_000`, treat as lamports and divide by `1e9`. Otherwise treat as SOL.
+**Unit normalization:** if a raw numeric value is `> 1_000_000`, treat as
+lamports and divide by `1e9`. Non-finite / negative → invalid / unknown.
 
-**Provenance required:** `global_fees_sol`, `global_fees_source`, `global_fees_timestamp`, `global_fees_verified=true`.
+**Provenance required:** `global_fees_sol`, `global_fees_source`,
+`global_fees_timestamp`, `global_fees_verified=true`.
+
+A bare number is **not** verification. See `docs/adr/ADR-009-fee-resolver.md`.
 
 ## Reason codes
 
@@ -69,3 +79,6 @@ When the public coin payload does not include those fields the candidate is `FEE
 ## Backtest
 
 `stinky_core.backtest.backtest_candidates` deduplicates by mint, then applies the same `evaluate_market`, then `can_alert`, then outcome labels (RUNNER / HELD / FADE / UNKNOWN).
+
+Reported: `total_candidates`, `fee_verified`, `fee_unknown`, `fee_rejected`, `fee_passed`, `final_candidates`, `fee_verified_rate`.
+Historical unknown fees stay rejected.

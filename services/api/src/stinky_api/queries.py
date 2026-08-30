@@ -13,13 +13,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 try:
     from stinky_core.admission import FilterConfig, evaluate_market
+    from stinky_core.fees import coerce_fees_verified, extract_explicit_api_fees
 except ImportError:  # pragma: no cover
     evaluate_market = None  # type: ignore[assignment]
     FilterConfig = None  # type: ignore[assignment]
+    coerce_fees_verified = None  # type: ignore[assignment]
+    extract_explicit_api_fees = None  # type: ignore[assignment]
 
 
 def apply_canonical_gate(row: dict[str, Any], *, min_fees_sol: float = 1.0) -> dict[str, Any]:
-    """Stamp eligibility from the single canonical engine. Fail closed."""
+    """Stamp eligibility from the single canonical engine. Fail closed.
+
+    A bare fee number is NEVER treated as verified.
+    """
     out = dict(row)
     if evaluate_market is None:
         out["eligible"] = False
@@ -31,17 +37,22 @@ def apply_canonical_gate(row: dict[str, Any], *, min_fees_sol: float = 1.0) -> d
         fees = out.get("fees_sol")
     if fees is None:
         fees = out.get("global_fees_paid_sol")
-    verified = out.get("global_fees_verified")
-    if verified is None and fees is not None:
-        verified = True
+    verified = None
+    if coerce_fees_verified is not None:
+        verified = coerce_fees_verified(out.get("global_fees_verified"))
+        if verified is None:
+            verified = coerce_fees_verified(out.get("fees_verified"))
+    else:
+        raw = out.get("global_fees_verified")
+        verified = True if raw is True else (False if raw is False else None)
     decision = evaluate_market(
         {
             "mint": out.get("mint"),
             "protocol": out.get("protocol") or out.get("dex_id") or "pumpfun",
             "dex_id": out.get("dex_id"),
-            "global_fees_sol": fees,
+            "global_fees_sol": fees if verified is True else None,
             "global_fees_verified": verified,
-            "global_fees_source": out.get("global_fees_source") or "pump.fun",
+            "global_fees_source": out.get("global_fees_source") or out.get("fees_source"),
             "liquidity_usd": out.get("liquidity_usd"),
             "volume_usd": out.get("volume_m5_usd") or out.get("volume_usd"),
             "market_cap_usd": out.get("market_cap_usd") or out.get("fdv_usd"),
@@ -61,7 +72,8 @@ def apply_canonical_gate(row: dict[str, Any], *, min_fees_sol: float = 1.0) -> d
     out["passed_filters"] = decision.passed_filters
     out["filter_version"] = decision.filter_version
     out["normalized_metrics"] = decision.normalized_metrics
-    if fees is not None:
+    out["global_fees_verified"] = verified is True
+    if verified is True and fees is not None:
         out["fees_sol"] = fees
         out["global_fees_sol"] = fees
     return out
@@ -119,8 +131,14 @@ async def counts(session: AsyncSession) -> dict[str, int]:
         }
 
 
-async def _fetch_pump_fees_sol(mint: str) -> float | None:
-    """Best-effort fees (SOL) from pump.fun public coin APIs."""
+async def _fetch_pump_fees_sol(mint: str) -> tuple[float | None, bool, str | None]:
+    """Explicit pump.fun fee fields only. creator_fees_* is not global fees.
+
+    Returns (value, verified, source_key). List endpoints do NOT run on-chain
+    resolution (too slow); missing explicit field → (None, False, None).
+    """
+    if not mint or extract_explicit_api_fees is None:
+        return None, False, None
     urls = [
         f"https://frontend-api-v3.pump.fun/coins/{mint}",
         f"https://frontend-api.pump.fun/coins/{mint}",
@@ -134,40 +152,12 @@ async def _fetch_pump_fees_sol(mint: str) -> float | None:
                 data = resp.json()
                 if not isinstance(data, dict):
                     continue
-                for key in (
-                    "total_fees",
-                    "total_fees_sol",
-                    "fees_sol",
-                    "fee_sol",
-                    "creator_fees_sol",
-                    "accumulated_fees",
-                ):
-                    if data.get(key) is None:
-                        continue
-                    try:
-                        val = float(data[key])
-                        if val > 1_000_000:
-                            val = val / 1_000_000_000.0
-                        return val
-                    except (TypeError, ValueError):
-                        pass
-                for nest in ("coin", "data", "result"):
-                    sub = data.get(nest)
-                    if not isinstance(sub, dict):
-                        continue
-                    for key in ("total_fees", "total_fees_sol", "fees_sol"):
-                        if sub.get(key) is None:
-                            continue
-                        try:
-                            val = float(sub[key])
-                            if val > 1_000_000:
-                                val = val / 1_000_000_000.0
-                            return val
-                        except (TypeError, ValueError):
-                            pass
+                val, key, _raw = extract_explicit_api_fees(data)
+                if val is not None and key is not None:
+                    return val, True, f"pump.fun/{key}"
             except Exception:
                 continue
-    return None
+    return None, False, None
 
 
 async def recent_migrations(
@@ -250,36 +240,36 @@ async def recent_migrations(
 
         async def _one(d: dict) -> dict:
             fees = d.get("fees_sol")
+            verified = coerce_fees_verified(d.get("global_fees_verified")) if coerce_fees_verified else None
             try:
                 fees_f = float(fees) if fees is not None else None
             except (TypeError, ValueError):
                 fees_f = None
-            if fees_f is None:
+            if verified is not True:
                 try:
-                    fees_f = await asyncio.wait_for(
+                    fees_f, verified_flag, source = await asyncio.wait_for(
                         _fetch_pump_fees_sol(str(d.get("mint") or "")),
                         timeout=2.5,
                     )
+                    verified = True if verified_flag else None
+                    if source:
+                        d["global_fees_source"] = source
                 except Exception:
                     fees_f = None
-            d["fees_sol"] = fees_f
-            d["global_fees_paid_sol"] = fees_f
-            d["global_fees_verified"] = fees_f is not None
+                    verified = None
+            d["fees_sol"] = fees_f if verified is True else None
+            d["global_fees_paid_sol"] = d["fees_sol"]
+            d["global_fees_sol"] = d["fees_sol"]
+            d["global_fees_verified"] = verified is True
             return d
 
         enriched = await asyncio.gather(*[_one(dict(d)) for d in out[:limit]])
         filtered = []
         for d in enriched:
-            try:
-                ff = float(d["fees_sol"]) if d.get("fees_sol") is not None else None
-            except (TypeError, ValueError):
-                ff = None
-            # HARD GATE: unknown / invalid / below min → reject from qualified list
-            if ff is None or ff != ff or ff < 0:
+            gated = apply_canonical_gate(d, min_fees_sol=min_fees_sol)
+            if not gated.get("eligible"):
                 continue
-            if ff + 1e-9 < min_fees_sol:
-                continue
-            filtered.append(d)
+            filtered.append(gated)
         return filtered[:limit]
 
     return out[:limit]

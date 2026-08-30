@@ -23,6 +23,7 @@ Fee metric (authoritative, no substitutes):
 
 from __future__ import annotations
 
+import math
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -268,7 +269,7 @@ def _safe_float(v: Any) -> float | None:
         f = float(v)
     except (TypeError, ValueError):
         return None
-    if f != f or f < 0:  # NaN or negative
+    if not math.isfinite(f) or f < 0:
         return None
     return f
 

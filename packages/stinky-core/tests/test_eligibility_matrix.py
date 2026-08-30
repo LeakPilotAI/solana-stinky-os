@@ -294,3 +294,39 @@ def test_backtest_uses_canonical_filter_and_alert_gate():
     assert item["eligible"] is True
     assert item["alert_ok"] is True
     assert item["outcome"]["label"] == RUNNER
+    assert result["fee_verified"] == 1
+    assert result["fee_passed"] == 1
+    assert result["final_candidates"] == 1
+    assert result["fee_verified_rate"] == 1.0
+
+
+def test_backtest_unknown_fees_fail_closed_and_counted():
+    passing = _base(mint=MINT, stinky_score=80, meaningful_buyer_count=5)
+    unknown = _base(
+        mint="OtherMint11111111111111111111111111111pump",
+        global_fees_sol=None,
+        global_fees_verified=None,
+        stinky_score=99,
+        meaningful_buyer_count=20,
+    )
+    below = _base(
+        mint="BelowMint11111111111111111111111111111pump",
+        global_fees_sol=0.2,
+        global_fees_verified=True,
+        stinky_score=99,
+        meaningful_buyer_count=20,
+    )
+    result = backtest_candidates([passing, unknown, below])
+    assert result["total_candidates"] == 3
+    assert result["fee_verified"] == 2  # passing + below (verified but below min)
+    assert result["fee_unknown"] == 1
+    assert result["fee_rejected"] == 2
+    assert result["fee_passed"] == 1
+    assert result["final_candidates"] == 1
+    assert result["eligible"] == 1
+    assert abs(result["fee_verified_rate"] - (2 / 3)) < 1e-9
+    # unknown historical record must not magically pass
+    unknown_item = next(i for i in result["items"] if i["mint"].startswith("Other"))
+    assert unknown_item["eligible"] is False
+    assert unknown_item["rejection_reason"] == ReasonCode.FEES_UNKNOWN
+

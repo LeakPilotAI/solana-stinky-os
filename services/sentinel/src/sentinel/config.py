@@ -54,9 +54,9 @@ class Settings(BaseSettings):
     allowed_dex_ids: str = "pumpswap,pumpfun,pump"
     denied_dex_ids: str = "meteora,raydium,orca,phoenix,lifinity,saber,aldrin,fluxbeam,pumpamm"
     require_pump_mint_suffix: bool = True
-    # Hard ops floor: 5.0 SOL. Override via STINKY_MIN_FEES_SOL.
+    # Hard ops floor: 1.0 SOL. Override via STINKY_MIN_FEES_SOL.
     # HARD GATE: missing / unverified / below floor ? REJECT.
-    min_fees_sol: float = 5.0
+    min_fees_sol: float = 1.0
     birdeye_api_key: str | None = None
 
     # Full opportunity screen (FilterEngine) ? separate from early volume watch

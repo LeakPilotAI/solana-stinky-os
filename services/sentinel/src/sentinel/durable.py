@@ -74,6 +74,15 @@ class DurableEventStore:
                     """
                 )
             )
+            try:
+                from stinky_core.fees import FEE_OBSERVATIONS_DDL, FEE_OBSERVATIONS_INDEXES
+            except ImportError:
+                FEE_OBSERVATIONS_DDL = None
+                FEE_OBSERVATIONS_INDEXES = ()
+            if FEE_OBSERVATIONS_DDL:
+                await session.execute(text(FEE_OBSERVATIONS_DDL))
+                for idx in FEE_OBSERVATIONS_INDEXES:
+                    await session.execute(text(idx))
             await session.commit()
         self._ready = True
         logger.info("durable.schema_ready")

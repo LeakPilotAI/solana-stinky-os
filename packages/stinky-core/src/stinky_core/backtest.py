@@ -14,6 +14,7 @@ from stinky_core.admission import (
     FILTER_VERSION,
     FilterConfig,
     FilterDecision,
+    ReasonCode,
     can_alert,
     evaluate_market,
 )
@@ -49,6 +50,10 @@ def backtest_candidates(
     held = 0
     fades = 0
     unknown = 0
+    fee_verified = 0
+    fee_unknown = 0
+    fee_rejected = 0
+    fee_passed = 0
 
     for m in unique:
         decision: FilterDecision = evaluate_market(m, config=config)
@@ -73,6 +78,23 @@ def backtest_candidates(
         )
         if decision.eligible:
             eligible_n += 1
+        fee_codes = set(decision.reason_codes)
+        fee_ok = any(f.get("name") == "global_fees" and f.get("passed") for f in decision.passed_filters)
+        if ReasonCode.FEES_UNKNOWN in fee_codes:
+            fee_unknown += 1
+            fee_rejected += 1
+        elif ReasonCode.FEES_BELOW_MIN in fee_codes:
+            fee_rejected += 1
+            if decision.metrics.get("fees_verified") is True:
+                fee_verified += 1
+        elif fee_ok:
+            fee_passed += 1
+            fee_verified += 1
+        elif decision.metrics.get("fees_verified") is True:
+            fee_verified += 1
+        else:
+            fee_unknown += 1
+            fee_rejected += 1
         if alert_ok:
             alerted_n += 1
             if outcome.label == "RUNNER":
@@ -97,13 +119,21 @@ def backtest_candidates(
         )
 
     precision = (runners / alerted_n) if alerted_n else None
+    total = len(unique)
     return {
         "engine": "stinky-backtest-v1.0.0",
         "filter_version": FILTER_VERSION,
         "input": len(unique) + dropped_dupes,
         "unique_mints": len(unique),
         "duplicate_mints_dropped": dropped_dupes,
+        "total_candidates": total,
+        "fee_verified": fee_verified,
+        "fee_unknown": fee_unknown,
+        "fee_rejected": fee_rejected,
+        "fee_passed": fee_passed,
+        "fee_verified_rate": (fee_verified / total) if total else None,
         "eligible": eligible_n,
+        "final_candidates": eligible_n,
         "alerted": alerted_n,
         "runners": runners,
         "held": held,

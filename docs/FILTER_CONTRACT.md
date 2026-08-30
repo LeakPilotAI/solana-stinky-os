@@ -33,13 +33,22 @@ Unknown / missing required metric → REJECT. Null is not zero.
 
 Authoritative metric name: `global_fees_sol`.
 
-Current source: pump.fun public coin API
-`https://frontend-api-v3.pump.fun/coins/{mint}` fields `total_fees`,
-`total_fees_sol`, `fees_sol`. As of 2026-08-30 those fields are **absent**
-from the public payload; candidates are `FEES_UNKNOWN` and cannot alert.
+Resolver: `stinky_core.fees.FeeResolver` (`fee-resolver-v1.0.0`).
+
+1. pump.fun public coin API
+   `https://frontend-api-v3.pump.fun/coins/{mint}` explicit keys
+   `total_fees`, `total_fees_sol`, `fees_sol`, `fee_sol`,
+   `global_fees_paid`, `global_fees_sol`, `accumulated_fees`.
+   As of 2026-08-30 those fields are **usually absent**.
+2. On-chain protocol fee-recipient native/WSOL credits (pump family).
+   Lower bound ≥ 1 SOL → VERIFIED. Incomplete / below 1 → UNKNOWN.
+
+A bare number is not verified. `creator_fees_sol` is not global fees.
 
 Forbidden substitutes: creator fees, pool fees, estimated fees, txn count,
-volume, liquidity, protocol revenue.
+volume, liquidity, protocol revenue, `volume * guessed_bps`.
+
+See `docs/adr/ADR-009-fee-resolver.md`.
 
 ## Protocol lists
 
@@ -59,6 +68,10 @@ Score cannot override a failed hard gate. `can_alert()` enforces this.
 `stinky_core.backtest.backtest_candidates` uses the same `evaluate_market`.
 Deduplicate by mint first. Outcome labels: RUNNER / HELD / FADE / UNKNOWN
 (`outcome-v1.0.0`). Unknown remains unknown.
+
+Reported fee metrics: `total_candidates`, `fee_verified`, `fee_unknown`,
+`fee_rejected`, `fee_passed`, `final_candidates`, `fee_verified_rate`.
+Historical records with unknown fees must NOT magically pass.
 
 ## Env
 
