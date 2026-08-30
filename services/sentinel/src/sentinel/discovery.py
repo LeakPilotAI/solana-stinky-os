@@ -1,8 +1,9 @@
 """High-volume pump discovery — backfills mints migration WS may have missed.
 
 Polls DexScreener public endpoints for Solana pump mints with strong 5m volume,
-persists market_snapshots, runs the same FeeResolver gate, and hands qualified
-mints to VolumeMonitor so Live Runners / Alerts / Trending stay consistent.
+persists market_snapshots, runs Gate 1 (volume trigger), then optional
+FeeResolver evidence, and hands qualified mints to VolumeMonitor.
+Fees are never an admission reject.
 """
 
 from __future__ import annotations
@@ -153,39 +154,37 @@ class HighVolumeDiscovery:
         if callable(persist):
             await persist(mint, snap)
 
-        obs = await resolve_global_fees(mint, protocol=snap.dex_id, pool=snap.pair_address)
-        persist_obs = getattr(self._volume, "_persist_fee_observation", None)
-        if callable(persist_obs):
-            await persist_obs(obs)
-        fees = obs.global_fees_sol if obs.fees_verified else None
-        snap.fees_sol = fees
+        # Gate 1 FIRST. Fees are optional evidence after admission — never a reject.
         ok, reason = self._volume._passes_pump_quality(
-            mint, snap, fees, fees_verified=obs.fees_verified
+            mint, snap, None, fees_verified=False
         )
-
         await self._volume._record_filter_eval(
             mint=mint,
             accepted=bool(ok),
-            reason=reason if not ok else "DISCOVERY_PASS",
-            fees_sol=fees,
-            fees_verified=bool(obs.fees_verified),
+            reason=reason if not ok else "DISCOVERY_GATE1",
+            fees_sol=None,
+            fees_verified=False,
             snap=snap,
-            fees_source=obs.fees_source,
+            fees_source=None,
         )
         logger.info(
             "discovery.evaluated",
             mint=mint,
             volume_m5_usd=round(vol, 2),
-            fees_sol=fees,
-            fees_verified=obs.fees_verified,
-            fees_source=obs.fees_source,
             quality_ok=ok,
             quality_reason=reason,
         )
         if not ok:
             return
 
-        # Hand to volume watch (emit path / scoring) if not already active
+        obs = await resolve_global_fees(mint, protocol=snap.dex_id, pool=snap.pair_address)
+        persist_obs = getattr(self._volume, "_persist_fee_observation", None)
+        if callable(persist_obs):
+            await persist_obs(obs)
+        fees = obs.global_fees_sol if obs.fees_verified else None
+        snap.fees_sol = fees
+
+        # Hand to volume watch (inspect path / scoring) if not already active
         self._seen.add(mint)
         mig = DetectedMigration(
             mint=mint,

@@ -1,16 +1,35 @@
 """Market activity inspector + synthetic / rug risk (deterministic V1).
 
 Never invents wallets, volume, or evidence. Missing inputs stay UNKNOWN.
+LOW is not the default: insufficient coverage cannot collapse into 'safe'.
+A single weak/clean indicator is not enough to claim LOW.
+HIGH/CRITICAL findings may stand on partial data (fail-closed on risk).
 """
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from typing import Any, Mapping
 
-INSPECT_VERSION = "inspect-v1.0.0"
+from stinky_core.pools import is_rankable_wallet
+
+INSPECT_VERSION = "inspect-v1.1.0-harden"
 
 LEVELS = ("UNKNOWN", "LOW", "MEDIUM", "HIGH", "CRITICAL")
+
+# Independent flow signals. LOW requires enough of these observed.
+_SYNTHETIC_SIGNALS = (
+    "wallet_concentration",
+    "wallet_diversity",
+    "trade_size_distribution",
+    "circular_activity",
+    "bot_like_frequency",
+    "creator_linked_flow",
+    "buy_sell_structure",
+)
+_LOW_MIN_OBSERVED = 3
+_LOW_REQUIRES_ANY = ("wallet_concentration", "wallet_diversity")
 
 
 def _f(v: Any) -> float | None:
@@ -37,7 +56,7 @@ def _i(v: Any) -> int | None:
     return n
 
 
-def _level(score: float | None) -> str:
+def _level_from_score(score: float | None) -> str:
     if score is None:
         return "UNKNOWN"
     if score >= 80:
@@ -47,6 +66,23 @@ def _level(score: float | None) -> str:
     if score >= 35:
         return "MEDIUM"
     return "LOW"
+
+
+def _level_fail_closed(score: float | None, evidence: list[Evidence]) -> str:
+    """Severity of findings wins over a low summed score.
+
+    A HIGH-severity concentration hit must not collapse to LOW because other
+    signals were missing. Clean/low-only readings still require coverage.
+    """
+    sevs = {e.severity for e in evidence}
+    if "critical" in sevs:
+        scored = _level_from_score(score)
+        return "CRITICAL" if scored == "CRITICAL" else "HIGH"
+    if "high" in sevs:
+        return "HIGH"
+    if "medium" in sevs:
+        return "MEDIUM" if (score or 0) < 60 else _level_from_score(score)
+    return _level_from_score(score)
 
 
 @dataclass
@@ -66,14 +102,25 @@ class RiskResult:
     level: str
     evidence: list[Evidence] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
+    confidence: float | None = None
+    coverage: dict[str, bool] = field(default_factory=dict)
+    source: str = "observed"
     model_version: str = INSPECT_VERSION
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "status": self.level,
             "score": self.score,
             "level": self.level,
+            "confidence": self.confidence,
             "evidence": [e.to_dict() for e in self.evidence],
             "missing": list(self.missing),
+            "coverage": dict(self.coverage),
+            "source": self.source,
+            "data_coverage": round(
+                (sum(1 for v in self.coverage.values() if v) / len(self.coverage)) if self.coverage else 0.0,
+                2,
+            ),
             "model_version": self.model_version,
         }
 
@@ -98,6 +145,8 @@ class MarketActivity:
     trade_count: int | None = None
     median_trade_sol: float | None = None
     max_wallet_trades: int | None = None
+    duplicate_trades_dropped: int = 0
+    pool_wallets_dropped: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -151,8 +200,27 @@ def activity_from_trades(
     txns_m5_sells: int | None = None,
     creator: str | None = None,
 ) -> MarketActivity:
-    """Build activity from observed trades. Does not invent missing fields."""
-    rows = [t for t in (trades or []) if isinstance(t, Mapping)]
+    """Build activity from observed trades. Dedupes + drops pool/program wallets."""
+    raw_rows = [t for t in (trades or []) if isinstance(t, Mapping)]
+    seen: set[tuple[str, str, str]] = set()
+    rows: list[Mapping[str, Any]] = []
+    dupes = 0
+    pools = 0
+    for t in raw_rows:
+        w = str(t.get("userAddress") or t.get("wallet") or "").strip()
+        if w and not is_rankable_wallet(w):
+            pools += 1
+            continue
+        sig = str(t.get("signature") or t.get("tx") or "").strip()
+        side = str(t.get("type") or t.get("side") or "").lower()
+        if sig:
+            key = (sig, w, side)
+            if key in seen:
+                dupes += 1
+                continue
+            seen.add(key)
+        rows.append(t)
+
     buyers: set[str] = set()
     sellers: set[str] = set()
     sizes: list[float] = []
@@ -185,8 +253,6 @@ def activity_from_trades(
         top4 = sum(ranked[:4]) / total_vol
     rep = None
     if sizes:
-        from collections import Counter
-
         bucket = Counter(round(s, 4) for s in sizes)
         rep = max(bucket.values()) / len(sizes)
     imb = None
@@ -209,24 +275,29 @@ def activity_from_trades(
         top4_wallet_volume_share=top4,
         repeated_size_share=rep,
         creator_linked_share=(creator_vol / total_vol) if creator and total_vol > 0 else None,
-        circular_pairs=None,
+        circular_pairs=len(buyers & sellers) if rows else None,
         buy_sell_imbalance=imb,
         trade_count=len(rows) if rows else None,
         median_trade_sol=(sorted(sizes)[len(sizes) // 2] if sizes else None),
         max_wallet_trades=max(counts.values()) if counts else None,
+        duplicate_trades_dropped=dupes,
+        pool_wallets_dropped=pools,
     )
 
 
 def assess_synthetic(activity: MarketActivity) -> RiskResult:
-    """Deterministic synthetic-activity risk. UNKNOWN if no flow evidence."""
+    """Deterministic synthetic-activity risk.
+
+    UNKNOWN if no flow evidence, or if the only readings are clean/weak and
+    coverage is too thin to support LOW. HIGH/CRITICAL may fire on partial data.
+    """
     ev: list[Evidence] = []
     missing: list[str] = []
+    coverage: dict[str, bool] = {k: False for k in _SYNTHETIC_SIGNALS}
     score = 0.0
-    used = 0
 
     def add(pts: float, signal: str, severity: str, value: Any, explanation: str) -> None:
-        nonlocal score, used
-        used += 1
+        nonlocal score
         score += pts
         ev.append(Evidence(signal, severity, value, explanation))
 
@@ -234,6 +305,7 @@ def assess_synthetic(activity: MarketActivity) -> RiskResult:
     if top4 is None:
         missing.append("wallet_concentration")
     else:
+        coverage["wallet_concentration"] = True
         if top4 >= 0.85:
             add(42, "wallet_concentration", "critical", round(top4, 4), f"{top4:.0%} of observed volume from 4 wallets")
         elif top4 >= 0.70:
@@ -248,6 +320,7 @@ def assess_synthetic(activity: MarketActivity) -> RiskResult:
     if uniq is None or vol is None:
         missing.append("wallet_diversity")
     else:
+        coverage["wallet_diversity"] = True
         if vol >= 150_000 and uniq < 6:
             add(36, "low_wallet_diversity", "high", uniq, f"{uniq} unique wallets vs ${vol:,.0f} 5m volume")
         elif vol >= 150_000 and uniq < 12:
@@ -258,42 +331,99 @@ def assess_synthetic(activity: MarketActivity) -> RiskResult:
     rep = activity.repeated_size_share
     if rep is None:
         missing.append("trade_size_distribution")
-    elif rep >= 0.55:
-        add(24, "repetitive_trade_sizes", "high", round(rep, 4), f"{rep:.0%} of trades share the same size")
-    elif rep >= 0.35:
-        add(12, "repetitive_trade_sizes", "medium", round(rep, 4), f"{rep:.0%} of trades share the same size")
+    else:
+        coverage["trade_size_distribution"] = True
+        if rep >= 0.55:
+            add(24, "repetitive_trade_sizes", "high", round(rep, 4), f"{rep:.0%} of trades share the same size")
+        elif rep >= 0.35:
+            add(12, "repetitive_trade_sizes", "medium", round(rep, 4), f"{rep:.0%} of trades share the same size")
+        else:
+            add(0, "trade_size_distribution", "low", round(rep, 4), f"Repeated-size share {rep:.0%}")
 
     circ = activity.circular_pairs
     if circ is None:
         missing.append("circular_activity")
-    elif circ >= 3:
-        add(22, "circular_activity", "high", circ, f"{circ} circular wallet pairs observed")
-    elif circ >= 1:
-        add(10, "circular_activity", "medium", circ, f"{circ} circular wallet pair(s) observed")
+    else:
+        coverage["circular_activity"] = True
+        if circ >= 3:
+            add(22, "circular_activity", "high", circ, f"{circ} circular wallet pairs observed")
+        elif circ >= 1:
+            add(10, "circular_activity", "medium", circ, f"{circ} circular wallet pair(s) observed")
+        else:
+            add(0, "circular_activity", "low", circ, "No circular pairs in observed set")
 
     mx = activity.max_wallet_trades
     tc = activity.trade_count
     if mx is None or tc is None or tc < 8:
-        if "bot_like_frequency" not in missing:
-            missing.append("bot_like_frequency")
-    elif mx >= max(12, int(0.4 * tc)):
-        add(16, "bot_like_frequency", "medium", mx, f"One wallet placed {mx} of {tc} observed trades")
+        missing.append("bot_like_frequency")
+    else:
+        coverage["bot_like_frequency"] = True
+        if mx >= max(12, int(0.4 * tc)):
+            add(16, "bot_like_frequency", "medium", mx, f"One wallet placed {mx} of {tc} observed trades")
+        else:
+            add(0, "bot_like_frequency", "low", mx, f"Max wallet trades {mx} of {tc}")
 
     cl = activity.creator_linked_share
     if cl is None:
         missing.append("creator_linked_flow")
-    elif cl >= 0.25:
-        add(20, "creator_linked_activity", "high", round(cl, 4), f"Creator-linked wallets are {cl:.0%} of observed volume")
+    else:
+        coverage["creator_linked_flow"] = True
+        if cl >= 0.25:
+            add(20, "creator_linked_activity", "high", round(cl, 4), f"Creator-linked wallets are {cl:.0%} of observed volume")
+        else:
+            add(0, "creator_linked_flow", "low", round(cl, 4), f"Creator-linked share {cl:.0%}")
 
     imb = activity.buy_sell_imbalance
     if imb is None:
         missing.append("buy_sell_structure")
-    elif imb >= 0.92 or imb <= 0.08:
-        add(10, "abnormal_imbalance", "medium", round(imb, 4), f"Buy share {imb:.0%} of observed txns")
+    else:
+        coverage["buy_sell_structure"] = True
+        if imb >= 0.92 or imb <= 0.08:
+            add(10, "abnormal_imbalance", "medium", round(imb, 4), f"Buy share {imb:.0%} of observed txns")
+        else:
+            add(0, "buy_sell_structure", "low", round(imb, 4), f"Buy share {imb:.0%}")
 
-    if used == 0:
-        return RiskResult(score=None, level="UNKNOWN", evidence=ev, missing=missing)
-    return RiskResult(score=round(min(100.0, score), 1), level=_level(min(100.0, score)), evidence=ev, missing=missing)
+    observed_n = sum(1 for v in coverage.values() if v)
+    conf = round(min(0.9, 0.15 * observed_n), 2) if observed_n else None
+    risk_hits = [e for e in ev if e.severity in ("medium", "high", "critical")]
+
+    if observed_n == 0:
+        return RiskResult(
+            score=None, level="UNKNOWN", evidence=ev, missing=missing,
+            confidence=None, coverage=coverage,
+        )
+
+    # Risk findings may stand on partial data (fail-closed).
+    if risk_hits:
+        lvl = _level_fail_closed(min(100.0, score), ev)
+        return RiskResult(
+            score=round(min(100.0, score), 1),
+            level=lvl,
+            evidence=ev,
+            missing=missing,
+            confidence=conf,
+            coverage=coverage,
+        )
+
+    # Claiming LOW ('not synthetic') requires real coverage, not one clean print.
+    core_ok = any(coverage.get(k) for k in _LOW_REQUIRES_ANY)
+    if observed_n < _LOW_MIN_OBSERVED or not core_ok:
+        return RiskResult(
+            score=None,
+            level="UNKNOWN",
+            evidence=ev,
+            missing=missing,
+            confidence=None,
+            coverage=coverage,
+        )
+    return RiskResult(
+        score=round(min(100.0, score), 1),
+        level="LOW",
+        evidence=ev,
+        missing=missing,
+        confidence=conf,
+        coverage=coverage,
+    )
 
 
 def assess_rug(
@@ -306,12 +436,16 @@ def assess_rug(
 ) -> RiskResult:
     ev: list[Evidence] = []
     missing: list[str] = []
+    coverage: dict[str, bool] = {
+        "liquidity": False,
+        "creator_history": False,
+        "holder_concentration": False,
+        "synthetic": False,
+    }
     score = 0.0
-    used = 0
 
     def add(pts: float, signal: str, severity: str, value: Any, explanation: str) -> None:
-        nonlocal score, used
-        used += 1
+        nonlocal score
         score += pts
         ev.append(Evidence(signal, severity, value, explanation))
 
@@ -319,31 +453,40 @@ def assess_rug(
     vol = activity.volume_m5_usd
     if liq is None:
         missing.append("liquidity")
-    elif liq < 5_000 and vol is not None and vol >= 150_000:
-        add(28, "thin_liquidity", "high", liq, f"Liquidity ${liq:,.0f} vs 5m volume ${vol:,.0f}")
-    elif liq < 8_000:
-        add(12, "thin_liquidity", "medium", liq, f"Liquidity ${liq:,.0f}")
+    else:
+        coverage["liquidity"] = True
+        if liq < 5_000 and vol is not None and vol >= 150_000:
+            add(28, "thin_liquidity", "high", liq, f"Liquidity ${liq:,.0f} vs 5m volume ${vol:,.0f}")
+        elif liq < 8_000:
+            add(12, "thin_liquidity", "medium", liq, f"Liquidity ${liq:,.0f}")
 
-    if creator_known is False or creator_known is None:
+    if creator_known is True:
+        coverage["creator_history"] = True
+    else:
         missing.append("creator_history")
-        if creator_known is False:
-            add(8, "unknown_creator", "medium", None, "Creator has no stored history")
+        # Unknown creator is missing data, not a rug finding by itself.
+
     if creator_launches is not None:
+        coverage["creator_history"] = True
         if creator_launches >= 40:
             add(30, "serial_deployer", "high", creator_launches, f"Creator has {creator_launches} stored launches")
         elif creator_launches >= 15:
             add(16, "serial_deployer", "medium", creator_launches, f"Creator has {creator_launches} stored launches")
     if creator_runner_rate is not None and creator_launches and creator_launches >= 5:
+        coverage["creator_history"] = True
         if creator_runner_rate < 0.08:
             add(14, "poor_creator_outcomes", "medium", round(creator_runner_rate, 3), "Low historical runner rate for creator")
 
     top4 = activity.top4_wallet_volume_share
-    if top4 is not None and top4 >= 0.8:
-        add(18, "holder_concentration", "high", round(top4, 4), "High early-book concentration")
-    elif top4 is None:
+    if top4 is not None:
+        coverage["holder_concentration"] = True
+        if top4 >= 0.8:
+            add(18, "holder_concentration", "high", round(top4, 4), "High early-book concentration")
+    else:
         missing.append("holder_concentration")
 
-    if synthetic is not None and synthetic.score is not None:
+    if synthetic is not None and synthetic.level not in (None, "UNKNOWN"):
+        coverage["synthetic"] = True
         if synthetic.level == "CRITICAL":
             add(24, "synthetic_overlap", "critical", synthetic.score, "Synthetic activity already CRITICAL")
         elif synthetic.level == "HIGH":
@@ -351,6 +494,20 @@ def assess_rug(
     else:
         missing.append("synthetic")
 
-    if used == 0:
-        return RiskResult(score=None, level="UNKNOWN", evidence=ev, missing=missing)
-    return RiskResult(score=round(min(100.0, score), 1), level=_level(min(100.0, score)), evidence=ev, missing=missing)
+    observed_n = sum(1 for v in coverage.values() if v)
+    conf = round(min(0.85, 0.2 * observed_n), 2) if observed_n else None
+    risk_hits = [e for e in ev if e.severity in ("medium", "high", "critical")]
+    if not risk_hits:
+        return RiskResult(
+            score=None, level="UNKNOWN", evidence=ev, missing=missing,
+            confidence=None, coverage=coverage, source="observed",
+        )
+    lvl = _level_fail_closed(min(100.0, score), ev)
+    return RiskResult(
+        score=round(min(100.0, score), 1),
+        level=lvl,
+        evidence=ev,
+        missing=missing,
+        confidence=conf,
+        coverage=coverage,
+    )

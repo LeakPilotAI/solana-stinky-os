@@ -19,29 +19,31 @@ def _canonical_gate(row: dict[str, Any]) -> tuple[bool, str | None]:
         core = Path(__file__).resolve().parents[4] / "packages" / "stinky-core" / "src"
         if str(core) not in sys.path:
             sys.path.insert(0, str(core))
-        from stinky_core.admission import evaluate_market
+        from stinky_core.admission import evaluate_gate1
+        from stinky_core.backtest import decision_time_snapshot
         from stinky_core.intelligence import can_alert_investigation, investigate
     except Exception:
         return False, "FILTER_UNAVAILABLE"
-    decision = evaluate_market(
+    snap = decision_time_snapshot(row)
+    decision = evaluate_gate1(
         {
-            "mint": row.get("mint"),
-            "protocol": row.get("protocol") or row.get("dex_id") or "pumpfun",
-            "global_fees_sol": row.get("global_fees_sol") or row.get("fees_sol"),
-            "global_fees_verified": row.get("global_fees_verified"),
-            "liquidity_usd": row.get("liquidity_usd"),
-            "volume_usd": row.get("volume_m5_usd") or row.get("volume_usd"),
-            "market_cap_usd": row.get("market_cap_usd"),
-            "twitter": row.get("twitter"),
-            "website": row.get("website"),
-            "telegram": row.get("telegram"),
+            "mint": snap.get("mint"),
+            "protocol": snap.get("protocol") or snap.get("dex_id") or "pumpfun",
+            "global_fees_sol": snap.get("global_fees_sol") or snap.get("fees_sol"),
+            "global_fees_verified": snap.get("global_fees_verified"),
+            "liquidity_usd": snap.get("liquidity_usd"),
+            "volume_usd": snap.get("volume_m5_usd") or snap.get("volume_usd"),
+            "market_cap_usd": snap.get("market_cap_usd"),
+            "twitter": snap.get("twitter"),
+            "website": snap.get("website"),
+            "telegram": snap.get("telegram"),
             "migrated": True,
             "tab": "migrated",
         }
     )
     if not decision.eligible:
         return False, decision.rejection_reason
-    inv = investigate(row)
+    inv = investigate(snap)
     return can_alert_investigation(True, inv, min_score=float(settings.alert_min_score))
 
 

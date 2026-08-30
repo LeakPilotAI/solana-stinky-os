@@ -2,7 +2,8 @@
 
 NEVER approximates fees from volume, liquidity, mcap, or a guessed bps.
 NEVER treats creator-only fields as global_fees_sol.
-UNKNOWN observations fail the canonical admission gate.
+UNKNOWN observations are optional evidence — they do NOT fail Gate 1
+on the volume-first profile.
 
 Sources (in order), all explicit:
   1. Public API fields that are actually named fees (pump.fun coin JSON)

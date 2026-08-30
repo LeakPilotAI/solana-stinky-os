@@ -49,7 +49,7 @@ function GatePill({ a }: { a: Alert }) {
   const mb = num(a.meaningful_buyer_count) ?? 0;
   const vol = num(a.volume_m5_usd) ?? 0;
   const passes =
-    score != null && score >= 55 && mb >= 3 && vol >= 25000;
+    score != null && score >= 55 && mb >= 3 && vol >= 150000;
   if (passes) {
     return (
       <span className="rounded border border-emerald-500/40 bg-emerald-500/12 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-300">
@@ -57,14 +57,14 @@ function GatePill({ a }: { a: Alert }) {
       </span>
     );
   }
-  if (score != null && score >= 55 && vol >= 25000 && mb < 3) {
+  if (score != null && score >= 55 && vol >= 150000 && mb < 3) {
     return (
       <span className="rounded border border-amber-500/35 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-300">
         thin book
       </span>
     );
   }
-  if (vol >= 25000) {
+  if (vol >= 150000) {
     return (
       <span className="rounded border border-terminal-border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-terminal-muted">
         candidate
@@ -133,8 +133,8 @@ export default function AlertsPage() {
       const mb = num(a.meaningful_buyer_count) ?? 0;
       const vol = num(a.volume_m5_usd) ?? 0;
       if (score != null) scored += 1;
-      if (score != null && score >= 55 && mb >= 3 && vol >= 25000) gated += 1;
-      else if (score != null && score >= 55 && vol >= 25000 && mb < 3) thin += 1;
+      if (score != null && score >= 55 && mb >= 3 && vol >= 150000) gated += 1;
+      else if (score != null && score >= 55 && vol >= 150000 && mb < 3) thin += 1;
     }
     return {
       events: raw.length,
@@ -153,14 +153,14 @@ export default function AlertsPage() {
         const score = num(a.stinky_score);
         const mb = num(a.meaningful_buyer_count) ?? 0;
         const vol = num(a.volume_m5_usd) ?? 0;
-        return score != null && score >= 55 && mb >= 3 && vol >= 25000;
+        return score != null && score >= 55 && mb >= 3 && vol >= 150000;
       });
     } else if (filter === "thin") {
       list = list.filter((a) => {
         const score = num(a.stinky_score);
         const mb = num(a.meaningful_buyer_count) ?? 0;
         const vol = num(a.volume_m5_usd) ?? 0;
-        return score != null && score >= 55 && vol >= 25000 && mb < 3;
+        return score != null && score >= 55 && vol >= 150000 && mb < 3;
       });
     } else if (filter === "scored") {
       list = list.filter((a) => num(a.stinky_score) != null);

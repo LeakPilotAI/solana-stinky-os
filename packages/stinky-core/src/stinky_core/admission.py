@@ -362,6 +362,9 @@ class FilterConfig:
     reject_dex_paid: bool = False
     record_stats: bool = True
 
+    def __post_init__(self) -> None:
+        self.min_volume_usd = clamp_gate1_volume(self.min_volume_usd)
+
 
 GATE1_CONFIG = FilterConfig()
 
@@ -418,6 +421,7 @@ class StinkyFilterEngine:
         dex_paid: bool | None = None,
     ) -> FilterDecision:
         cfg = self.config
+        cfg.min_volume_usd = clamp_gate1_volume(cfg.min_volume_usd)
         now = datetime.now(timezone.utc).isoformat()
         mint_s = (mint or "").strip() or None
         proto_raw = protocol or dex_id

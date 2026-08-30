@@ -34,7 +34,7 @@ function statusFromScore(score: number | null | undefined): StatusKind {
 function statusClass(s: StatusKind) {
   switch (s) {
     case "WATCH":
-      return "bg-emerald-500/20 text-emerald-300 border-emerald-500/40";
+      return "bg-amber-500/15 text-amber-300 border-amber-500/35";
     case "RESEARCH":
       return "bg-amber-500/15 text-amber-300 border-amber-500/35";
     case "MONITOR":

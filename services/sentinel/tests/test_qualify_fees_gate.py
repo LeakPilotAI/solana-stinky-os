@@ -53,3 +53,13 @@ def test_wrong_dex_reject():
 def test_non_pump_mint_reject():
     r = _q(mint="SoMeMintAddressSoMeMintAddress111111")
     assert r.accepted is False
+
+
+def test_config_above_200k_clamped():
+    r = _q(volume_m5_usd=180_000, min_volume_usd=500_000)
+    assert r.required == 200_000.0
+    assert r.accepted is False
+    assert r.reason == ReasonCode.VOLUME_BELOW_MIN
+    r2 = _q(volume_m5_usd=210_000, min_volume_usd=500_000)
+    assert r2.required == 200_000.0
+    assert r2.accepted is True

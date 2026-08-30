@@ -19,8 +19,9 @@ from stinky_core.inspect import (
     assess_synthetic,
     market_activity_from_mapping,
 )
+from stinky_core.pools import is_rankable_wallet
 
-INTEL_VERSION = "intel-v1.0.0"
+INTEL_VERSION = "intel-v1.1.0-harden"
 SCORE_VERSION = "score-v1.0.0-volume-first"
 RUNNER_VERSION = "runner-potential-v1.0.0"
 
@@ -74,6 +75,7 @@ STATUS_INVESTIGATING = "INVESTIGATING"
 STATUS_QUALIFIED = "QUALIFIED"
 STATUS_HIGH_RISK = "HIGH_RISK"
 STATUS_ALERT = "ALERT"
+STATUS_UNKNOWN = "UNKNOWN"
 
 
 def _f(v: Any) -> float | None:
@@ -178,6 +180,7 @@ class ScoreBreakdown:
     positive: list[dict[str, Any]]
     negative: list[dict[str, Any]]
     missing: list[str]
+    components: dict[str, float] = field(default_factory=dict)
     model_version: str = SCORE_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -187,7 +190,9 @@ class ScoreBreakdown:
             "positive": self.positive,
             "negative": self.negative,
             "missing_data": list(self.missing),
+            "components": dict(self.components),
             "model_version": self.model_version,
+            "calibrated_probability": False,
         }
 
 
@@ -274,9 +279,13 @@ def analyze_wallets(
     hit: list[float] = []
     ret: list[float] = []
     wallets = []
+    dropped_pool = 0
     for b in buyers:
         w = str(b.get("wallet") or b.get("userAddress") or "").strip()
         if not w:
+            continue
+        if not is_rankable_wallet(w):
+            dropped_pool += 1
             continue
         wallets.append(w)
         spent = _f(b.get("sol_spent") if b.get("sol_spent") is not None else b.get("amountSol"))
@@ -288,7 +297,9 @@ def analyze_wallets(
             continue
         early = _i(p.get("early_buy_count")) or 0
         tokens = _i(p.get("tokens_purchased")) or 0
-        if early >= 1 and tokens >= 1:
+        sample = early if early else tokens
+        # Insufficient history is not smart money.
+        if early >= 3 and tokens >= 3:
             smart += 1
             hr = _f(p.get("hit_rate"))
             if hr is not None:
@@ -298,11 +309,25 @@ def analyze_wallets(
                 ret.append(ar)
         else:
             unknown += 1
+    if not wallets:
+        missing = ["early_buyers"]
+        if dropped_pool:
+            missing.append("pool_wallets_excluded")
+        return WalletIntel(status="UNKNOWN", missing=missing)
     evidence = []
     if smart:
-        evidence.append({"signal": "prior_edge_wallets", "value": smart, "explanation": f"{smart} early wallets have stored track records"})
+        evidence.append({
+            "signal": "prior_edge_wallets",
+            "value": smart,
+            "sample_min": 3,
+            "explanation": f"{smart} early wallets have stored track records (sample ≥ 3)",
+        })
+    status = "KNOWN" if smart else "OBSERVED"
+    missing = []
+    if unknown:
+        missing.append("wallet_history")
     return WalletIntel(
-        status="KNOWN",
+        status=status,
         early_buyer_count=len(wallets),
         meaningful_buyer_count=meaningful,
         unique_wallets=len(set(wallets)),
@@ -311,7 +336,7 @@ def analyze_wallets(
         avg_return_pct=(sum(ret) / len(ret)) if ret else None,
         unknown_wallet_count=unknown,
         evidence=evidence,
-        missing=[],
+        missing=missing,
     )
 
 
@@ -326,17 +351,15 @@ def match_patterns(
     evidence: list[dict[str, Any]] = []
     missing: list[str] = []
 
-    if wallets.status == "KNOWN" and (wallets.meaningful_buyer_count or 0) >= 8:
+    if wallets.status in ("KNOWN", "OBSERVED") and (wallets.meaningful_buyer_count or 0) >= 8:
         matches.append({"kind": "dense_early_book", "confidence": 0.7})
         evidence.append({"kind": "dense_early_book", "value": wallets.meaningful_buyer_count})
     if wallets.status == "KNOWN" and (wallets.smart_wallet_count or 0) >= 3:
         matches.append({"kind": "measured_edge", "confidence": 0.65})
-        evidence.append({"kind": "measured_edge", "value": wallets.smart_wallet_count})
-    if wallets.status == "KNOWN" and (wallets.early_buyer_count or 0) >= 3:
-        # repeat_early_buyer requires stored prior appearances — only if performance said so
-        if (wallets.smart_wallet_count or 0) >= 1:
-            matches.append({"kind": "repeat_early_buyer", "confidence": 0.55})
-            evidence.append({"kind": "repeat_early_buyer", "value": wallets.smart_wallet_count})
+        evidence.append({"kind": "measured_edge", "value": wallets.smart_wallet_count, "sample_min": 3})
+    if wallets.status == "KNOWN" and (wallets.smart_wallet_count or 0) >= 1:
+        matches.append({"kind": "repeat_early_buyer", "confidence": 0.55})
+        evidence.append({"kind": "repeat_early_buyer", "value": wallets.smart_wallet_count})
     if creator.status == "KNOWN" and (creator.launches or 0) >= 8:
         matches.append({"kind": "serial_deployer", "confidence": 0.7})
         evidence.append({"kind": "serial_deployer", "value": creator.launches})
@@ -485,22 +508,37 @@ def compose_stinky_score(
     global_fees_sol: float | None,
     volume_gate: float = 150_000.0,
 ) -> ScoreBreakdown:
-    """Volume is the entry, not the score."""
+    """Volume is the entry, not the score. Weights unchanged; components labeled."""
     pos: list[dict[str, Any]] = []
     neg: list[dict[str, Any]] = []
     missing: list[str] = []
     score = 50.0
     conf = 0.35
+    components: dict[str, float] = {
+        "base_score": 50.0,
+        "volume_component": 0.0,
+        "wallet_component": 0.0,
+        "entity_component": 0.0,
+        "pattern_component": 0.0,
+        "creator_component": 0.0,
+        "synthetic_penalty": 0.0,
+        "rug_penalty": 0.0,
+        "liquidity_component": 0.0,
+        "fee_component": 0.0,
+        "runner_adjustment": 0.0,
+    }
 
-    def plus(d: float, reason: str) -> None:
+    def plus(d: float, reason: str, component: str) -> None:
         nonlocal score, conf
         score += d
-        pos.append({"delta": d, "reason": reason})
+        components[component] = round(components.get(component, 0.0) + d, 2)
+        pos.append({"delta": d, "reason": reason, "component": component})
 
-    def minus(d: float, reason: str) -> None:
+    def minus(d: float, reason: str, component: str) -> None:
         nonlocal score, conf
         score += d
-        neg.append({"delta": d, "reason": reason})
+        components[component] = round(components.get(component, 0.0) + d, 2)
+        neg.append({"delta": d, "reason": reason, "component": component})
 
     vol = activity.volume_m5_usd
     if vol is None:
@@ -508,41 +546,42 @@ def compose_stinky_score(
     else:
         ratio = vol / volume_gate if volume_gate else 1
         if ratio >= 2:
-            plus(12, "high-quality volume (≥2× Gate 1)")
+            plus(12, "high-quality volume (≥2× Gate 1)", "volume_component")
             conf += 0.08
         elif ratio >= 1:
-            plus(6, "Gate 1 volume cleared")
+            plus(6, "Gate 1 volume cleared", "volume_component")
             conf += 0.04
 
     if wallets.status == "UNKNOWN":
         missing.append("wallets")
-        minus(-2, "no early-wallet intelligence")
+        minus(-2, "no early-wallet intelligence", "wallet_component")
         conf -= 0.04
     else:
         mb = wallets.meaningful_buyer_count or 0
         sw = wallets.smart_wallet_count or 0
         if sw >= 3:
-            plus(14, "strong early-wallet quality")
+            plus(14, "strong early-wallet quality", "wallet_component")
             conf += 0.12
         elif sw >= 1:
-            plus(6, "some measured-edge wallets")
+            plus(6, "some measured-edge wallets", "wallet_component")
             conf += 0.06
         if mb >= 8:
-            plus(8, "healthy buyer diversity")
+            plus(8, "healthy buyer diversity", "wallet_component")
             conf += 0.06
         elif mb >= 3:
-            plus(3, "adequate meaningful buyers")
+            plus(3, "adequate meaningful buyers", "wallet_component")
 
     if creator.status == "UNKNOWN":
         missing.append("creator")
     elif (creator.historical_runners or 0) >= 3:
-        plus(12, "proven creator (stored runners)")
+        plus(12, "proven creator (stored runners)", "creator_component")
         conf += 0.08
     elif creator.serial_risk == "HIGH":
-        minus(-8, "serial deployer")
+        minus(-8, "serial deployer", "creator_component")
 
-    if patterns.matches:
-        plus(8, "historical/structural pattern match")
+    pos_matches = [m for m in patterns.matches if m.get("kind") != "serial_deployer"]
+    if pos_matches:
+        plus(8, "historical/structural pattern match", "pattern_component")
         conf += 0.05
     elif patterns.pattern_confidence == "UNKNOWN":
         missing.append("patterns")
@@ -550,14 +589,14 @@ def compose_stinky_score(
     if synthetic.level == "UNKNOWN":
         missing.append("synthetic")
     elif synthetic.level == "CRITICAL":
-        minus(-16, "critical synthetic activity")
+        minus(-16, "critical synthetic activity", "synthetic_penalty")
     elif synthetic.level == "HIGH":
-        minus(-8, "elevated synthetic activity")
+        minus(-8, "elevated synthetic activity", "synthetic_penalty")
     elif synthetic.level == "MEDIUM":
-        minus(-4, "moderate synthetic activity")
+        minus(-4, "moderate synthetic activity", "synthetic_penalty")
 
     if rug.level in ("HIGH", "CRITICAL"):
-        minus(-10 if rug.level == "HIGH" else -18, f"rug risk {rug.level}")
+        minus(-10 if rug.level == "HIGH" else -18, f"rug risk {rug.level}", "rug_penalty")
     elif rug.level == "UNKNOWN":
         missing.append("rug")
 
@@ -565,41 +604,40 @@ def compose_stinky_score(
     if liq is None:
         missing.append("liquidity")
     elif liq < 5_000:
-        minus(-6, "thin liquidity")
+        minus(-6, "thin liquidity", "liquidity_component")
     elif liq >= 40_000:
-        plus(4, "solid liquidity")
+        plus(4, "solid liquidity", "liquidity_component")
 
     if fee_status == "VERIFIED" and global_fees_sol is not None:
         if global_fees_sol + 1e-9 >= 1.0:
-            plus(4, "verified global fees ≥ 1 SOL (optional evidence)")
+            plus(4, "verified global fees ≥ 1 SOL (optional evidence)", "fee_component")
         else:
-            minus(-3, "verified global fees < 1 SOL (optional evidence)")
-    # UNKNOWN fees: no delta
+            minus(-3, "verified global fees < 1 SOL (optional evidence)", "fee_component")
 
     if runner.score is not None and runner.score >= 70:
-        plus(4, "runner potential elevated")
+        plus(4, "runner potential elevated (score, not a probability)", "runner_adjustment")
     elif runner.score is not None and runner.score <= 35:
-        minus(-4, "runner potential weak")
+        minus(-4, "runner potential weak (score, not a probability)", "runner_adjustment")
 
     score = max(0.0, min(100.0, score))
     conf = max(0.1, min(0.95, conf - 0.04 * len(missing)))
+    components["final_score"] = round(score, 1)
+    components["confidence_adjustment"] = round(conf, 2)
     return ScoreBreakdown(
         score=round(score, 1),
         confidence=round(conf, 2),
         positive=pos,
         negative=neg,
         missing=missing,
+        components=components,
     )
 
 
 def _has_intelligence(wallets: WalletIntel, creator: CreatorProfile, activity: MarketActivity) -> bool:
-    if wallets.status == "KNOWN" and (wallets.early_buyer_count or 0) >= 1:
+    """Volume, unique-wallet counts, and trade counts are not intelligence."""
+    if wallets.status == "KNOWN" and (wallets.smart_wallet_count or 0) >= 1:
         return True
-    if creator.status == "KNOWN":
-        return True
-    if activity.unique_wallets is not None and activity.unique_wallets >= 3:
-        return True
-    if activity.trade_count is not None and activity.trade_count >= 8:
+    if creator.status == "KNOWN" and (creator.launches or 0) >= 1:
         return True
     return False
 
@@ -611,12 +649,16 @@ def pipeline_status(
 ) -> str:
     if not gate1_passed:
         return STATUS_REJECTED
-    if investigation is None or not investigation.complete:
+    if investigation is None:
+        return STATUS_DISCOVERED
+    if not investigation.complete:
         return STATUS_INVESTIGATING
     if investigation.synthetic.level == "CRITICAL" or investigation.rug.level == "CRITICAL":
         return STATUS_HIGH_RISK
     if investigation.synthetic.level == "HIGH" or investigation.rug.level == "HIGH":
         return STATUS_HIGH_RISK
+    if not investigation.has_intelligence:
+        return STATUS_UNKNOWN
     return STATUS_QUALIFIED
 
 
@@ -653,7 +695,7 @@ def investigate(bundle: Mapping[str, Any]) -> Investigation:
             if creator.launches and creator.historical_runners is not None and creator.launches > 0
             else None
         ),
-        creator_known=creator.status == "KNOWN",
+        creator_known=True if creator.status == "KNOWN" else None,
         synthetic=synthetic,
     )
     fee_status = str(bundle.get("fee_status") or "UNKNOWN")

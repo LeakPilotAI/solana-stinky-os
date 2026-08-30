@@ -22,7 +22,7 @@ if _CORE.exists() and str(_CORE) not in sys.path:
 
 from discord_bot.config import settings
 from discord_bot.store import Store
-from stinky_core.admission import FilterConfig, can_alert, evaluate_admission
+from stinky_core.admission import can_alert, evaluate_gate1
 from stinky_core.identity import alert_candidate_key, canonical_mint
 
 
@@ -122,40 +122,38 @@ class AlertDispatcher:
                 pass
 
     def _passes_quality_gate(self, payload: dict[str, Any]) -> bool:
-        """Market-quality gate FIRST (canonical engine), then intelligence gate.
+        """Canonical Gate 1 FIRST, then intelligence gate.
 
-        Intelligence (score / meaningful buyers) cannot rescue a failed hard gate.
+        Gate 1 is not an alert. Unknown fees do not reject.
         """
         mint = canonical_mint(payload.get("mint")) or str(payload.get("mint") or "?")
-        cfg = FilterConfig(
-            min_global_fees_sol=float(getattr(settings, "min_fees_sol", 1.0) or 1.0),
-        )
         fees_raw = payload.get("global_fees_sol")
         if fees_raw is None:
             fees_raw = payload.get("fees_sol")
         if fees_raw is None:
             fees_raw = payload.get("total_fees_sol")
 
-        decision = evaluate_admission(
-            mint=mint,
-            protocol=payload.get("protocol") or payload.get("dex_id"),
-            dex_id=payload.get("dex_id"),
-            global_fees_sol=fees_raw,
-            global_fees_verified=payload.get("global_fees_verified"),
-            global_fees_source=payload.get("global_fees_source"),
-            liquidity_usd=payload.get("liquidity_usd"),
-            volume_usd=payload.get("volume_usd")
-            or payload.get("volume_m5_usd")
-            or payload.get("volume_5m_usd"),
-            market_cap_usd=payload.get("market_cap_usd") or payload.get("mcap_usd"),
-            twitter=payload.get("twitter"),
-            website=payload.get("website"),
-            telegram=payload.get("telegram"),
-            tiktok=payload.get("tiktok"),
-            socials=payload.get("socials") if isinstance(payload.get("socials"), dict) else None,
-            migrated=True,
-            tab="migrated",
-            config=cfg,
+        decision = evaluate_gate1(
+            {
+                "mint": mint,
+                "protocol": payload.get("protocol") or payload.get("dex_id"),
+                "dex_id": payload.get("dex_id"),
+                "global_fees_sol": fees_raw,
+                "global_fees_verified": payload.get("global_fees_verified"),
+                "global_fees_source": payload.get("global_fees_source"),
+                "liquidity_usd": payload.get("liquidity_usd"),
+                "volume_usd": payload.get("volume_usd")
+                or payload.get("volume_m5_usd")
+                or payload.get("volume_5m_usd"),
+                "market_cap_usd": payload.get("market_cap_usd") or payload.get("mcap_usd"),
+                "twitter": payload.get("twitter"),
+                "website": payload.get("website"),
+                "telegram": payload.get("telegram"),
+                "tiktok": payload.get("tiktok"),
+                "socials": payload.get("socials") if isinstance(payload.get("socials"), dict) else None,
+                "migrated": True,
+                "tab": "migrated",
+            }
         )
         if not decision.accepted:
             logger.info(
@@ -221,18 +219,19 @@ class AlertDispatcher:
         name = payload.get("name")
         symbol = payload.get("symbol")
 
-        title = "HIGH-POTENTIAL RUNNER"
+        title = "STINKY ALERT"
         if name or symbol:
             label = " · ".join(x for x in [name, symbol] if x)
-            title = f"🚀 {label}"
+            title = f"STINKY ALERT · {label}"
 
         embed = discord.Embed(
             title=title,
             description=(
-                "**Out of migration** · volume gate cleared · quality gate passed.\n"
+                "Investigation complete. This is **not** a buy signal.\n"
+                "Gate 1 volume cleared · intelligence scored · runner potential is a score, not a probability.\n"
                 "Paste the **CA** below into Axiom."
             ),
-            color=0x00C853,
+            color=0xF5A524,
         )
         if name:
             embed.add_field(name="Name", value=str(name), inline=True)

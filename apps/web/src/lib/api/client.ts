@@ -43,7 +43,7 @@ export const api = {
   health: () => getJson<SystemHealth>("/health", { timeoutMs: 4_000 }),
   commandCenter: () =>
     getJson<CommandCenterData>("/v1/command-center", { timeoutMs: 20_000 }),
-  runners: (limit = 50, minFeesSol = 5, minVolumeM5 = 50000) =>
+  runners: (limit = 50, minFeesSol = 0, minVolumeM5 = 150000) =>
     getJson<{ items: Runner[]; count: number }>(
       `/v1/runners?limit=${limit}&min_fees_sol=${minFeesSol}&min_volume_m5_usd=${minVolumeM5}&pump_only=true`,
       { timeoutMs: 20_000 }

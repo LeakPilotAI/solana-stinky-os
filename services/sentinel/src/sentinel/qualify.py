@@ -1,4 +1,8 @@
-"""Gate 1 wrapper: mint + protocol + 5m volume. Fees are not required."""
+"""Gate 1 wrapper: mint + protocol + 5m volume. Fees are not required.
+
+Canonical admission is `evaluate_gate1` / `StinkyFilterEngine`.
+This wrapper only adds the pump-suffix constraint for fresh pump migrations.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +14,7 @@ from sentinel.filter_engine import (
     GATE1_VOLUME_5M_USD,
     FilterConfig,
     ReasonCode,
+    clamp_gate1_volume,
     evaluate_market,
 )
 
@@ -39,7 +44,9 @@ def qualify_fresh_pump_migration(
     denied_dex_ids: set[str] | None = None,
 ) -> QualifyResult:
     """Gate 1: mint + DEX + 5m volume. Unknown fees do not reject."""
-    required = float(min_volume_usd if min_volume_usd is not None else GATE1_VOLUME_5M_USD)
+    required = clamp_gate1_volume(
+        min_volume_usd if min_volume_usd is not None else GATE1_VOLUME_5M_USD
+    )
     mint_s = (mint or "").strip()
     if not mint_s:
         return QualifyResult(False, ReasonCode.INVALID_MINT, required=required)
@@ -53,7 +60,7 @@ def qualify_fresh_pump_migration(
         require_liquidity=False,
         require_market_cap=False,
         require_at_least_one_social=False,
-        require_migrated=False,
+        require_migrated=True,
         record_stats=EARLY_GATE_CONFIG.record_stats,
     )
     if allowed_dex_ids:
@@ -77,6 +84,7 @@ def qualify_fresh_pump_migration(
             "global_fees_sol": global_fees_paid_sol,
             "global_fees_verified": global_fees_verified,
             "migrated": True,
+            "tab": "migrated",
         },
         config=cfg,
     )

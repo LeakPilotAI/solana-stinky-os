@@ -1,6 +1,6 @@
 # ADR-010 — Volume-First Discovery and Progressive Intelligence Pipeline
 
-Status: Accepted
+Status: Accepted (investigation fail-closed details superseded by ADR-011)
 Date: 2026-08-30
 
 ## Context
