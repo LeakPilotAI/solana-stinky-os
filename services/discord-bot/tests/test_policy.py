@@ -1,4 +1,12 @@
 from discord_bot.policy import should_alert, category_for_transition, format_quality_alert
+import sys
+from pathlib import Path
+
+CORE = Path(__file__).resolve().parents[3] / "packages" / "stinky-core" / "src"
+if str(CORE) not in sys.path:
+    sys.path.insert(0, str(CORE))
+
+from stinky_core.operator import classify_delivery, would_policy_fire
 
 
 def test_same_state_is_silent():
@@ -93,3 +101,11 @@ def test_format_quality_alert_is_not_a_trade():
     assert "Not a sell" in text
     assert spec["not_a_buy"] is True
     assert spec["not_a_sell"] is True
+
+
+def test_policy_fired_is_not_delivery():
+    assert would_policy_fire("HEALTHY", "DETERIORATING") is True
+    assert classify_delivery(attempted=False, sent=0, failed=0) == "NOT ATTEMPTED"
+    assert classify_delivery(attempted=True, sent=1, failed=0) == "SENT"
+    assert classify_delivery(attempted=True, sent=0, failed=1) == "FAILED"
+    assert classify_delivery(attempted=None) == "UNKNOWN"

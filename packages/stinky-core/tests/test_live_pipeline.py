@@ -29,7 +29,7 @@ T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 def test_gate1_still_150k():
     assert GATE1_VOLUME_5M_USD == 150_000
-    assert INTEL_VERSION.startswith("intel-v1.10")
+    assert INTEL_VERSION.startswith("intel-v1.11") or INTEL_VERSION.startswith("intel-v1.10")
     d = evaluate_gate1({"mint": MINT, "protocol": "pumpswap", "volume_usd": 150_000, "migrated": True})
     assert d.eligible is True
     d = evaluate_gate1({"mint": MINT, "protocol": "pumpswap", "volume_usd": 149_999, "migrated": True})

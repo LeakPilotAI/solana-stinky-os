@@ -126,6 +126,42 @@ class Store:
             ).fetchall()
             return [int(r[0]) for r in rows]
 
+    async def record_discord_delivery(self, rec: dict[str, Any]) -> None:
+        """Persist policy vs delivery. Fail-soft at the caller."""
+        import json
+
+        ddl = """
+        CREATE TABLE IF NOT EXISTS discord_deliveries (
+            id BIGSERIAL PRIMARY KEY,
+            mint TEXT,
+            at TIMESTAMPTZ NOT NULL,
+            policy TEXT,
+            category TEXT,
+            delivery TEXT,
+            error TEXT,
+            row JSONB NOT NULL
+        )
+        """
+        sql = """
+        INSERT INTO discord_deliveries (mint, at, policy, category, delivery, error, row)
+        VALUES (:mint, :at, :policy, :category, :delivery, :error, CAST(:row AS jsonb))
+        """
+        async with self._sessions() as session:
+            await session.execute(text(ddl))
+            await session.execute(
+                text(sql),
+                {
+                    "mint": rec.get("mint"),
+                    "at": rec.get("at"),
+                    "policy": rec.get("policy"),
+                    "category": rec.get("category"),
+                    "delivery": rec.get("delivery"),
+                    "error": rec.get("error"),
+                    "row": json.dumps(rec, default=str),
+                },
+            )
+            await session.commit()
+
     async def recent_events(
         self, event_type: str, *, limit: int = 10
     ) -> list[dict[str, Any]]:

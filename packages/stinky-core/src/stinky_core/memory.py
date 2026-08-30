@@ -17,7 +17,7 @@ import json
 from stinky_core.pools import is_rankable_wallet
 from stinky_core.reputation import creator_reputation, wallet_reputation
 
-MEMORY_VERSION = "memory-v1.7.0-quality"
+MEMORY_VERSION = "memory-v1.8.0-operator"
 
 MEMORY_DDL = """
 CREATE TABLE IF NOT EXISTS wallet_observations (
@@ -157,6 +157,50 @@ CREATE TABLE IF NOT EXISTS quality_state_transitions (
     row JSONB NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_quality_mint_time ON quality_state_transitions (mint, as_of DESC);
+
+CREATE TABLE IF NOT EXISTS operator_events (
+    id BIGSERIAL PRIMARY KEY,
+    mint TEXT,
+    at TIMESTAMPTZ NOT NULL,
+    kind TEXT NOT NULL,
+    message TEXT,
+    evidence_label TEXT,
+    row JSONB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_operator_events_mint ON operator_events (mint, at);
+CREATE TABLE IF NOT EXISTS watch_states (
+    mint TEXT PRIMARY KEY,
+    started_at TIMESTAMPTZ,
+    last_observation_at TIMESTAMPTZ,
+    observation_count INTEGER,
+    next_due_at TIMESTAMPTZ,
+    status TEXT,
+    resumed BOOLEAN NOT NULL DEFAULT FALSE,
+    interrupted BOOLEAN NOT NULL DEFAULT FALSE,
+    persistence_status TEXT,
+    stop_reason TEXT,
+    row JSONB NOT NULL
+);
+CREATE TABLE IF NOT EXISTS provider_probes (
+    provider TEXT PRIMARY KEY,
+    at TIMESTAMPTZ NOT NULL,
+    status TEXT NOT NULL,
+    latency_ms DOUBLE PRECISION,
+    last_success_at TIMESTAMPTZ,
+    last_failure_at TIMESTAMPTZ,
+    error TEXT,
+    row JSONB NOT NULL
+);
+CREATE TABLE IF NOT EXISTS discord_deliveries (
+    id BIGSERIAL PRIMARY KEY,
+    mint TEXT,
+    at TIMESTAMPTZ NOT NULL,
+    policy TEXT,
+    category TEXT,
+    delivery TEXT,
+    error TEXT,
+    row JSONB NOT NULL
+);
 """
 # Extra columns for existing Postgres installs. CREATE TABLE IF NOT EXISTS
 # above will not add them to an already-created table.
@@ -289,6 +333,52 @@ VALUES (:mint, :as_of, :state, :previous_state, :severity, CAST(:row AS jsonb))
 """
 MEMORY_SELECT_QUALITY = """
 SELECT mint, as_of, state, previous_state, severity, row FROM quality_state_transitions
+"""
+MEMORY_INSERT_OPERATOR_EVENT = """
+INSERT INTO operator_events (mint, at, kind, message, evidence_label, row)
+VALUES (:mint, :at, :kind, :message, :evidence_label, CAST(:row AS jsonb))
+"""
+MEMORY_SELECT_OPERATOR_EVENT = """
+SELECT mint, at, kind, message, evidence_label, row FROM operator_events ORDER BY at ASC
+"""
+MEMORY_INSERT_WATCH_STATE = """
+INSERT INTO watch_states (mint, started_at, last_observation_at, observation_count, next_due_at, status, resumed, interrupted, persistence_status, stop_reason, row)
+VALUES (:mint, :started_at, :last_observation_at, :observation_count, :next_due_at, :status, :resumed, :interrupted, :persistence_status, :stop_reason, CAST(:row AS jsonb))
+ON CONFLICT (mint) DO UPDATE SET
+    last_observation_at = EXCLUDED.last_observation_at,
+    observation_count = EXCLUDED.observation_count,
+    next_due_at = EXCLUDED.next_due_at,
+    status = EXCLUDED.status,
+    resumed = EXCLUDED.resumed,
+    interrupted = EXCLUDED.interrupted,
+    persistence_status = EXCLUDED.persistence_status,
+    stop_reason = EXCLUDED.stop_reason,
+    row = EXCLUDED.row
+"""
+MEMORY_SELECT_WATCH_STATE = """
+SELECT mint, started_at, last_observation_at, observation_count, next_due_at, status, resumed, interrupted, persistence_status, stop_reason, row FROM watch_states
+"""
+MEMORY_INSERT_PROVIDER_PROBE = """
+INSERT INTO provider_probes (provider, at, status, latency_ms, last_success_at, last_failure_at, error, row)
+VALUES (:provider, :at, :status, :latency_ms, :last_success_at, :last_failure_at, :error, CAST(:row AS jsonb))
+ON CONFLICT (provider) DO UPDATE SET
+    at = EXCLUDED.at,
+    status = EXCLUDED.status,
+    latency_ms = EXCLUDED.latency_ms,
+    last_success_at = COALESCE(EXCLUDED.last_success_at, provider_probes.last_success_at),
+    last_failure_at = COALESCE(EXCLUDED.last_failure_at, provider_probes.last_failure_at),
+    error = EXCLUDED.error,
+    row = EXCLUDED.row
+"""
+MEMORY_SELECT_PROVIDER_PROBE = """
+SELECT provider, at, status, latency_ms, last_success_at, last_failure_at, error, row FROM provider_probes
+"""
+MEMORY_INSERT_DISCORD_DELIVERY = """
+INSERT INTO discord_deliveries (mint, at, policy, category, delivery, error, row)
+VALUES (:mint, :at, :policy, :category, :delivery, :error, CAST(:row AS jsonb))
+"""
+MEMORY_SELECT_DISCORD_DELIVERY = """
+SELECT mint, at, policy, category, delivery, error, row FROM discord_deliveries ORDER BY at ASC
 """
 
 
@@ -426,6 +516,10 @@ class IntelligenceMemory:
         self.market_ticks: list[MarketTick] = []
         self.investigations: list[dict[str, Any]] = []
         self.quality_states: list[dict[str, Any]] = []
+        self.operator_events: list[dict[str, Any]] = []
+        self.watch_states: list[dict[str, Any]] = []
+        self.provider_probes: list[dict[str, Any]] = []
+        self.discord_deliveries: list[dict[str, Any]] = []
         self.version = MEMORY_VERSION
 
     def record_wallet(
@@ -1020,6 +1114,68 @@ class IntelligenceMemory:
         self.quality_states.append(dict(rec))
         return True
 
+    def record_operator_event(self, rec: dict[str, Any] | None) -> bool:
+        if not rec:
+            return False
+        kind = str(rec.get("kind") or "").strip()
+        at = rec.get("at")
+        if not kind or not at:
+            return False
+        row = dict(rec)
+        row["evidence_label"] = str(rec.get("evidence_label") or "UNKNOWN").upper()
+        self.operator_events.append(row)
+        return True
+
+    def record_watch_state(self, rec: dict[str, Any] | None) -> bool:
+        if not rec:
+            return False
+        mint = str(rec.get("mint") or "").strip()
+        if not mint:
+            return False
+        row = dict(rec)
+        row["mint"] = mint
+        for i, existing in enumerate(self.watch_states):
+            if existing.get("mint") == mint:
+                merged = dict(existing)
+                merged.update(row)
+                self.watch_states[i] = merged
+                return True
+        self.watch_states.append(row)
+        return True
+
+    def record_provider_probe(self, rec: dict[str, Any] | None) -> bool:
+        if not rec:
+            return False
+        name = str(rec.get("provider") or "").strip()
+        if not name:
+            return False
+        row = dict(rec)
+        row["provider"] = name
+        for i, existing in enumerate(self.provider_probes):
+            if existing.get("provider") == name:
+                merged = dict(existing)
+                if row.get("ok") is True:
+                    merged["last_success_at"] = row.get("at") or merged.get("last_success_at")
+                if row.get("ok") is False:
+                    merged["last_failure_at"] = row.get("at") or merged.get("last_failure_at")
+                merged.update(row)
+                self.provider_probes[i] = merged
+                return True
+        if row.get("ok") is True:
+            row.setdefault("last_success_at", row.get("at"))
+        if row.get("ok") is False:
+            row.setdefault("last_failure_at", row.get("at"))
+        self.provider_probes.append(row)
+        return True
+
+    def record_discord_delivery(self, rec: dict[str, Any] | None) -> bool:
+        if not rec:
+            return False
+        if not rec.get("at"):
+            return False
+        self.discord_deliveries.append(dict(rec))
+        return True
+
     def record_market_tick(
         self,
         *,
@@ -1126,6 +1282,10 @@ class IntelligenceMemory:
         ]
         investigations = [dict(r) for r in self.investigations]
         quality_states = [dict(r) for r in self.quality_states]
+        operator_events = [dict(r) for r in self.operator_events]
+        watch_states = [dict(r) for r in self.watch_states]
+        provider_probes = [dict(r) for r in self.provider_probes]
+        discord_deliveries = [dict(r) for r in self.discord_deliveries]
         return {
             "wallet_obs": wallet_obs,
             "wallet_outcomes": wallet_outcomes,
@@ -1138,6 +1298,10 @@ class IntelligenceMemory:
             "market_ticks": market_ticks,
             "investigations": investigations,
             "quality_states": quality_states,
+            "operator_events": operator_events,
+            "watch_states": watch_states,
+            "provider_probes": provider_probes,
+            "discord_deliveries": discord_deliveries,
         }
 
     def load_wallet_obs(self, rows: Iterable[Any]) -> int:
@@ -1302,6 +1466,70 @@ class IntelligenceMemory:
                 n += 1
         return n
 
+    def load_operator_events(self, rows: Iterable[Any]) -> int:
+        n = 0
+        for r in rows:
+            d = dict(r)
+            nested = d.get("row")
+            if isinstance(nested, str):
+                try:
+                    nested = json.loads(nested or "{}")
+                except Exception:
+                    nested = {}
+            if isinstance(nested, dict) and nested:
+                d = {**nested, **{k: v for k, v in d.items() if k != "row" and v is not None}}
+            if self.record_operator_event(d):
+                n += 1
+        return n
+
+    def load_watch_states(self, rows: Iterable[Any]) -> int:
+        n = 0
+        for r in rows:
+            d = dict(r)
+            nested = d.get("row")
+            if isinstance(nested, str):
+                try:
+                    nested = json.loads(nested or "{}")
+                except Exception:
+                    nested = {}
+            if isinstance(nested, dict) and nested.get("mint"):
+                d = {**nested, **{k: v for k, v in d.items() if k != "row" and v is not None}}
+            if self.record_watch_state(d):
+                n += 1
+        return n
+
+    def load_provider_probes(self, rows: Iterable[Any]) -> int:
+        n = 0
+        for r in rows:
+            d = dict(r)
+            nested = d.get("row")
+            if isinstance(nested, str):
+                try:
+                    nested = json.loads(nested or "{}")
+                except Exception:
+                    nested = {}
+            if isinstance(nested, dict) and nested.get("provider"):
+                d = {**nested, **{k: v for k, v in d.items() if k != "row" and v is not None}}
+            if self.record_provider_probe(d):
+                n += 1
+        return n
+
+    def load_discord_deliveries(self, rows: Iterable[Any]) -> int:
+        n = 0
+        for r in rows:
+            d = dict(r)
+            nested = d.get("row")
+            if isinstance(nested, str):
+                try:
+                    nested = json.loads(nested or "{}")
+                except Exception:
+                    nested = {}
+            if isinstance(nested, dict) and nested:
+                d = {**nested, **{k: v for k, v in d.items() if k != "row" and v is not None}}
+            if self.record_discord_delivery(d):
+                n += 1
+        return n
+
     def hydrate(self, snapshot: dict[str, Any] | None) -> dict[str, int]:
         snap = snapshot or {}
         return {
@@ -1315,6 +1543,10 @@ class IntelligenceMemory:
             "market_ticks": self.load_market_ticks(snap.get("market_ticks") or []),
             "investigations": self.load_investigations(snap.get("investigations") or []),
             "quality_states": self.load_quality_states(snap.get("quality_states") or []),
+            "operator_events": self.load_operator_events(snap.get("operator_events") or []),
+            "watch_states": self.load_watch_states(snap.get("watch_states") or []),
+            "provider_probes": self.load_provider_probes(snap.get("provider_probes") or []),
+            "discord_deliveries": self.load_discord_deliveries(snap.get("discord_deliveries") or []),
         }
 
     def to_stats(self) -> dict[str, int]:
@@ -1330,6 +1562,10 @@ class IntelligenceMemory:
             "market_ticks": len(self.market_ticks),
             "investigations": len(self.investigations),
             "quality_states": len(self.quality_states),
+            "operator_events": len(self.operator_events),
+            "watch_states": len(self.watch_states),
+            "provider_probes": len(self.provider_probes),
+            "discord_deliveries": len(self.discord_deliveries),
         }
 
 

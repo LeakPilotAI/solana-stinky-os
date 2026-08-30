@@ -173,6 +173,18 @@ export const api = {
       "/v1/book/dips",
       body
     ),
+  operator: () =>
+    getJson<Record<string, unknown>>("/v1/operator", { timeoutMs: 12_000 }),
+  operatorExport: (mint: string) =>
+    getJson<Record<string, unknown>>(
+      `/v1/operator/investigations/${encodeURIComponent(mint)}`,
+      { timeoutMs: 12_000 }
+    ),
+  operatorTrace: (mint: string) =>
+    getJson<{ events: Array<Record<string, unknown>>; count: number; evidence_label?: string }>(
+      `/v1/operator/trace/${encodeURIComponent(mint)}`,
+      { timeoutMs: 8_000 }
+    ),
 };
 
 async function postJson<T>(path: string, body?: unknown): Promise<T> {

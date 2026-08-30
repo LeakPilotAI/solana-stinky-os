@@ -9,6 +9,7 @@ FeeResolver is optional evidence after Gate 1 — unknown fees do not reject.
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -178,24 +179,69 @@ class VolumeSnapshot:
 class DexScreenerClient:
     def __init__(self) -> None:
         self._http = httpx.AsyncClient(timeout=12.0)
+        self.last_probe: dict[str, Any] | None = None
 
     async def close(self) -> None:
         await self._http.aclose()
 
     async def fetch_volume(self, mint: str) -> VolumeSnapshot | None:
         url = DEXSCREENER_TOKEN_URL.format(mint=mint)
+        t0 = time.monotonic()
         try:
             resp = await self._http.get(url)
+            ms = round((time.monotonic() - t0) * 1000, 1)
+            if resp.status_code == 429:
+                self.last_probe = {
+                    "provider": "dexscreener",
+                    "ok": False,
+                    "status": "DEGRADED",
+                    "http_status": 429,
+                    "latency_ms": ms,
+                    "error": "rate_limited",
+                    "source": "dexscreener",
+                    "at": datetime.now(timezone.utc).isoformat(),
+                }
+                logger.debug("dexscreener.http_error", status=429, mint=mint)
+                return None
             if resp.status_code != 200:
+                self.last_probe = {
+                    "provider": "dexscreener",
+                    "ok": False,
+                    "status": "DOWN" if resp.status_code >= 500 else "DEGRADED",
+                    "http_status": resp.status_code,
+                    "latency_ms": ms,
+                    "error": f"http_{resp.status_code}",
+                    "source": "dexscreener",
+                    "at": datetime.now(timezone.utc).isoformat(),
+                }
                 logger.debug("dexscreener.http_error", status=resp.status_code, mint=mint)
                 return None
             data = resp.json()
         except Exception as exc:
+            self.last_probe = {
+                "provider": "dexscreener",
+                "ok": False,
+                "status": "DOWN",
+                "latency_ms": round((time.monotonic() - t0) * 1000, 1),
+                "error": str(exc)[:200],
+                "source": "dexscreener",
+                "at": datetime.now(timezone.utc).isoformat(),
+            }
             logger.warning("dexscreener.fetch_failed", mint=mint, error=str(exc))
             return None
 
         pairs: list[dict[str, Any]] = data.get("pairs") or []
         if not pairs:
+            self.last_probe = {
+                "provider": "dexscreener",
+                "ok": True,
+                "status": "UP",
+                "latency_ms": ms,
+                "http_status": 200,
+                "note": "no_pairs",
+                "source": "dexscreener",
+                "at": datetime.now(timezone.utc).isoformat(),
+            }
             return None
 
         # Pump-only: never use Meteora/Raydium/etc as the volume pair
@@ -205,6 +251,16 @@ class DexScreenerClient:
 
         pump_pairs = [p for p in sol_pairs if _dex_allowed(p.get("dexId"))]
         if not pump_pairs:
+            self.last_probe = {
+                "provider": "dexscreener",
+                "ok": True,
+                "status": "UP",
+                "latency_ms": ms,
+                "http_status": 200,
+                "note": "no_pump_pair",
+                "source": "dexscreener",
+                "at": datetime.now(timezone.utc).isoformat(),
+            }
             logger.info(
                 "dexscreener.no_pump_pair",
                 mint=mint,
@@ -221,6 +277,15 @@ class DexScreenerClient:
         m5_tx = txns.get("m5") or {}
 
         base = best.get("baseToken") or {}
+        self.last_probe = {
+            "provider": "dexscreener",
+            "ok": True,
+            "status": "UP",
+            "latency_ms": ms,
+            "http_status": 200,
+            "source": "dexscreener",
+            "at": datetime.now(timezone.utc).isoformat(),
+        }
         return VolumeSnapshot(
             mint=mint,
             pair_address=best.get("pairAddress"),
@@ -477,10 +542,16 @@ class VolumeMonitor:
             )
             self._active.add(mint)
             asyncio.create_task(
-                self._run_watch(mig, started=t0, investigated=True),
+                self._run_watch(mig, started=t0, investigated=True, resumed=True),
                 name=f"vol-resume-{mint[:8]}",
             )
             n += 1
+            await self._trace(
+                mint=mint,
+                kind="watch_resumed",
+                message="Watch resumed after process restart",
+                extra={"elapsed_sec": elapsed, "resumed": True},
+            )
         if n:
             logger.info("volume.watches_resumed", n=n, max_watch_sec=self._max_watch)
 
@@ -636,6 +707,7 @@ class VolumeMonitor:
         *,
         started: datetime | None = None,
         investigated: bool = False,
+        resumed: bool = False,
     ) -> None:
         mint = migration.mint
         started = started or datetime.now(timezone.utc)
@@ -649,8 +721,21 @@ class VolumeMonitor:
             observation_threshold_usd=self._threshold,
             gate1_volume_usd=self._gate1_volume(),
             max_watch_sec=self._max_watch,
-            resumed=investigated,
+            resumed=resumed,
             source=migration.source,
+        )
+        await self._trace(
+            mint=mint,
+            kind="watch_start" if not resumed else "watch_resumed",
+            message="Watch resumed after process restart" if resumed else "Migration watch started",
+            extra={"pool": migration.pool, "resumed": resumed, "source": migration.source},
+        )
+        await self._upsert_watch(
+            mint=mint,
+            started_at=started.isoformat(),
+            status="DETECTED" if not investigated else "WATCHING",
+            resumed=resumed,
+            pool=migration.pool,
         )
         try:
             while True:
@@ -658,6 +743,9 @@ class VolumeMonitor:
                 if elapsed >= self._max_watch:
                     break
                 snap = await self._client.fetch_volume(mint)
+                probe = getattr(self._client, "last_probe", None)
+                if probe:
+                    await self._record_probe(probe)
                 if snap:
                     if snap.dex_id and not _dex_allowed(snap.dex_id):
                         await self._persist_market_snapshot(mint, snap)
@@ -676,6 +764,11 @@ class VolumeMonitor:
                             reason="PROTOCOL_DISABLED",
                             dex_id=snap.dex_id,
                         )
+                        await self._upsert_watch(
+                            mint=mint, started_at=started.isoformat(), status="FAILED",
+                            resumed=resumed, stop_reason="PROTOCOL_DISABLED", pool=migration.pool,
+                        )
+                        await self._trace(mint=mint, kind="watch_stop", message="Watch stopped PROTOCOL_DISABLED")
                         return
 
                     await self._persist_market_snapshot(mint, snap)
@@ -709,6 +802,10 @@ class VolumeMonitor:
                         action=action,
                     )
                     if action == "stop":
+                        await self._upsert_watch(
+                            mint=mint, started_at=started.isoformat(), status="FAILED",
+                            resumed=resumed, stop_reason=reason, pool=migration.pool,
+                        )
                         return
                     if action == "investigate":
                         if mem is not None and any(
@@ -717,11 +814,31 @@ class VolumeMonitor:
                             investigated = True
                             await self._record_followup_tick(migration, snap)
                         else:
+                            await self._trace(
+                                mint=mint,
+                                kind="gate1",
+                                message=f"Gate 1 qualified ${round(snap.volume_m5_usd, 0):.0f} / 5m",
+                                extra={"volume_m5_usd": snap.volume_m5_usd},
+                            )
                             await self._investigate_and_maybe_alert(migration, snap)
                             investigated = True
+                            await self._trace(mint=mint, kind="investigation", message="Investigation created")
                             await self._record_followup_tick(migration, snap)
                     elif action == "tick":
                         await self._record_followup_tick(migration, snap)
+                    ticks_n = 0
+                    if mem is not None:
+                        ticks_n = sum(1 for t in mem.market_ticks if t.mint == mint)
+                    await self._upsert_watch(
+                        mint=mint,
+                        started_at=started.isoformat(),
+                        status="WATCHING" if investigated else "DETECTED",
+                        resumed=resumed,
+                        last_observation_at=snap.fetched_at.isoformat() if snap.fetched_at else datetime.now(timezone.utc).isoformat(),
+                        observation_count=ticks_n,
+                        pool=migration.pool,
+                        persistence_status="WRITTEN",
+                    )
                 await asyncio.sleep(self._interval)
 
             logger.info(
@@ -730,8 +847,13 @@ class VolumeMonitor:
                 threshold_usd=self._threshold,
                 watched_sec=round((datetime.now(timezone.utc) - started).total_seconds(), 1),
             )
+            await self._upsert_watch(
+                mint=mint, started_at=started.isoformat(), status="COMPLETED", resumed=resumed, pool=migration.pool,
+            )
+            await self._trace(mint=mint, kind="watch_complete", message="T+1800 window complete")
         except Exception as exc:
             logger.error("volume.watch_failed", mint=mint, error=str(exc))
+            await self._trace(mint=mint, kind="watch_error", message=f"Watch failed: {str(exc)[:160]}")
         finally:
             self._active.discard(mint)
 
@@ -995,6 +1117,17 @@ class VolumeMonitor:
                     if mem.record_quality_state(st):
                         if self._sessions:
                             await self._persist_quality_state(st)
+                        await self._trace(
+                            mint=mint,
+                            kind="quality",
+                            message=f"{st.get('previous_state')} → {st.get('state')}",
+                            extra={
+                                "state": st.get("state"),
+                                "previous_state": st.get("previous_state"),
+                                "why": st.get("why"),
+                                "evidence_quality": st.get("evidence_quality"),
+                            },
+                        )
                         try:
                             if st.get("state") != st.get("previous_state"):
                                 evt = Event(
@@ -1069,6 +1202,122 @@ class VolumeMonitor:
                 await session.commit()
         except Exception as exc:
             logger.debug("quality.persist_failed", mint=row.get("mint"), error=str(exc)[:200])
+
+    async def _trace(self, *, mint: str, kind: str, message: str, extra: dict[str, Any] | None = None) -> None:
+        rec = {
+            "mint": mint,
+            "at": datetime.now(timezone.utc).isoformat(),
+            "kind": kind,
+            "message": message,
+            "evidence_label": "LIVE",
+            **(extra or {}),
+        }
+        mem = getattr(self, "_memory", None)
+        if mem is not None:
+            mem.record_operator_event(rec)
+        if not self._sessions:
+            return
+        try:
+            import json
+            from stinky_core.memory import MEMORY_INSERT_OPERATOR_EVENT
+
+            async with self._sessions() as session:
+                await session.execute(
+                    text(MEMORY_INSERT_OPERATOR_EVENT),
+                    {
+                        "mint": mint,
+                        "at": rec["at"],
+                        "kind": kind,
+                        "message": message,
+                        "evidence_label": "LIVE",
+                        "row": json.dumps(rec, default=str),
+                    },
+                )
+                await session.commit()
+        except Exception as exc:
+            logger.debug("operator.event_persist_failed", mint=mint, error=str(exc)[:160])
+
+    async def _upsert_watch(self, *, mint: str, started_at: str, status: str, resumed: bool = False, **extra: Any) -> None:
+        rec = {
+            "mint": mint,
+            "started_at": started_at,
+            "status": status,
+            "resumed": resumed,
+            "interrupted": extra.get("interrupted") or False,
+            "last_observation_at": extra.get("last_observation_at"),
+            "observation_count": extra.get("observation_count"),
+            "persistence_status": extra.get("persistence_status") or "UNKNOWN",
+            "stop_reason": extra.get("stop_reason"),
+            "pool": extra.get("pool"),
+            "evidence_label": "LIVE",
+        }
+        mem = getattr(self, "_memory", None)
+        if mem is not None:
+            mem.record_watch_state(rec)
+            rec["persistence_status"] = extra.get("persistence_status") or rec["persistence_status"]
+        if not self._sessions:
+            rec["persistence_status"] = "NO_SESSION"
+            if mem is not None:
+                mem.record_watch_state(rec)
+            return
+        try:
+            import json
+            from stinky_core.memory import MEMORY_INSERT_WATCH_STATE
+
+            async with self._sessions() as session:
+                await session.execute(
+                    text(MEMORY_INSERT_WATCH_STATE),
+                    {
+                        "mint": mint,
+                        "started_at": started_at,
+                        "last_observation_at": rec.get("last_observation_at"),
+                        "observation_count": rec.get("observation_count"),
+                        "next_due_at": extra.get("next_due_at"),
+                        "status": status,
+                        "resumed": resumed,
+                        "interrupted": bool(rec.get("interrupted")),
+                        "persistence_status": "WRITTEN",
+                        "stop_reason": rec.get("stop_reason"),
+                        "row": json.dumps({**rec, "persistence_status": "WRITTEN"}, default=str),
+                    },
+                )
+                await session.commit()
+            rec["persistence_status"] = "WRITTEN"
+            if mem is not None:
+                mem.record_watch_state(rec)
+        except Exception as exc:
+            rec["persistence_status"] = "FAILED"
+            if mem is not None:
+                mem.record_watch_state(rec)
+            logger.debug("watch.persist_failed", mint=mint, error=str(exc)[:160])
+
+    async def _record_probe(self, probe: dict[str, Any]) -> None:
+        mem = getattr(self, "_memory", None)
+        if mem is not None:
+            mem.record_provider_probe(probe)
+        if not self._sessions:
+            return
+        try:
+            import json
+            from stinky_core.memory import MEMORY_INSERT_PROVIDER_PROBE
+
+            async with self._sessions() as session:
+                await session.execute(
+                    text(MEMORY_INSERT_PROVIDER_PROBE),
+                    {
+                        "provider": probe.get("provider") or "dexscreener",
+                        "at": probe.get("at"),
+                        "status": probe.get("status") or "UNKNOWN",
+                        "latency_ms": probe.get("latency_ms"),
+                        "last_success_at": probe.get("last_success_at") or (probe.get("at") if probe.get("ok") else None),
+                        "last_failure_at": probe.get("last_failure_at") or (probe.get("at") if probe.get("ok") is False else None),
+                        "error": probe.get("error"),
+                        "row": json.dumps(probe, default=str),
+                    },
+                )
+                await session.commit()
+        except Exception as exc:
+            logger.debug("probe.persist_failed", error=str(exc)[:160])
 
     async def _investigate_and_maybe_alert(
         self, migration: DetectedMigration, snap: VolumeSnapshot
@@ -1179,7 +1428,9 @@ class VolumeMonitor:
                     features=inv.fingerprint_features,
                 )
                 if inv.investigation_record:
-                    mem.record_investigation(inv.investigation_record)
+                    rec = dict(inv.investigation_record)
+                    rec["evidence_label"] = "LIVE"
+                    mem.record_investigation(rec)
                 mem.record_market_tick(
                     mint=mint,
                     observed_at=bundle.get("decision_timestamp"),

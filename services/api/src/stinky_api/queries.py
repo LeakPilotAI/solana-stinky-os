@@ -3255,6 +3255,10 @@ async def load_memory_snapshot(session: AsyncSession) -> dict[str, Any]:
         MEMORY_SELECT_QUALITY,
         MEMORY_SELECT_WALLET_OBS,
         MEMORY_SELECT_WALLET_OUTCOME,
+        MEMORY_SELECT_OPERATOR_EVENT,
+        MEMORY_SELECT_WATCH_STATE,
+        MEMORY_SELECT_PROVIDER_PROBE,
+        MEMORY_SELECT_DISCORD_DELIVERY,
     )
 
     def _clean(row: Any) -> dict[str, Any]:
@@ -3282,4 +3286,8 @@ async def load_memory_snapshot(session: AsyncSession) -> dict[str, Any]:
         "market_ticks": await rows(MEMORY_SELECT_MARKET_OBS),
         "investigations": await rows(MEMORY_SELECT_INVESTIGATION),
         "quality_states": await rows(MEMORY_SELECT_QUALITY),
+        "operator_events": await rows(MEMORY_SELECT_OPERATOR_EVENT),
+        "watch_states": await rows(MEMORY_SELECT_WATCH_STATE),
+        "provider_probes": await rows(MEMORY_SELECT_PROVIDER_PROBE),
+        "discord_deliveries": await rows(MEMORY_SELECT_DISCORD_DELIVERY),
     }

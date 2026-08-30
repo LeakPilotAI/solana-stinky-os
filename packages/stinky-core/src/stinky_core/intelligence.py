@@ -31,7 +31,7 @@ from stinky_core.stages import investigation_stages
 from stinky_core.observation import investigation_record as build_investigation_record
 from stinky_core.recipes import runner_recipe
 
-INTEL_VERSION = "intel-v1.10.0-live-validation"
+INTEL_VERSION = "intel-v1.11.0-operator"
 SCORE_VERSION = "score-v1.1.0-intel-not-volume"
 RUNNER_VERSION = "runner-potential-v1.1.0-intel-not-volume"
 

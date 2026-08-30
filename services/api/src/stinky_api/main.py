@@ -496,6 +496,97 @@ async def filter_stats_endpoint() -> dict:
     return {"filter_version": FILTER_VERSION, "stats": filter_stats.snapshot()}
 
 
+def _probe_postgres(ok: bool, *, error: str | None = None, at: str | None = None) -> dict:
+    return {
+        "provider": "postgres",
+        "at": at,
+        "status": "UP" if ok else "DOWN",
+        "ok": ok,
+        "error": error,
+        "source": "postgres",
+    }
+
+
+@app.get("/v1/operator")
+async def operator_endpoint(session: Annotated[AsyncSession, Depends(get_session)]) -> dict:
+    """Operator desk from persisted records. Empty is empty. Does not invent Gate 1."""
+    from datetime import datetime, timezone
+
+    from stinky_core.admission import GATE1_VOLUME_5M_USD, GATE1_VOLUME_CALIBRATION_MAX_USD
+    from stinky_core.intelligence import INTEL_VERSION
+    from stinky_core.memory import IntelligenceMemory
+    from stinky_core.operator import OPERATOR_VERSION, count_live_gate1, operator_desk
+    from sqlalchemy import text
+
+    now = datetime.now(timezone.utc)
+    db_ok: bool | None = None
+    db_error: str | None = None
+    last_read = None
+    mem = IntelligenceMemory()
+    source = "empty"
+    try:
+        await session.execute(text("SELECT 1"))
+        db_ok = True
+        last_read = now
+        mem, _loaded, source = await _book_memory(None, session)
+        mem.record_provider_probe(_probe_postgres(True, at=now.isoformat()))
+    except Exception as exc:
+        db_ok = False
+        db_error = f"{type(exc).__name__}: {exc}"[:200]
+        mem.record_provider_probe(_probe_postgres(False, error=db_error, at=now.isoformat()))
+
+    live_count = count_live_gate1(mem) if db_ok else None
+    desk = operator_desk(
+        mem,
+        now=now,
+        db={
+            "connected": db_ok,
+            "last_read_at": last_read,
+            "error": db_error,
+        },
+        evidence_label_default="UNKNOWN",
+        live_gate1_count=live_count,
+        live_gate1_label="NOT OBSERVED" if db_ok and not live_count else ("UNKNOWN" if not db_ok else "OBSERVED"),
+    )
+    desk["intel_version"] = INTEL_VERSION
+    desk["source"] = source
+    desk["gate_status"]["threshold_usd"] = GATE1_VOLUME_5M_USD
+    desk["gate_status"]["clamp_usd"] = GATE1_VOLUME_CALIBRATION_MAX_USD
+    desk["operator_version"] = OPERATOR_VERSION
+    return desk
+
+
+@app.get("/v1/operator/investigations/{mint}")
+async def operator_export(mint: str, session: Annotated[AsyncSession, Depends(get_session)]) -> dict:
+    """Operator-readable investigation export from persisted data only."""
+    from stinky_core.operator import export_investigation
+
+    mem, loaded, source = await _book_memory(None, session)
+    out = export_investigation(mem, mint=mint.strip(), evidence_label_default="UNKNOWN")
+    out["source"] = source
+    out["hydrated"] = loaded
+    return out
+
+
+@app.get("/v1/operator/trace/{mint}")
+async def operator_trace(mint: str, session: Annotated[AsyncSession, Depends(get_session)]) -> dict:
+    """Chronological investigation trace. Every line is a stored event."""
+    from stinky_core.operator import build_trace, evidence_label
+
+    mem, loaded, source = await _book_memory(None, session)
+    events = build_trace(getattr(mem, "operator_events", []) or [], mint=mint.strip())
+    return {
+        "mint": mint.strip(),
+        "source": source,
+        "hydrated": loaded,
+        "evidence_label": evidence_label(events[0].get("evidence_label") if events else None) if events else "UNKNOWN",
+        "events": events,
+        "count": len(events),
+        "calibrated_probability": False,
+        "note": "Empty trace means no operator events were persisted.",
+    }
+
+
 @app.get("/health")
 async def health(session: Annotated[AsyncSession, Depends(get_session)]) -> dict:
     from sqlalchemy import text

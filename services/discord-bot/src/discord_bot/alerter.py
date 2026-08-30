@@ -155,26 +155,70 @@ class AlertDispatcher:
             unknown=payload.get("unknown") if isinstance(payload.get("unknown"), list) else None,
         )
         channel_id = settings.discord_alert_channel_id
+        sent = 0
+        failed = 0
+        errors: list[str] = []
+        attempted = False
         if channel_id:
+            attempted = True
             try:
                 channel = self._bot.get_channel(channel_id)
                 if channel is None:
                     channel = await self._bot.fetch_channel(channel_id)
                 if channel is not None:
                     await channel.send(content=text)
+                    sent += 1
+                else:
+                    failed += 1
+                    errors.append("channel_unavailable")
             except Exception as exc:
+                failed += 1
+                errors.append(str(exc)[:160])
                 logger.warning("alerter.quality_channel_failed", error=str(exc)[:160])
         try:
             subs = await self._store.list_subscribers()
         except Exception:
             subs = []
+        if subs:
+            attempted = True
         for uid in subs:
             try:
                 user = await self._bot.fetch_user(uid)
                 await user.send(content=text)
+                sent += 1
             except Exception as exc:
+                failed += 1
+                errors.append(str(exc)[:160])
                 logger.warning("alerter.quality_dm_failed", user_id=uid, error=str(exc)[:160])
-        logger.info("alerter.quality_sent", alert_id=spec.get("alert_id"), category=spec.get("category"), mint=mint)
+        try:
+            from stinky_core.operator import classify_delivery
+
+            delivery = classify_delivery(attempted=attempted, sent=sent, failed=failed)
+            rec = {
+                "mint": mint,
+                "at": datetime.now(timezone.utc).isoformat(),
+                "policy": "FIRED",
+                "category": spec.get("category"),
+                "delivery": delivery,
+                "error": "; ".join(errors) if errors else None,
+                "evidence_label": "LIVE",
+                "alert_id": spec.get("alert_id"),
+                "not_a_buy": True,
+            }
+            await self._store.record_discord_delivery(rec)
+            logger.info(
+                "alerter.quality_delivery",
+                alert_id=spec.get("alert_id"),
+                category=spec.get("category"),
+                mint=mint,
+                policy="FIRED",
+                delivery=delivery,
+                sent=sent,
+                failed=failed,
+            )
+        except Exception as exc:
+            logger.warning("alerter.delivery_persist_failed", error=str(exc)[:160])
+            logger.info("alerter.quality_sent", alert_id=spec.get("alert_id"), category=spec.get("category"), mint=mint)
 
     def _passes_quality_gate(self, payload: dict[str, Any]) -> bool:
         """Canonical Gate 1 FIRST, then intelligence gate.

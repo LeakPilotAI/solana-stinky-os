@@ -145,6 +145,48 @@ CREATE TABLE IF NOT EXISTS quality_state_transitions (
     severity TEXT,
     row TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS operator_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mint TEXT,
+    at TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    message TEXT,
+    evidence_label TEXT,
+    row TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS watch_states (
+    mint TEXT PRIMARY KEY,
+    started_at TEXT,
+    last_observation_at TEXT,
+    observation_count INTEGER,
+    next_due_at TEXT,
+    status TEXT,
+    resumed INTEGER NOT NULL DEFAULT 0,
+    interrupted INTEGER NOT NULL DEFAULT 0,
+    persistence_status TEXT,
+    stop_reason TEXT,
+    row TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS provider_probes (
+    provider TEXT PRIMARY KEY,
+    at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    latency_ms REAL,
+    last_success_at TEXT,
+    last_failure_at TEXT,
+    error TEXT,
+    row TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS discord_deliveries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mint TEXT,
+    at TEXT NOT NULL,
+    policy TEXT,
+    category TEXT,
+    delivery TEXT,
+    error TEXT,
+    row TEXT NOT NULL
+);
 """
 
 
@@ -186,6 +228,10 @@ class SqliteMemoryStore:
             "market_observations",
             "intelligence_investigations",
             "quality_state_transitions",
+            "operator_events",
+            "watch_states",
+            "provider_probes",
+            "discord_deliveries",
         ):
             out[table] = int(self.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
         return out
@@ -322,6 +368,43 @@ class SqliteMemoryStore:
                     json.dumps(nested, default=str),
                 ),
             )
+        for r in snap.get("operator_events") or []:
+            nested = dict(r)
+            self.conn.execute(
+                """INSERT INTO operator_events (mint, at, kind, message, evidence_label, row)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (r.get("mint"), r.get("at") or "", r.get("kind"), r.get("message"), r.get("evidence_label"), json.dumps(nested, default=str)),
+            )
+        for r in snap.get("watch_states") or []:
+            nested = dict(r)
+            self.conn.execute(
+                """INSERT OR REPLACE INTO watch_states
+                   (mint, started_at, last_observation_at, observation_count, next_due_at, status, resumed, interrupted, persistence_status, stop_reason, row)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    r.get("mint"), r.get("started_at"), r.get("last_observation_at"), r.get("observation_count"),
+                    r.get("next_due_at"), r.get("status"), 1 if r.get("resumed") else 0, 1 if r.get("interrupted") else 0,
+                    r.get("persistence_status"), r.get("stop_reason"), json.dumps(nested, default=str),
+                ),
+            )
+        for r in snap.get("provider_probes") or []:
+            nested = dict(r)
+            self.conn.execute(
+                """INSERT OR REPLACE INTO provider_probes
+                   (provider, at, status, latency_ms, last_success_at, last_failure_at, error, row)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    r.get("provider"), r.get("at") or "", r.get("status") or "UNKNOWN", r.get("latency_ms"),
+                    r.get("last_success_at"), r.get("last_failure_at"), r.get("error"), json.dumps(nested, default=str),
+                ),
+            )
+        for r in snap.get("discord_deliveries") or []:
+            nested = dict(r)
+            self.conn.execute(
+                """INSERT INTO discord_deliveries (mint, at, policy, category, delivery, error, row)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (r.get("mint"), r.get("at") or "", r.get("policy"), r.get("category"), r.get("delivery"), r.get("error"), json.dumps(nested, default=str)),
+            )
         self.conn.commit()
         after = self.counts()
         return {"before": before, "after": after}  # type: ignore[return-value]
@@ -378,6 +461,52 @@ class SqliteMemoryStore:
                     except json.JSONDecodeError:
                         r["row"] = {}
             mem.load_quality_states(qs)
+        except sqlite3.OperationalError:
+            pass
+        try:
+            evs = rows("SELECT mint, at, kind, message, evidence_label, row FROM operator_events")
+            for r in evs:
+                if isinstance(r.get("row"), str):
+                    try:
+                        r["row"] = json.loads(r["row"] or "{}")
+                    except json.JSONDecodeError:
+                        r["row"] = {}
+            mem.load_operator_events(evs)
+        except sqlite3.OperationalError:
+            pass
+        try:
+            ws = rows("SELECT mint, started_at, last_observation_at, observation_count, next_due_at, status, resumed, interrupted, persistence_status, stop_reason, row FROM watch_states")
+            for r in ws:
+                r["resumed"] = bool(r.get("resumed"))
+                r["interrupted"] = bool(r.get("interrupted"))
+                if isinstance(r.get("row"), str):
+                    try:
+                        r["row"] = json.loads(r["row"] or "{}")
+                    except json.JSONDecodeError:
+                        r["row"] = {}
+            mem.load_watch_states(ws)
+        except sqlite3.OperationalError:
+            pass
+        try:
+            pp = rows("SELECT provider, at, status, latency_ms, last_success_at, last_failure_at, error, row FROM provider_probes")
+            for r in pp:
+                if isinstance(r.get("row"), str):
+                    try:
+                        r["row"] = json.loads(r["row"] or "{}")
+                    except json.JSONDecodeError:
+                        r["row"] = {}
+            mem.load_provider_probes(pp)
+        except sqlite3.OperationalError:
+            pass
+        try:
+            dd = rows("SELECT mint, at, policy, category, delivery, error, row FROM discord_deliveries")
+            for r in dd:
+                if isinstance(r.get("row"), str):
+                    try:
+                        r["row"] = json.loads(r["row"] or "{}")
+                    except json.JSONDecodeError:
+                        r["row"] = {}
+            mem.load_discord_deliveries(dd)
         except sqlite3.OperationalError:
             pass
         return mem

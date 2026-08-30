@@ -9,6 +9,7 @@ import type { SmartWallet } from "@/types";
 
 const NAV = [
   { href: "/command-center", label: "Command Center", key: "C", icon: "⌂" },
+  { href: "/operator", label: "Operator", key: "L", icon: "▣" },
   { href: "/runners", label: "Live Runners", key: "R", icon: "◎" },
   { href: "/investigations", label: "Investigations", key: "V", icon: "▣" },
   { href: "/wallets", label: "Wallets", key: "W", icon: "◇" },
