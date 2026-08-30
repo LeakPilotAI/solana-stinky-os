@@ -18,7 +18,8 @@ from stinky_core.intelligence import (
 from stinky_core.memory import IntelligenceMemory, _before, _parse_ts
 from stinky_core.outcomes import DEFAULT_OBSERVATION_WINDOW_SEC, LABEL_VERSION, label_outcome
 
-BOOK_VERSION = "book-v1.0.0"
+BOOK_VERSION = "book-v1.1.0-recognition"
+LIFE_SLICES_SEC = (0, 30, 60, 120, 180, 300, 600)
 
 
 def wallet_book(memory: IntelligenceMemory, *, as_of: Any = None) -> list[dict[str, Any]]:
@@ -213,4 +214,81 @@ def time_machine(
         },
         "calibrated_probability": False,
         "note": "As-of only. This mint's own later outcome is not visible here.",
+    }
+
+
+def life_slices(
+    memory: IntelligenceMemory,
+    *,
+    mint: str,
+    t0: Any,
+    as_of: Any = None,
+) -> dict[str, Any]:
+    """Market path at T+ offsets. Wallet/creator stay the T+0 as-of snapshot.
+
+    Future ticks after `as_of` are hidden. Missing offsets stay UNKNOWN.
+    """
+    start = _parse_ts(t0)
+    cutoff = _parse_ts(as_of)
+    if start is None:
+        return {
+            "mint": mint,
+            "t0": None,
+            "slices": [],
+            "calibrated_probability": False,
+            "note": "decision timestamp UNKNOWN",
+        }
+
+    def visible(ts) -> bool:
+        if ts < start:
+            return False
+        if cutoff is None:
+            return True
+        if ts < cutoff:
+            return True
+        return ts == start == cutoff
+
+    t0_ticks = [
+        t for t in getattr(memory, "market_ticks", [])
+        if t.mint == mint and t.observed_at == start
+    ]
+    base_vol = t0_ticks[0].volume_m5_usd if t0_ticks else None
+    slices: list[dict[str, Any]] = []
+    for offset in LIFE_SLICES_SEC:
+        horizon = start + timedelta(seconds=int(offset))
+        chosen = None
+        for t in sorted(
+            (x for x in getattr(memory, "market_ticks", []) if x.mint == mint),
+            key=lambda x: x.observed_at,
+        ):
+            if not visible(t.observed_at):
+                continue
+            if t.observed_at > horizon:
+                continue
+            chosen = t
+        vol = chosen.volume_m5_usd if chosen else None
+        accel = None
+        if offset and base_vol is not None and vol is not None:
+            accel = round((vol - base_vol) / offset, 6)
+        slices.append({
+            "offset_sec": offset,
+            "label": f"T+{offset}s" if offset else "T+0",
+            "observed_at": chosen.observed_at.isoformat() if chosen else None,
+            "volume_m5_usd": vol,
+            "price_usd": chosen.price_usd if chosen else None,
+            "liquidity_usd": chosen.liquidity_usd if chosen else None,
+            "volume_acceleration": accel,
+            "source": chosen.source if chosen else None,
+            "missing": [] if chosen else ["market_tick"],
+        })
+    return {
+        "book_version": BOOK_VERSION,
+        "mint": mint,
+        "t0": start.isoformat(),
+        "as_of": cutoff.isoformat() if cutoff else None,
+        "future_hidden": True,
+        "slices": slices,
+        "wallet_quality": "T+0 as-of only — later buyers do not leak backward",
+        "calibrated_probability": False,
+        "note": "Wallet/creator/pattern intelligence is the T+0 snapshot. T+ slices are market ticks only.",
     }

@@ -265,7 +265,7 @@ def backtest_candidates(
     recall = (runners / outcome_runner_all) if outcome_runner_all else None
     unknown_rate = (outcome_unknown_all / total) if total else None
     return {
-        "engine": "stinky-backtest-v1.5.0-book",
+        "engine": "stinky-backtest-v1.6.0-recognition",
         "filter_version": FILTER_VERSION,
         "memory_version": mem.version,
         "input": len(unique) + dropped_dupes,
@@ -307,6 +307,37 @@ def backtest_candidates(
             (sum(int((r.get("information_advantage") or {}).get("advantage_count") or 0) for r in dataset) / len(dataset))
             if dataset else None
         ),
+        "by_volume_band": _band_counts(dataset, "volume_m5_usd"),
+        "by_wallet_status": _group_counts(dataset, "wallet_status"),
+        "by_creator_status": _group_counts(dataset, "creator_status"),
+        "by_protocol": _group_counts([{"protocol": r.get("protocol")} for r in dataset], "protocol"),
         "items": evaluated,
         "dataset": dataset,
     }
+
+
+def _group_counts(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for r in rows:
+        k = str(r.get(key) or "UNKNOWN")
+        out[k] = out.get(k, 0) + 1
+    return out
+
+
+def _band_counts(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
+    out = {"below_150k": 0, "150k_200k": 0, "above_200k": 0, "unknown": 0}
+    for r in rows:
+        v = r.get(key)
+        try:
+            f = float(v) if v is not None else None
+        except (TypeError, ValueError):
+            f = None
+        if f is None:
+            out["unknown"] += 1
+        elif f < 150_000:
+            out["below_150k"] += 1
+        elif f <= 200_000:
+            out["150k_200k"] += 1
+        else:
+            out["above_200k"] += 1
+    return out

@@ -147,6 +147,40 @@ def book_fingerprint(
     )
 
 
+BAND_NAMES = (
+    "concentration",
+    "diversity",
+    "smart",
+    "serial",
+    "repetition",
+    "liquidity",
+    "ratio",
+    "imbalance",
+    "entity",
+    "synthetic",
+)
+
+
+def informative_band_count(fp: str | None) -> int:
+    if not fp:
+        return 0
+    return sum(1 for p in str(fp).split("|") if p and not p.endswith("U"))
+
+
+def matching_informative_bands(a: str | None, b: str | None) -> list[str]:
+    """Same-position non-U equality. Does not expand the 10-band key."""
+    if not a or not b:
+        return []
+    aa = str(a).split("|")
+    bb = str(b).split("|")
+    out: list[str] = []
+    for i, (x, y) in enumerate(zip(aa, bb)):
+        if x and y and x == y and not x.endswith("U"):
+            name = BAND_NAMES[i] if i < len(BAND_NAMES) else f"band_{i}"
+            out.append(name)
+    return out
+
+
 def fingerprint_features(
     *,
     top4_wallet_volume_share: float | None = None,

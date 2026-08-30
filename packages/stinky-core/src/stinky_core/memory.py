@@ -15,8 +15,9 @@ from typing import Any, Iterable
 import json
 
 from stinky_core.pools import is_rankable_wallet
+from stinky_core.reputation import creator_reputation, wallet_reputation
 
-MEMORY_VERSION = "memory-v1.3.0-book"
+MEMORY_VERSION = "memory-v1.4.0-recognition"
 
 MEMORY_DDL = """
 CREATE TABLE IF NOT EXISTS wallet_observations (
@@ -518,16 +519,33 @@ class IntelligenceMemory:
             rets = [o.ret_pct for o in obs if o.ret_pct is not None]
             avg_ret = (sum(rets) / len(rets)) if rets else None
             med_ret = (sorted(rets)[len(rets) // 2] if rets else None)
+            spent = [o.sol_spent for o in obs if o.sol_spent is not None]
+            avg_spent = (sum(spent) / len(spent)) if spent else None
+            med_spent = (sorted(spent)[len(spent) // 2] if spent else None)
+            exited = sum(1 for o in obs if o.exit_price is not None or o.ret_pct is not None)
             first_seen = min((o.observed_at for o in obs), default=None)
             last_seen = max((o.observed_at for o in obs), default=None)
+            rep = wallet_reputation(
+                sample_size=len(mints),
+                sample_resolved=resolved,
+                runners=runners,
+                fades=fades,
+                held=held,
+                hit_rate=hit,
+                observation_window=cutoff.isoformat() if cutoff else None,
+            )
             out[w] = {
                 "early_buy_count": len(mints),
                 "tokens_purchased": len(mints),
                 "tokens_observed": len(mints),
+                "tokens_exited": exited,
                 "early_entries": len(mints),
                 "hit_rate": hit,
                 "avg_return_pct": avg_ret,  # only from stored returns, never fabricated
                 "median_return_pct": med_ret,
+                "avg_sol_spent": avg_spent,
+                "median_sol_spent": med_spent,
+                "avg_early_position_size": avg_spent,
                 "runners": runners,
                 "fades": fades,
                 "held": held,
@@ -537,8 +555,13 @@ class IntelligenceMemory:
                 "fade_count": fades,
                 "unknown_count": unknown,
                 "runner_participations": runners,
+                "held_participations": held,
+                "fade_participations": fades,
+                "unknown_participations": unknown,
                 "sample_size": len(mints),
                 "sample_resolved": resolved,
+                "reputation": rep,
+                "reputation_tier": rep["tier"],
                 "first_seen": first_seen.isoformat() if first_seen else None,
                 "last_seen": last_seen.isoformat() if last_seen else None,
                 "as_of": cutoff.isoformat() if cutoff else None,
@@ -584,6 +607,14 @@ class IntelligenceMemory:
             if o.mint in prior_mints and o.role == "early_buyer" and _before(o.observed_at, cutoff):
                 buyer_counts[o.wallet] = buyer_counts.get(o.wallet, 0) + 1
         recurring = sum(1 for n in buyer_counts.values() if n >= 2)
+        rep = creator_reputation(
+            launches=len(launches),
+            runners=runners,
+            fades=fades,
+            held=held,
+            success_rate=success_rate,
+            observation_window=cutoff.isoformat() if cutoff else None,
+        )
         return {
             "known": True,
             "entity_id": None,
@@ -596,6 +627,8 @@ class IntelligenceMemory:
             "success_rate": success_rate,
             "median_seconds_between_launches": median_gap,
             "recurring_buyers": recurring,
+            "reputation": rep,
+            "reputation_tier": rep["tier"],
             "first_seen": times[0].isoformat() if times else None,
             "last_seen": times[-1].isoformat() if times else None,
             "as_of": cutoff.isoformat() if cutoff else None,

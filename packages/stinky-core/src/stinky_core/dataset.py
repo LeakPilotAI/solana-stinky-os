@@ -11,7 +11,7 @@ from stinky_core.admission import FILTER_VERSION
 from stinky_core.intelligence import INTEL_VERSION, Investigation
 from stinky_core.outcomes import LABEL_VERSION, Outcome
 
-DATASET_VERSION = "dataset-v1.2.0"
+DATASET_VERSION = "dataset-v1.3.0"
 
 
 def decision_row(
@@ -74,6 +74,10 @@ def decision_row(
         "historical_unknown_count": (inv.patterns.resemblance or {}).get("unknown_matches") if inv else None,
         "information_advantage": dict(inv.information_advantage) if inv else None,
         "why": dict(inv.why) if inv else None,
+        "similarity": dict(inv.similarity) if inv else None,
+        "wallet_reputation": (inv.wallets.reputation if inv else None),
+        "creator_reputation": (inv.creator.reputation if inv else None),
+        "report_status": (inv.report or {}).get("status") if inv else None,
         "alert_ok": bool(alert_ok),
         "alert_reason": alert_reason,
         "future_outcome": (oc or {}).get("label"),

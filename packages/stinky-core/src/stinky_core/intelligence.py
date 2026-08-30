@@ -7,6 +7,7 @@ Never fabricates historical similarity, fees, wallets, or scores.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from time import perf_counter
 from typing import Any, Mapping
 
 from stinky_core.inspect import (
@@ -23,8 +24,11 @@ from stinky_core.pools import is_rankable_wallet
 from stinky_core.evidence import EvidenceBundle, item as eitem
 from stinky_core.fingerprint import book_fingerprint, fingerprint_features
 from stinky_core.memory import IntelligenceMemory
+from stinky_core.metrics import ENGINE_METRICS
+from stinky_core.reputation import creator_reputation, wallet_reputation
+from stinky_core.similarity import historical_similarity
 
-INTEL_VERSION = "intel-v1.5.0-book"
+INTEL_VERSION = "intel-v1.6.0-recognition"
 SCORE_VERSION = "score-v1.1.0-intel-not-volume"
 RUNNER_VERSION = "runner-potential-v1.1.0-intel-not-volume"
 
@@ -120,6 +124,7 @@ class CreatorProfile:
     recurring_buyers: int | None = None
     first_seen: str | None = None
     last_seen: str | None = None
+    reputation: dict[str, Any] = field(default_factory=dict)
     missing: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -138,6 +143,7 @@ class WalletIntel:
     unknown_wallet_count: int | None = None
     winner_count: int | None = None
     loser_count: int | None = None
+    reputation: dict[str, Any] = field(default_factory=dict)
     evidence: list[dict[str, Any]] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
 
@@ -243,6 +249,8 @@ class Investigation:
     data_quality: dict[str, Any] = field(default_factory=dict)
     why: dict[str, Any] = field(default_factory=dict)
     information_advantage: dict[str, Any] = field(default_factory=dict)
+    similarity: dict[str, Any] = field(default_factory=dict)
+    report: dict[str, Any] = field(default_factory=dict)
     model_version: str = INTEL_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -273,6 +281,8 @@ class Investigation:
             "data_quality": dict(self.data_quality),
             "why": dict(self.why),
             "information_advantage": dict(self.information_advantage),
+            "similarity": dict(self.similarity),
+            "report": dict(self.report),
             "model_version": self.model_version,
             "inspect_version": INSPECT_VERSION,
             "score_interpretation": self.score.interpretation,
@@ -283,10 +293,10 @@ class Investigation:
 
 def build_creator_profile(raw: Mapping[str, Any] | None) -> CreatorProfile:
     if not raw:
-        return CreatorProfile(status="UNKNOWN", missing=["creator_store"])
+        return CreatorProfile(status="UNKNOWN", missing=["creator_store"], reputation=creator_reputation(launches=0))
     launches = _i(raw.get("launch_count") if raw.get("launch_count") is not None else raw.get("launches"))
     if launches is None and raw.get("entity_id") is None and not raw.get("known"):
-        return CreatorProfile(status="UNKNOWN", missing=["creator_store"])
+        return CreatorProfile(status="UNKNOWN", missing=["creator_store"], reputation=creator_reputation(launches=0))
     runners = _i(raw.get("historical_runners") if raw.get("historical_runners") is not None else raw.get("runners"))
     fades = _i(raw.get("historical_fades") if raw.get("historical_fades") is not None else raw.get("fades"))
     serial = None
@@ -302,6 +312,14 @@ def build_creator_profile(raw: Mapping[str, Any] | None) -> CreatorProfile:
     else:
         status = "KNOWN"
         conf = round(min(0.8, 0.3 + 0.04 * launches), 2)
+    rep = creator_reputation(
+        launches=launches,
+        runners=runners,
+        fades=fades,
+        held=_i(raw.get("historical_held")),
+        success_rate=_f(raw.get("success_rate")),
+        observation_window=str(raw["as_of"]) if raw.get("as_of") else None,
+    )
     return CreatorProfile(
         status=status,
         launches=launches,
@@ -319,6 +337,7 @@ def build_creator_profile(raw: Mapping[str, Any] | None) -> CreatorProfile:
         recurring_buyers=_i(raw.get("recurring_buyers")),
         first_seen=str(raw["first_seen"]) if raw.get("first_seen") else None,
         last_seen=str(raw["last_seen"]) if raw.get("last_seen") else None,
+        reputation=rep,
         missing=missing,
     )
 
@@ -328,7 +347,7 @@ def analyze_wallets(
     performance: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> WalletIntel:
     if not buyers:
-        return WalletIntel(status="UNKNOWN", missing=["early_buyers"])
+        return WalletIntel(status="UNKNOWN", missing=["early_buyers"], reputation=wallet_reputation(sample_size=0, sample_resolved=0))
     perf = performance or {}
     meaningful = 0
     smart = 0
@@ -403,6 +422,22 @@ def analyze_wallets(
     missing = []
     if unknown:
         missing.append("wallet_history")
+    # Aggregate reputation from the strongest measured wallet; tiny samples stay OBSERVED.
+    best = wallet_reputation(sample_size=len(wallets), sample_resolved=0)
+    for p in (perf or {}).values():
+        r = p.get("reputation") if isinstance(p, Mapping) else None
+        if not isinstance(r, Mapping):
+            r = wallet_reputation(
+                sample_size=_i(p.get("sample_size") if isinstance(p, Mapping) else None),
+                sample_resolved=_i(p.get("sample_resolved") if isinstance(p, Mapping) else None),
+                runners=_i(p.get("runners") if isinstance(p, Mapping) else None),
+                fades=_i(p.get("fades") if isinstance(p, Mapping) else None),
+                held=_i(p.get("held") if isinstance(p, Mapping) else None),
+                hit_rate=_f(p.get("hit_rate") if isinstance(p, Mapping) else None),
+            )
+        order = {"OBSERVED": 0, "DEVELOPING": 1, "MEASURED": 2, "STRONG": 3}
+        if order.get(str(r.get("tier")), 0) > order.get(str(best.get("tier")), 0):
+            best = dict(r)
     return WalletIntel(
         status=status,
         early_buyer_count=len(wallets),
@@ -414,6 +449,7 @@ def analyze_wallets(
         unknown_wallet_count=unknown,
         winner_count=winners,
         loser_count=losers,
+        reputation=best,
         evidence=evidence,
         missing=missing,
     )
@@ -445,6 +481,9 @@ def match_patterns(
     if activity.unique_wallets is not None and activity.unique_wallets >= 6 and (activity.top4_wallet_volume_share or 1) < 0.55:
         matches.append({"kind": "co_buy_cluster", "confidence": 0.4})
         evidence.append({"kind": "co_buy_cluster", "value": activity.unique_wallets})
+    if activity.top4_wallet_volume_share is not None and activity.top4_wallet_volume_share >= 0.70:
+        matches.append({"kind": "concentrated_early_book", "confidence": 0.6})
+        evidence.append({"kind": "concentrated_early_book", "value": activity.top4_wallet_volume_share})
 
     hist = historical or {}
     resemble = _i(hist.get("similar_runner_count"))
@@ -640,6 +679,8 @@ def compose_stinky_score(
         "fee_component": 0.0,
         "runner_adjustment": 0.0,
         "data_quality_component": 0.0,
+        "historical_similarity_component": 0.0,
+        "early_book_component": 0.0,
     }
 
     def plus(d: float, reason: str, component: str) -> None:
@@ -863,6 +904,14 @@ def why_this_ca(inv: Investigation) -> dict[str, Any]:
         )
     else:
         unknown.append("Historical fingerprint resemblance: UNKNOWN (need ≥ 5 matches and ≥ 3 informative bands)")
+    sim = inv.similarity or {}
+    if sim.get("sample_count"):
+        cares.append(
+            f"Historical analogues as-of: {sim.get('runner_matches') or 0} RUNNER / "
+            f"{sim.get('held_matches') or 0} HELD / {sim.get('fade_matches') or 0} FADE "
+            f"(strong {sim.get('strong_matches') or 0} / moderate {sim.get('moderate_matches') or 0} / "
+            f"weak {sim.get('weak_matches') or 0}; not a probability)."
+        )
     cares.append(f"Synthetic indicators: {inv.synthetic.level}")
     cares.append(f"Rug indicators: {inv.rug.level}")
     dq = (inv.data_quality or {}).get("overall") or "UNKNOWN"
@@ -1013,12 +1062,91 @@ def _build_evidence(
     return b
 
 
+def investigation_report(inv: Investigation) -> dict[str, Any]:
+    """Machine + human investigation card. Missing stays UNKNOWN. Not a buy."""
+    sim = inv.similarity or {}
+    wr = inv.wallets.reputation or {}
+    cr = inv.creator.reputation or {}
+    score_display: Any
+    if inv.insufficient_evidence or not inv.score.actionable or inv.score.interpretation == "INSUFFICIENT_EVIDENCE":
+        score_display = "UNK"
+    else:
+        score_display = inv.score.score
+    return {
+        "headline": "STINKY INVESTIGATION",
+        "ca": inv.mint,
+        "protocol": None,
+        "gate1_volume": inv.activity.volume_m5_usd,
+        "status": inv.pipeline_status,
+        "promote": inv.promote,
+        "creator": {
+            "status": inv.creator.status,
+            "reputation": cr.get("tier") or "UNKNOWN",
+            "launches": inv.creator.launches,
+            "runners": inv.creator.historical_runners,
+            "fades": inv.creator.historical_fades,
+            "confidence": cr.get("confidence") if cr else inv.creator.confidence,
+            "sample_size": cr.get("sample_size"),
+            "risk": inv.creator.serial_risk or "UNKNOWN",
+        },
+        "early_buyers": {
+            "meaningful": inv.wallets.meaningful_buyer_count,
+            "measured": inv.wallets.smart_wallet_count,
+            "unknown": inv.wallets.unknown_wallet_count,
+            "concentration": inv.activity.top4_wallet_volume_share,
+            "reputation": wr.get("tier") or "UNKNOWN",
+        },
+        "smart_money": {
+            "measured_wallets": inv.wallets.smart_wallet_count,
+            "historical_edge": inv.wallets.avg_hit_rate,
+            "confidence": wr.get("confidence"),
+            "sample_resolved": wr.get("sample_resolved"),
+        },
+        "patterns": {
+            "detected": [m.get("kind") for m in inv.patterns.matches],
+            "confidence": inv.patterns.pattern_confidence,
+        },
+        "historical_matches": {
+            "strong": sim.get("strong_matches"),
+            "moderate": sim.get("moderate_matches"),
+            "weak": sim.get("weak_matches"),
+            "runner": sim.get("runner_matches"),
+            "held": sim.get("held_matches"),
+            "fade": sim.get("fade_matches"),
+            "unknown": sim.get("unknown_matches"),
+            "runner_similarity": sim.get("runner_similarity") or "UNKNOWN",
+            "similarity_score": sim.get("similarity_score"),
+            "similarity_confidence": sim.get("similarity_confidence") or "UNKNOWN",
+            "calibrated_probability": False,
+        },
+        "risk": {
+            "synthetic": inv.synthetic.level,
+            "rug": inv.rug.level,
+            "concentration": inv.activity.top4_wallet_volume_share,
+        },
+        "verdict": {
+            "pipeline_status": inv.pipeline_status,
+            "has_intelligence": inv.has_intelligence,
+            "promote": inv.promote,
+            "score": score_display,
+            "interpretation": inv.score.interpretation,
+            "note": (
+                "Promoted: stored intelligence is sufficient. This is not a buy."
+                if inv.promote
+                else "We don't know → insufficient evidence → don't promote."
+            ),
+        },
+        "calibrated_probability": False,
+    }
+
+
 def investigate(
     bundle: Mapping[str, Any],
     *,
     memory: IntelligenceMemory | None = None,
 ) -> Investigation:
     """Run the full desk. Missing stays UNKNOWN. Memory queries are as-of."""
+    t0 = perf_counter()
     mint = str(bundle.get("mint") or "").strip() or None
     creator_addr = str(bundle["creator"]).strip() if bundle.get("creator") else None
     as_of = bundle.get("decision_timestamp") or bundle.get("as_of")
@@ -1194,8 +1322,15 @@ def investigate(
         wallets=wallets, creator=creator, synthetic=synthetic, rug=rug,
         patterns=patterns, entities=entities, activity=activity, fee_status=fee_status,
     )
+    inv.similarity = historical_similarity(
+        memory, fp, as_of=as_of, exclude_mint=mint, query_features=feats,
+    ) if memory is not None else historical_similarity(None, fp)
     inv.why = why_this_ca(inv)
     inv.information_advantage = information_advantage(inv)
+    inv.report = investigation_report(inv)
+    ENGINE_METRICS.record("investigation", (perf_counter() - t0) * 1000.0)
+    ENGINE_METRICS.inc("investigations")
+    ENGINE_METRICS.inc(f"pipeline_{inv.pipeline_status.lower()}")
     return inv
 
 

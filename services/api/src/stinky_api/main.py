@@ -105,6 +105,8 @@ async def investigate_endpoint(payload: dict) -> dict:
         "resemblance": inv.patterns.resemblance,
         "why": inv.why,
         "information_advantage": inv.information_advantage,
+        "similarity": inv.similarity,
+        "report": inv.report,
         "filter_version": decision.filter_version or FILTER_VERSION,
         "investigation": inv.to_dict(),
         "alert_ok": alert_ok,
@@ -206,6 +208,86 @@ async def book_summary(payload: dict | None = None) -> dict:
         "patterns": pattern_book(mem, as_of=as_of),
         "calibrated_probability": False,
     }
+
+
+@app.post("/v1/book/similarity")
+async def book_similarity(payload: dict) -> dict:
+    """Historical analogues. Shows runners AND fades. Not a probability."""
+    from stinky_core.memory import IntelligenceMemory
+    from stinky_core.similarity import historical_similarity
+
+    mem = IntelligenceMemory()
+    snap = payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else None
+    if snap:
+        mem.hydrate(snap)
+    fp = payload.get("fingerprint")
+    return historical_similarity(
+        mem,
+        fp,
+        as_of=payload.get("as_of") or payload.get("decision_timestamp"),
+        exclude_mint=payload.get("exclude_mint") or payload.get("mint"),
+        query_features=payload.get("features") if isinstance(payload.get("features"), dict) else None,
+    )
+
+
+@app.post("/v1/book/life-slices")
+async def book_life_slices(payload: dict) -> dict:
+    """T+ market path. Future ticks after as_of are hidden."""
+    from stinky_core.book import life_slices
+    from stinky_core.memory import IntelligenceMemory
+
+    mem = IntelligenceMemory()
+    snap = payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else None
+    if snap:
+        mem.hydrate(snap)
+    mint = str(payload.get("mint") or "").strip()
+    if not mint:
+        return {"error": "mint required", "calibrated_probability": False}
+    return life_slices(
+        mem,
+        mint=mint,
+        t0=payload.get("t0") or payload.get("decision_timestamp") or payload.get("as_of"),
+        as_of=payload.get("as_of"),
+    )
+
+
+@app.post("/v1/book/report")
+async def book_report(payload: dict) -> dict:
+    """Structured investigation card. Gate 1 then investigate. Never fabricates."""
+    from stinky_core.admission import evaluate_gate1
+    from stinky_core.intelligence import investigate
+    from stinky_core.memory import IntelligenceMemory
+
+    decision = evaluate_gate1(payload)
+    if not decision.eligible:
+        return {
+            "gate1_passed": False,
+            "report": {
+                "status": "REJECTED",
+                "verdict": {"score": "UNK", "promote": False, "note": "Gate 1 rejected"},
+            },
+            "calibrated_probability": False,
+        }
+    mem = IntelligenceMemory()
+    snap = payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else None
+    if snap:
+        mem.hydrate(snap)
+    inv = investigate(payload, memory=mem)
+    return {
+        "gate1_passed": True,
+        "report": inv.report,
+        "similarity": inv.similarity,
+        "calibrated_probability": False,
+    }
+
+
+@app.get("/v1/metrics")
+async def metrics_endpoint() -> dict:
+    from stinky_core.metrics import ENGINE_METRICS
+
+    snap = ENGINE_METRICS.snapshot()
+    snap["production_p95"] = "NOT MEASURED"
+    return snap
 
 
 @app.get("/v1/system/filter-stats")
