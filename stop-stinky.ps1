@@ -1,8 +1,9 @@
-# stop-stinky.ps1 - kill Stinky apps + stop Genesis containers
+# stop-stinky.ps1 — stop Genesis apps. Does not quit Docker Desktop.
+# Postgres data stays in the docker volume.
 $ErrorActionPreference = "Continue"
 $root = "D:\Work\Project-Genesis"
-Set-Location $root
-Write-Host "STOPPING Stinky OS..." -ForegroundColor Yellow
+if (Test-Path $root) { Set-Location $root }
+Write-Host "STOPPING Genesis..." -ForegroundColor Yellow
 
 function Kill-Pid([int]$Id) {
   if ($Id -le 0) { return }
@@ -28,7 +29,6 @@ Get-CimInstance Win32_Process -EA SilentlyContinue | ForEach-Object {
   $c = $_.CommandLine
   if (-not $c) { return }
   if ($c -match "docker|Docker Desktop") { return }
-  if ($c -match "8000" -and $c -match "app\.main:app") { return }
   if ($c -match "Project-Genesis" -and $c -match "uvicorn|stinky-|next dev|npm run|event_log|stinky_api") {
     Kill-Pid ([int]$_.ProcessId)
   }
@@ -41,10 +41,8 @@ foreach ($port in 8002, 8010, 3000, 8001) {
 }
 
 Start-Sleep 2
-Get-ChildItem logs -Filter "*.log" -EA SilentlyContinue | ForEach-Object {
-  try { Move-Item -Force $_.FullName ($_.FullName + ".old") -EA Stop } catch {}
+if (Test-Path $root) {
+  Write-Host "Stopping Genesis containers (volumes kept)..." -ForegroundColor Yellow
+  docker compose -f "$root\docker-compose.yml" stop 2>$null
 }
-
-Write-Host "Stopping Genesis containers..." -ForegroundColor Yellow
-docker compose -f "$root\docker-compose.yml" stop 2>$null
 Write-Host "STOPPED." -ForegroundColor Green

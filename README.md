@@ -1,136 +1,46 @@
-# Stinky OS
+# Genesis / Stinky OS
 
-**The definitive intelligence operating system for the Solana blockchain.**
+Solana speculative-asset intelligence. Evidence first. Fail closed.
 
-Entity-first. Event-sourced. Explainable. Continuously learning.
-
----
-
-## Quick start (VS Code)
-
-### 1. Open the project
-
-```bash
-# From the folder that contains stinky-os
-code stinky-os
-```
-
-Or **File → Open Folder…** and select `stinky-os`.
-
-### 2. Create a virtual environment
-
-```bash
-cd stinky-os
-python3.12 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-```
-
-VS Code should detect the interpreter automatically (`.venv/bin/python`).
-
-### 3. Install packages
-
-```bash
-pip install -e "./packages/stinky-core[dev]"
-pip install -e "./services/event-log[dev]"
-```
-
-### 4. Start infrastructure
-
-```bash
-docker compose up -d
-```
-
-This starts (host ports offset from 5432 / 6379 / 8000 so other local stacks can keep those):
-
-| Service                  | Host port(s)   | Purpose                    |
-|--------------------------|----------------|----------------------------|
-| PostgreSQL + TimescaleDB | **5433**       | Event store + analytics    |
-| Redis                    | **6380**       | Event transport (Streams)  |
-| MinIO                    | **9010 / 9011**| Object storage (S3-compat) |
-
-Schema is applied automatically on first Postgres start via `001_initial_schema.sql`.
-
-### 5. Environment
-
-```bash
-cp .env.example .env
-# defaults already point at 5433 / 6380 / 9010
-```
-
-### 6. Run the Event Log service
-
-```bash
-cd services/event-log
-uvicorn event_log.api:app --reload --port 8001
-```
-
-Health check: http://localhost:8001/health  
-OpenAPI docs: http://localhost:8001/docs
-
-### 7. Run tests
-
-```bash
-# From repo root (with venv active)
-pytest packages/stinky-core -q
-pytest services/event-log -q
-```
+Gate 1 is **$150k / 5m volume**, clamp **$200k**. That is an investigation trigger, not a buy.
 
 ---
 
-## Repository layout
+## Windows operator box (`D:\Work\Project-Genesis`)
 
-```
-stinky-os/
-├── packages/
-│   └── stinky-core/          # Shared events, transport, quality, models
-├── services/
-│   └── event-log/            # Immutable event store + Data Quality gate
-├── docs/
-│   └── adr/                  # Architecture Decision Records
-├── infra/                    # (future) k8s, terraform
-├── docker-compose.yml
-├── .env.example
-└── README.md
+One-time refresh (preserves `.env`):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\APPLY-refresh.ps1
 ```
 
----
+That overwrites the folder from GitHub, keeps Discord/RPC secrets, installs desktop shortcuts, and starts the OS.
 
-## Architecture (locked)
+After that, double-click **Genesis** on the desktop. Every launch:
 
-- **Event-sourced** – all derived state is replayable
-- **Dual store** – PostgreSQL/Timescale + Neo4j (graph added in later module)
-- **Transport abstraction** – Redis Streams today, Kafka/NATS swappable
-- **Deterministic scores** – AI explains, never invents scores
-- **Versioned features & models** – full reproducibility
-- **Data Quality layer** – invalid events never reach intelligence services
+1. Stops the previous instance
+2. Pulls latest `main` (`.env` kept)
+3. Ensures Python venv + npm + Docker
+4. Applies SQL migrations (operator tables included)
+5. Starts sentinel, API, event-log, collector, entities, Discord, web
+6. Opens **http://127.0.0.1:3000/operator**
 
-See `docs/adr/` for the full set of ADRs.
+Stop with the **Stop Genesis** desktop icon.
 
----
+| Need | Port |
+|---|---|
+| Operator UI | 3000 |
+| API | 8010 |
+| Event log | 8002 |
+| Postgres | 5433 |
+| Redis | 6380 |
 
-## Current status
-
-| Module              | Status              |
-|---------------------|---------------------|
-| stinky-core         | ✅ v0.1.0           |
-| event-log           | ✅ v0.1.0           |
-| Feature Engineering | 🚧 next             |
-| Entity Resolution   | pending             |
-| Stinky Score Engine | pending             |
-| Graph (Neo4j)       | pending             |
-| AI Research layer   | pending             |
-| Frontend            | pending             |
+Discord with an empty token is UNKNOWN, not a crash of the rest of the box.
 
 ---
 
-## Development rules (Execution Mode)
+## Architecture
 
-- One production-quality module at a time
-- No placeholders / TODOs / pseudocode
-- Every module ships with tests, docs, config, logging, health checks
-- Architecture is locked except for critical flaws
-- New features require explicit approval
+Event-sourced. Dual store. Fail closed. See `docs/adr/` and `docs/GENESIS.md`.
 
----
-
-**Stinky Labs** – Build the platform. Profile every meaningful entity on Solana.
+Genesis does not trade, size positions, or analyze stocks, ETFs, portfolios, or perpetuals.

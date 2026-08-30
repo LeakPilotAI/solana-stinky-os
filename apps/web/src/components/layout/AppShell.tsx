@@ -15,6 +15,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     // Warm common routes once
     const routes = [
+      "/operator",
       "/command-center",
       "/runners",
       "/investigations",
