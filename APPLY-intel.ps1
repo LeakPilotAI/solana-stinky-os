@@ -8,6 +8,8 @@ $dst = "D:\Work\Project-Genesis"
 if (-not (Test-Path $dst)) { throw "Project not found: $dst" }
 
 $paths = @(
+  "packages\stinky-core\src\stinky_core\identity.py",
+  "packages\stinky-core\src\stinky_core\pools.py",
   "packages\stinky-core\src\stinky_core\memory.py",
   "packages\stinky-core\src\stinky_core\fingerprint.py",
   "packages\stinky-core\src\stinky_core\sqlstore.py",
@@ -17,6 +19,7 @@ $paths = @(
   "packages\stinky-core\src\stinky_core\backtest.py",
   "packages\stinky-core\src\stinky_core\outcomes.py",
   "packages\stinky-core\src\stinky_core\admission.py",
+  "packages\stinky-core\tests\test_identity.py",
   "packages\stinky-core\tests\test_memory.py",
   "packages\stinky-core\tests\test_intelligence.py",
   "packages\stinky-core\tests\test_book.py",
