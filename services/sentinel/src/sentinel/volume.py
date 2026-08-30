@@ -1,7 +1,9 @@
-"""5-minute volume gate for migrated tokens.
+"""Volume watch + Gate 1 investigation funnel.
 
-Uses DexScreener (no API key) to read volume.m5 USD after migration.
-When volume_m5 >= threshold, emits ALERT_CANDIDATE for downstream Discord.
+Early snapshots persist at the observation threshold.
+Gate 1 ($150k 5m, configurable to $200k) starts deep inspection.
+ALERT_CANDIDATE is emitted only after inspection + intelligence, never on volume alone.
+FeeResolver is optional evidence after Gate 1 — unknown fees do not reject.
 """
 
 from __future__ import annotations
@@ -23,10 +25,10 @@ from sentinel.config import settings
 from sentinel.models import DetectedMigration
 from sentinel.publisher import LaunchPublisher
 from sentinel.qualify import qualify_fresh_pump_migration
-from sentinel.score import EntitySignals, SmartMoneySignals, score_alert_candidate
+from sentinel.score import EntitySignals, SmartMoneySignals
 
 try:
-    from stinky_core.admission import FILTER_VERSION
+    from stinky_core.admission import FILTER_VERSION, GATE1_VOLUME_5M_USD, clamp_gate1_volume
     from stinky_core.fees import (
         FEE_OBSERVATIONS_DDL,
         FEE_OBSERVATIONS_INDEXES,
@@ -36,6 +38,15 @@ try:
         FeeResolver,
         unknown_observation,
     )
+    from stinky_core.intelligence import (
+        INTEL_VERSION,
+        MARKET_INSPECTIONS_DDL,
+        MARKET_INSPECTIONS_INDEXES,
+        MARKET_INSPECTIONS_INSERT,
+        can_alert_investigation,
+        inspection_persist_params,
+        investigate,
+    )
 except ImportError:  # pragma: no cover
     import sys
     from pathlib import Path
@@ -43,7 +54,7 @@ except ImportError:  # pragma: no cover
     _CORE = Path(__file__).resolve().parents[4] / "packages" / "stinky-core" / "src"
     if str(_CORE) not in sys.path:
         sys.path.insert(0, str(_CORE))
-    from stinky_core.admission import FILTER_VERSION
+    from stinky_core.admission import FILTER_VERSION, GATE1_VOLUME_5M_USD, clamp_gate1_volume
     from stinky_core.fees import (
         FEE_OBSERVATIONS_DDL,
         FEE_OBSERVATIONS_INDEXES,
@@ -52,6 +63,15 @@ except ImportError:  # pragma: no cover
         FeeObservation,
         FeeResolver,
         unknown_observation,
+    )
+    from stinky_core.intelligence import (
+        INTEL_VERSION,
+        MARKET_INSPECTIONS_DDL,
+        MARKET_INSPECTIONS_INDEXES,
+        MARKET_INSPECTIONS_INSERT,
+        can_alert_investigation,
+        inspection_persist_params,
+        investigate,
     )
 
 logger = structlog.get_logger(__name__)
@@ -236,6 +256,12 @@ def _i(v: Any) -> int | None:
 class VolumeMonitor:
     """Poll DexScreener after migration until threshold hit or timeout."""
 
+    def _gate1_volume(self) -> float:
+        raw = getattr(settings, "gate1_volume_5m_usd", None)
+        if raw is None:
+            raw = getattr(settings, "min_volume_usd", GATE1_VOLUME_5M_USD)
+        return clamp_gate1_volume(raw)
+
     def _passes_pump_quality(
         self,
         mint: str,
@@ -244,19 +270,17 @@ class VolumeMonitor:
         *,
         fees_verified: bool | None = None,
     ) -> tuple[bool, str]:
-        """Pump-only + HARD min global fees via canonical qualify(). Fail-closed.
-
-        A bare number is NOT verification. Only the FeeResolver may set
-        fees_verified=True.
-        """
+        """Gate 1: mint + DEX + 5m volume. Fees are optional evidence, not a reject."""
         min_fees = float(getattr(settings, "min_fees_sol", 1.0) or 1.0)
         verified = True if fees_verified is True else (False if fees_verified is False else None)
         result = qualify_fresh_pump_migration(
             mint=mint,
             dex_id=snap.dex_id,
+            volume_m5_usd=snap.volume_m5_usd,
             global_fees_paid_sol=fees_sol if verified is True else None,
             global_fees_verified=verified,
             min_fees_sol=min_fees,
+            min_volume_usd=self._gate1_volume(),
             require_pump_mint_suffix=bool(
                 getattr(settings, "require_pump_mint_suffix", True)
             ),
@@ -265,10 +289,7 @@ class VolumeMonitor:
         )
         if result.accepted:
             return True, "ok"
-        reason = result.reason
-        if reason == "LOW_GLOBAL_FEES" and result.global_fees_paid_sol is not None:
-            reason = f"LOW_GLOBAL_FEES:{result.global_fees_paid_sol:.4f}<{result.required}"
-        return False, reason
+        return False, result.reason
 
     async def _record_filter_eval(
         self,
@@ -557,7 +578,8 @@ class VolumeMonitor:
             "volume.watch_start",
             mint=mint,
             pool=migration.pool,
-            threshold_usd=self._threshold,
+            observation_threshold_usd=self._threshold,
+            gate1_volume_usd=self._gate1_volume(),
             max_watch_sec=self._max_watch,
         )
         try:
@@ -565,34 +587,39 @@ class VolumeMonitor:
             while elapsed < self._max_watch:
                 snap = await self._client.fetch_volume(mint)
                 if snap:
-                    # Skip expensive on-chain fee resolve if DEX already blocked.
                     if snap.dex_id and not _dex_allowed(snap.dex_id):
-                        obs = unknown_observation(
-                            mint,
-                            protocol=snap.dex_id,
-                            source="skipped.denied_protocol",
-                            error="PROTOCOL_DISABLED",
+                        await self._persist_market_snapshot(mint, snap)
+                        await self._record_filter_eval(
+                            mint=mint,
+                            accepted=False,
+                            reason="PROTOCOL_DISABLED",
+                            fees_sol=None,
+                            fees_verified=False,
+                            snap=snap,
+                            fees_source="skipped.denied_protocol",
                         )
-                    else:
-                        obs = await resolve_global_fees(
-                            mint, protocol=snap.dex_id, pool=snap.pair_address
+                        logger.info(
+                            "volume.pump_quality_blocked",
+                            mint=mint,
+                            reason="PROTOCOL_DISABLED",
+                            dex_id=snap.dex_id,
                         )
-                    await self._persist_fee_observation(obs)
-                    fees_sol = obs.global_fees_sol if obs.fees_verified else None
-                    snap.fees_sol = fees_sol
+                        return
+
+                    await self._persist_market_snapshot(mint, snap)
+                    # Gate 1 BEFORE expensive fee resolve.
                     ok, reason = self._passes_pump_quality(
-                        mint, snap, fees_sol, fees_verified=obs.fees_verified
+                        mint, snap, None, fees_verified=None
                     )
                     await self._record_filter_eval(
                         mint=mint,
                         accepted=bool(ok),
                         reason=reason,
-                        fees_sol=fees_sol,
-                        fees_verified=bool(obs.fees_verified),
+                        fees_sol=None,
+                        fees_verified=False,
                         snap=snap,
-                        fees_source=obs.fees_source,
+                        fees_source="gate1.pre_fee",
                     )
-                    await self._persist_market_snapshot(mint, snap)
                     logger.info(
                         "volume.snapshot",
                         mint=mint,
@@ -602,28 +629,23 @@ class VolumeMonitor:
                         pair=snap.pair_address,
                         buys_m5=snap.txns_m5_buys,
                         sells_m5=snap.txns_m5_sells,
-                        fees_sol=fees_sol,
-                        quality_ok=ok,
-                        quality_reason=reason,
+                        gate1_ok=ok,
+                        gate1_reason=reason,
                     )
                     if not ok:
-                        logger.info(
-                            "volume.pump_quality_blocked",
-                            mint=mint,
-                            reason=reason,
-                            dex_id=snap.dex_id,
-                            fees_sol=fees_sol,
-                            required_min_fees_sol=float(
-                                getattr(settings, "min_fees_sol", 1.0) or 1.0
-                            ),
-                        )
-                        # Permanent reject for structural failures.
-                        # Fees unknown/low: keep watching ? fees can accumulate.
-                        if reason.startswith("DEX_BLOCKED") or reason == "NOT_PUMP_MINT":
+                        if reason in (
+                            "PROTOCOL_DISABLED",
+                            "PROTOCOL_UNKNOWN",
+                            "INVALID_MINT",
+                            "INVALID_MARKET_DATA",
+                            "NOT_PUMP_MINT",
+                        ):
                             return
-                    elif snap.volume_m5_usd >= self._threshold:
-                        await self._emit_pass(migration, snap)
-                        return
+                        # VOLUME_BELOW_MIN / VOLUME_UNKNOWN: keep watching
+                    else:
+                        alerted = await self._investigate_and_maybe_alert(migration, snap)
+                        if alerted:
+                            return
                 await asyncio.sleep(self._interval)
                 elapsed = (datetime.now(timezone.utc) - started).total_seconds()
 
@@ -638,75 +660,196 @@ class VolumeMonitor:
         finally:
             self._active.discard(mint)
 
-    async def _emit_pass(self, migration: DetectedMigration, snap: VolumeSnapshot) -> None:
-        # Re-verify HARD fees gate at emit time (fail-closed). Never trust a stale snap.
+    async def _persist_inspection(self, params: dict[str, Any]) -> None:
+        try:
+            async with self._sessions() as session:
+                await session.execute(text(MARKET_INSPECTIONS_DDL))
+                for idx in MARKET_INSPECTIONS_INDEXES:
+                    await session.execute(text(idx))
+                await session.execute(text(MARKET_INSPECTIONS_INSERT), params)
+                await session.commit()
+        except Exception as exc:
+            logger.warning(
+                "inspection.persist_failed",
+                mint=params.get("mint"),
+                error=f"{type(exc).__name__}: {exc}"[:200],
+            )
+
+    async def _investigate_and_maybe_alert(
+        self, migration: DetectedMigration, snap: VolumeSnapshot
+    ) -> bool:
+        """Deep inspect after Gate 1. Returns True if an ALERT_CANDIDATE was emitted."""
+        mint = migration.mint
         obs = await resolve_global_fees(
-            migration.mint, protocol=snap.dex_id, pool=snap.pair_address
+            mint, protocol=snap.dex_id, pool=snap.pair_address
         )
         await self._persist_fee_observation(obs)
         fees_sol = obs.global_fees_sol if obs.fees_verified else None
         snap.fees_sol = fees_sol
-        ok, reason = self._passes_pump_quality(
-            migration.mint, snap, fees_sol, fees_verified=obs.fees_verified
+        fee_status = "VERIFIED" if obs.fees_verified else "UNKNOWN"
+
+        smart = await self._load_smart_money(mint)
+        entity = await self._load_entity(migration.creator)
+        buyers_rows: list[dict[str, Any]] = []
+        perf_map: dict[str, dict[str, Any]] = {}
+        try:
+            async with self._sessions() as session:
+                buyers = (
+                    await session.execute(
+                        text(
+                            """
+                            SELECT wallet, rank, sol_spent
+                            FROM migration_buyers
+                            WHERE mint = :mint
+                            ORDER BY rank ASC
+                            LIMIT 40
+                            """
+                        ),
+                        {"mint": mint},
+                    )
+                ).mappings().all()
+                buyers_rows = [dict(b) for b in buyers]
+                wallets = [b["wallet"] for b in buyers_rows if b.get("wallet")]
+                if wallets:
+                    perf_rows = (
+                        await session.execute(
+                            text(
+                                """
+                                SELECT wallet, early_buy_count, hit_rate, avg_return_pct,
+                                       tokens_purchased
+                                FROM wallet_performance
+                                WHERE wallet = ANY(:wallets)
+                                """
+                            ),
+                            {"wallets": wallets},
+                        )
+                    ).mappings().all()
+                    perf_map = {r["wallet"]: dict(r) for r in perf_rows}
+        except Exception as exc:
+            logger.debug("investigation.buyers_lookup_failed", mint=mint, error=str(exc)[:200])
+
+        creator_profile = None
+        if entity.entity_id:
+            creator_profile = {
+                "entity_id": entity.entity_id,
+                "launch_count": entity.launch_count,
+                "wallet_count": entity.wallet_count,
+                "known": True,
+            }
+
+        bundle: dict[str, Any] = {
+            "mint": mint,
+            "volume_m5_usd": snap.volume_m5_usd,
+            "volume_usd": snap.volume_m5_usd,
+            "liquidity_usd": snap.liquidity_usd,
+            "txns_m5_buys": snap.txns_m5_buys,
+            "txns_m5_sells": snap.txns_m5_sells,
+            "buyers": buyers_rows or None,
+            "wallet_performance": perf_map or None,
+            "creator_profile": creator_profile,
+            "creator": migration.creator,
+            "fee_status": fee_status,
+            "global_fees_sol": fees_sol,
+            "volume_gate": self._gate1_volume(),
+        }
+        inv = investigate(bundle)
+        alert_ok, alert_reason = can_alert_investigation(True, inv)
+        if alert_ok:
+            inv.pipeline_status = "ALERT"
+        await self._persist_inspection(
+            inspection_persist_params(inv, alert_ok=alert_ok, alert_reason=alert_reason)
         )
-        await self._record_filter_eval(
-            mint=migration.mint,
-            accepted=bool(ok),
-            reason=reason,
-            fees_sol=fees_sol,
-            fees_verified=bool(obs.fees_verified),
-            snap=snap,
-            fees_source=obs.fees_source,
-        )
-        if not ok:
-            logger.info(
-                "volume.emit_blocked_fees_gate",
-                mint=migration.mint,
-                reason=reason,
-                fees_sol=fees_sol,
-                fees_verified=obs.fees_verified,
-                fees_source=obs.fees_source,
-                required_min_fees_sol=float(getattr(settings, "min_fees_sol", 1.0) or 1.0),
-            )
-            return
 
         logger.info(
-            "volume.threshold_hit",
+            "investigation.complete",
+            mint=mint,
+            pipeline_status=inv.pipeline_status,
+            stinky_score=inv.score.score,
+            synthetic=inv.synthetic.level,
+            rug=inv.rug.level,
+            has_intelligence=inv.has_intelligence,
+            fee_status=inv.fee_status,
+            alert_ok=alert_ok,
+            alert_reason=alert_reason,
+            model=INTEL_VERSION,
+        )
+
+        try:
+            from stinky_core.events.base import Event, EventType
+
+            gate1_event = Event(
+                event_type=EventType.MARKET_GATE1_PASSED,
+                signature=migration.signature,
+                block_time=datetime.now(timezone.utc),
+                payload={
+                    "mint": mint,
+                    "volume_m5_usd": snap.volume_m5_usd,
+                    "threshold_usd": self._gate1_volume(),
+                    "dex_id": snap.dex_id,
+                    "filter_version": FILTER_VERSION,
+                },
+                producer="sentinel-volume",
+            )
+            await self._publisher.publish_raw_event(gate1_event, kind="gate1")
+            insp_event = Event(
+                event_type=EventType.MARKET_INSPECTION_COMPLETED,
+                signature=migration.signature,
+                block_time=datetime.now(timezone.utc),
+                payload={
+                    "mint": mint,
+                    "pipeline_status": inv.pipeline_status,
+                    "stinky_score": inv.score.score,
+                    "confidence": inv.score.confidence,
+                    "synthetic_level": inv.synthetic.level,
+                    "rug_level": inv.rug.level,
+                    "runner_potential": inv.runner.score,
+                    "has_intelligence": inv.has_intelligence,
+                    "fee_status": inv.fee_status,
+                    "global_fees_sol": inv.global_fees_sol,
+                    "alert_ok": alert_ok,
+                    "alert_reason": alert_reason,
+                    "model_version": INTEL_VERSION,
+                },
+                producer="sentinel-volume",
+            )
+            await self._publisher.publish_raw_event(insp_event, kind="inspection")
+        except Exception as exc:
+            logger.debug("investigation.event_publish_failed", mint=mint, error=str(exc)[:200])
+
+        if not alert_ok:
+            logger.info(
+                "volume.gate1_not_alert",
+                mint=mint,
+                reason=alert_reason,
+                score=inv.score.score,
+                has_intelligence=inv.has_intelligence,
+            )
+            return False
+
+        # Reuse existing scoring snapshot + ALERT_CANDIDATE emit
+        await self._emit_alert(migration, snap, obs, inv, smart, entity)
+        return True
+
+    async def _emit_alert(
+        self,
+        migration: DetectedMigration,
+        snap: VolumeSnapshot,
+        obs: FeeObservation,
+        inv: Any,
+        smart: SmartMoneySignals,
+        entity: EntitySignals,
+    ) -> None:
+        fees_sol = inv.global_fees_sol
+        logger.info(
+            "volume.alert_candidate",
             mint=migration.mint,
             volume_m5_usd=round(snap.volume_m5_usd, 2),
-            threshold_usd=self._threshold,
-            pool=migration.pool,
-            pair=snap.pair_address,
+            threshold_usd=self._gate1_volume(),
+            score=inv.score.score,
             fees_sol=fees_sol,
-            global_fees_verified=obs.fees_verified,
-            fees_source=obs.fees_source,
+            fee_status=inv.fee_status,
         )
 
-        # Smart-money + entity context (collector + entity-resolver)
-        smart = await self._load_smart_money(migration.mint)
-        entity = await self._load_entity(migration.creator)
-        result = score_alert_candidate(
-            volume_m5_usd=snap.volume_m5_usd,
-            threshold_usd=self._threshold,
-            liquidity_usd=snap.liquidity_usd,
-            smart=smart,
-            entity=entity,
-        )
-        logger.info(
-            "alert.stinky_score",
-            mint=migration.mint,
-            score=result.score,
-            confidence=result.confidence,
-            model=result.model_version,
-            smart_wallets=smart.smart_wallet_count,
-            early_buyers=smart.early_buyer_count,
-            entity_launches=entity.launch_count,
-            entity_id=entity.entity_id,
-            explanation=result.explanation,
-        )
-
-        
-        # Persist score snapshot for Time Machine (wallet + mint)
         try:
             async with self._sessions() as session:
                 await session.execute(
@@ -729,7 +872,7 @@ class VolumeMonitor:
                     )
                 )
                 import json as _json
-                expl = _json.dumps(result.explanation) if result.explanation else None
+                expl = _json.dumps(inv.score.to_dict())
                 sig = _json.dumps(
                     {
                         "early_buyer_count": smart.early_buyer_count,
@@ -739,6 +882,9 @@ class VolumeMonitor:
                         "avg_early_success_rate": smart.avg_early_success_rate,
                         "mega_hunter_count": smart.mega_hunter_count,
                         "entity_launch_count": entity.launch_count,
+                        "synthetic_level": inv.synthetic.level,
+                        "rug_level": inv.rug.level,
+                        "runner_potential": inv.runner.score,
                     }
                 )
                 if migration.creator:
@@ -757,9 +903,9 @@ class VolumeMonitor:
                         ),
                         {
                             "sid": migration.creator,
-                            "score": float(result.score),
-                            "conf": float(result.confidence) if result.confidence is not None else None,
-                            "model": result.model_version,
+                            "score": float(inv.score.score),
+                            "conf": float(inv.score.confidence),
+                            "model": inv.score.model_version,
                             "mint": migration.mint,
                             "expl": expl,
                             "sig": sig,
@@ -780,26 +926,18 @@ class VolumeMonitor:
                     ),
                     {
                         "sid": migration.mint,
-                        "score": float(result.score),
-                        "conf": float(result.confidence) if result.confidence is not None else None,
-                        "model": result.model_version,
+                        "score": float(inv.score.score),
+                        "conf": float(inv.score.confidence),
+                        "model": inv.score.model_version,
                         "mint": migration.mint,
                         "expl": expl,
                         "sig": sig,
                     },
                 )
                 await session.commit()
-                logger.info(
-                    "score.snapshot_saved",
-                    mint=migration.mint,
-                    creator=migration.creator,
-                    score=result.score,
-                )
         except Exception as exc:
             logger.warning("score.snapshot_failed", error=str(exc), mint=migration.mint)
 
-
-        # Persist threshold event
         vol_event = Event(
             event_type=EventType.VOLUME_THRESHOLD,
             signature=migration.signature,
@@ -812,7 +950,7 @@ class VolumeMonitor:
                 "liquidity_usd": snap.liquidity_usd,
                 "price_usd": snap.price_usd,
                 "dex_id": snap.dex_id,
-                "threshold_usd": self._threshold,
+                "threshold_usd": self._gate1_volume(),
                 "creator": migration.creator,
                 "name": snap.name,
                 "symbol": snap.symbol,
@@ -825,8 +963,6 @@ class VolumeMonitor:
         )
         await self._publisher.publish_raw_event(vol_event, kind="volume")
 
-        # Alert candidate ? Discord consumes this
-        # fees_sol MUST be present so downstream hard gate can fail-closed.
         alert_event = Event(
             event_type=EventType.ALERT_CANDIDATE,
             signature=migration.signature,
@@ -835,11 +971,11 @@ class VolumeMonitor:
                 "mint": migration.mint,
                 "pool": migration.pool,
                 "pair_address": snap.pair_address,
-                "reason": "migration_plus_volume",
+                "reason": "gate1_plus_intelligence",
                 "volume_m5_usd": snap.volume_m5_usd,
                 "liquidity_usd": snap.liquidity_usd,
                 "price_usd": snap.price_usd,
-                "threshold_usd": self._threshold,
+                "threshold_usd": self._gate1_volume(),
                 "creator": migration.creator,
                 "destination": migration.destination,
                 "name": snap.name,
@@ -850,10 +986,17 @@ class VolumeMonitor:
                 "global_fees_verified": bool(obs.fees_verified),
                 "global_fees_source": obs.fees_source,
                 "global_fees_calculation_version": RESOLVER_VERSION,
-                "stinky_score": result.score,
-                "confidence": result.confidence,
-                "score_model": result.model_version,
-                "score_explanation": result.explanation,
+                "stinky_score": inv.score.score,
+                "confidence": inv.score.confidence,
+                "score_model": inv.score.model_version,
+                "score_explanation": inv.score.to_dict(),
+                "inspection_complete": True,
+                "has_intelligence": inv.has_intelligence,
+                "synthetic_level": inv.synthetic.level,
+                "rug_level": inv.rug.level,
+                "runner_potential": inv.runner.score,
+                "pipeline_status": inv.pipeline_status,
+                "fee_status": inv.fee_status,
                 "early_buyer_count": smart.early_buyer_count,
                 "meaningful_buyer_count": smart.meaningful_buyer_count,
                 "smart_wallet_count": smart.smart_wallet_count,

@@ -1,8 +1,12 @@
 # ADR-009: Authoritative Global Fee Resolver
 
-**Status:** Accepted  
+**Status:** Accepted (admission role superseded by ADR-010)  
 **Date:** 2026-08-30  
 **Version:** fee-resolver-v1.0.0
+
+> ADR-010 demotes verified global fees from a mandatory Gate 1 reject to
+> optional intelligence evidence. This resolver remains the only allowed
+> producer of `global_fees_sol`. Do not fabricate fees.
 
 ## Context
 

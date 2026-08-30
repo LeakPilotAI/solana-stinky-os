@@ -1,24 +1,10 @@
-"""StinkyFilterEngine — canonical market eligibility (axiom-parity-v1.0.0).
+"""StinkyFilterEngine — canonical market eligibility (volume-first-v1.0.0).
 
-FAIL CLOSED. Filtering happens BEFORE scoring.
-Score, volume heuristics, smart-money, or UI convenience MUST NOT override a failed hard gate.
+FAIL CLOSED. Gate 1 happens BEFORE scoring.
+Score cannot override a failed Gate 1 (protocol / mint / volume / migrated).
 
-Product rule: prefer NO ALERT over a low-quality / synthetic alert.
-
-Canonical reason codes (primary):
-  FEES_BELOW_MIN, FEES_UNKNOWN,
-  LIQUIDITY_BELOW_MIN, VOLUME_BELOW_MIN, MARKET_CAP_BELOW_MIN,
-  PROTOCOL_DISABLED, PROTOCOL_UNKNOWN,
-  NO_SOCIAL, DEX_PAID, NOT_MIGRATED,
-  INVALID_MARKET_DATA, SYNTHETIC_ACTIVITY_SUSPECTED
-
-Fee metric (authoritative, no substitutes):
-  Name: global_fees_sol
-  Meaning: cumulative / all-time pump.fun global fees, in SOL
-  Source: pump.fun public coin API fields total_fees / total_fees_sol / fees_sol
-  Verification: global_fees_verified MUST be True
-  Missing / unverified / malformed → FEES_UNKNOWN (never pass)
-  NEVER substitute: creator fees, pool fees, tx count, volume, liquidity, protocol revenue
+Gate 1 = investigation trigger, NOT a buy signal.
+Unknown global fees do NOT reject. FeeResolver remains optional evidence.
 """
 
 from __future__ import annotations
@@ -30,13 +16,15 @@ from datetime import datetime, timezone
 from threading import Lock
 from typing import Any, Iterable, Mapping
 
-FILTER_VERSION = "axiom-parity-v1.0.0"
+FILTER_VERSION = "volume-first-v1.0.0"
 
 DEFAULT_MIN_GLOBAL_FEES_SOL = 1.0
 DEFAULT_MIN_LIQUIDITY_USD = 8.0
-DEFAULT_MIN_VOLUME_USD = 100_000.0
+DEFAULT_MIN_VOLUME_USD = 150_000.0
+GATE1_VOLUME_5M_USD = 150_000.0
+GATE1_VOLUME_CALIBRATION_MAX_USD = 200_000.0
 DEFAULT_MIN_MARKET_CAP_USD = 31_333.0
-DEFAULT_REQUIRE_AT_LEAST_ONE_SOCIAL = True
+DEFAULT_REQUIRE_AT_LEAST_ONE_SOCIAL = False
 ALERT_MIN_SCORE = 55.0
 ALERT_MIN_MEANINGFUL_BUYERS = 3
 
@@ -113,6 +101,9 @@ class ReasonCode:
     SCORE_UNKNOWN = "SCORE_UNKNOWN"
     SCORE_BELOW_MIN = "SCORE_BELOW_MIN"
     MEANINGFUL_BUYERS_BELOW_MIN = "MEANINGFUL_BUYERS_BELOW_MIN"
+    INSPECTION_INCOMPLETE = "INSPECTION_INCOMPLETE"
+    RISK_CRITICAL = "RISK_CRITICAL"
+    INTELLIGENCE_INSUFFICIENT = "INTELLIGENCE_INSUFFICIENT"
 
 
 REASON_PRIORITY: tuple[str, ...] = (
@@ -262,6 +253,19 @@ class FilterDecision:
 EligibilityResult = FilterDecision
 
 
+def clamp_gate1_volume(v: float | None) -> float:
+    """Default 150k. Configurable up to 200k. Invalid → default. Never fabricate."""
+    if v is None:
+        return GATE1_VOLUME_5M_USD
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return GATE1_VOLUME_5M_USD
+    if not math.isfinite(f) or f <= 0:
+        return GATE1_VOLUME_5M_USD
+    return min(f, GATE1_VOLUME_CALIBRATION_MAX_USD)
+
+
 def _safe_float(v: Any) -> float | None:
     if v is None:
         return None
@@ -350,14 +354,16 @@ class FilterConfig:
     allowed_protocols: frozenset[str] = DEFAULT_ALLOWED_PROTOCOLS
     denied_protocols: frozenset[str] = DEFAULT_DENIED_PROTOCOLS
     reject_unknown_protocol: bool = True
-    require_liquidity: bool = True
+    require_liquidity: bool = False
     require_volume: bool = True
-    require_market_cap: bool = True
-    require_fees: bool = True
+    require_market_cap: bool = False
+    require_fees: bool = False
     require_migrated: bool = True
-    reject_dex_paid: bool = False  # dexPaid:false → do not require paid
+    reject_dex_paid: bool = False
     record_stats: bool = True
 
+
+GATE1_CONFIG = FilterConfig()
 
 EARLY_GATE_CONFIG = FilterConfig(
     require_liquidity=False,
@@ -365,6 +371,18 @@ EARLY_GATE_CONFIG = FilterConfig(
     require_market_cap=False,
     require_at_least_one_social=False,
     require_migrated=False,
+    require_fees=False,
+)
+
+# Optional legacy profile — not the default.
+LEGACY_FEE_GATE_CONFIG = FilterConfig(
+    filter_version="axiom-parity-v1.0.0",
+    min_volume_usd=100_000.0,
+    require_fees=True,
+    require_liquidity=True,
+    require_market_cap=True,
+    require_at_least_one_social=True,
+    require_migrated=True,
 )
 
 
@@ -531,7 +549,9 @@ class StinkyFilterEngine:
         elif dex_paid is False or dex_paid is None:
             ok("dex_paid", dex_paid, False, "bool")
 
-        # GLOBAL FEES — THE critical anti-synthetic gate.
+        # GLOBAL FEES — optional intelligence evidence. Unknown does not reject Gate 1.
+        fees = _safe_float(global_fees_sol)
+        metrics["global_fees_sol"] = fees
         if cfg.require_fees:
             if global_fees_verified is False:
                 fail(
@@ -543,42 +563,51 @@ class StinkyFilterEngine:
                     source=global_fees_source,
                     confidence=global_fees_confidence,
                 )
+            elif fees is None:
+                fail(
+                    "global_fees",
+                    global_fees_sol,
+                    cfg.min_global_fees_sol,
+                    "SOL",
+                    ReasonCode.FEES_UNKNOWN
+                    if global_fees_sol is None or global_fees_verified is not True
+                    else ReasonCode.INVALID_MARKET_DATA,
+                    source=global_fees_source,
+                    confidence=global_fees_confidence,
+                )
+            elif global_fees_verified is not True:
+                fail(
+                    "global_fees",
+                    fees,
+                    cfg.min_global_fees_sol,
+                    "SOL",
+                    ReasonCode.FEES_UNKNOWN,
+                    source=global_fees_source,
+                    confidence=global_fees_confidence,
+                )
+            elif fees + 1e-9 < float(cfg.min_global_fees_sol):
+                fail(
+                    "global_fees",
+                    fees,
+                    cfg.min_global_fees_sol,
+                    "SOL",
+                    ReasonCode.FEES_BELOW_MIN,
+                    source=global_fees_source,
+                    confidence=global_fees_confidence,
+                )
             else:
-                fees = _safe_float(global_fees_sol)
-                metrics["global_fees_sol"] = fees
-                if fees is None:
-                    fail(
-                        "global_fees",
-                        global_fees_sol,
-                        cfg.min_global_fees_sol,
-                        "SOL",
-                        ReasonCode.FEES_UNKNOWN
-                        if global_fees_sol is None or global_fees_verified is not True
-                        else ReasonCode.INVALID_MARKET_DATA,
-                        source=global_fees_source,
-                        confidence=global_fees_confidence,
-                    )
-                elif global_fees_verified is not True:
-                    fail(
-                        "global_fees",
-                        fees,
-                        cfg.min_global_fees_sol,
-                        "SOL",
-                        ReasonCode.FEES_UNKNOWN,
-                        source=global_fees_source,
-                        confidence=global_fees_confidence,
-                    )
-                elif fees + 1e-9 < float(cfg.min_global_fees_sol):
-                    fail(
-                        "global_fees",
-                        fees,
-                        cfg.min_global_fees_sol,
-                        "SOL",
-                        ReasonCode.FEES_BELOW_MIN,
-                        source=global_fees_source,
-                        confidence=global_fees_confidence,
-                    )
-                else:
+                ok(
+                    "global_fees",
+                    fees,
+                    cfg.min_global_fees_sol,
+                    "SOL",
+                    source=global_fees_source,
+                    confidence=global_fees_confidence,
+                )
+                metrics["fee_signal"] = "positive"
+        else:
+            if global_fees_verified is True and fees is not None:
+                if fees + 1e-9 >= float(cfg.min_global_fees_sol):
                     ok(
                         "global_fees",
                         fees,
@@ -587,9 +616,13 @@ class StinkyFilterEngine:
                         source=global_fees_source,
                         confidence=global_fees_confidence,
                     )
-        else:
-            fees = _safe_float(global_fees_sol)
-            metrics["global_fees_sol"] = fees
+                    metrics["fee_signal"] = "positive"
+                else:
+                    metrics["fee_signal"] = "negative"
+                    prov["fee_negative_evidence"] = True
+            else:
+                metrics["fee_signal"] = "unavailable"
+                metrics["fees_verified"] = False if global_fees_verified is not True else metrics.get("fees_verified")
 
         if cfg.require_liquidity:
             liq = _safe_float(liquidity_usd)
@@ -614,6 +647,8 @@ class StinkyFilterEngine:
                 )
             else:
                 ok("liquidity", liq, cfg.min_liquidity_usd, "USD")
+        else:
+            metrics["liquidity_usd"] = _safe_float(liquidity_usd)
 
         if cfg.require_volume:
             vol = _safe_float(volume_usd)
@@ -658,6 +693,8 @@ class StinkyFilterEngine:
                 )
             else:
                 ok("market_cap", mcap, cfg.min_market_cap_usd, "USD")
+        else:
+            metrics["market_cap_usd"] = _safe_float(market_cap_usd)
 
         social_ok = _has_verified_social(
             twitter=twitter,
@@ -768,6 +805,20 @@ def evaluate_market(
     )
 
 
+def evaluate_gate1(
+    market: Mapping[str, Any],
+    *,
+    min_volume_usd: float | None = None,
+) -> FilterDecision:
+    """Gate 1: protocol + mint + migrated + 5m volume. Fees are not required."""
+    cfg = FilterConfig(
+        min_volume_usd=clamp_gate1_volume(
+            min_volume_usd if min_volume_usd is not None else GATE1_VOLUME_5M_USD
+        ),
+    )
+    return evaluate_market(market, config=cfg)
+
+
 def evaluate_admission(
     *,
     mint: str | None,
@@ -832,11 +883,25 @@ def can_alert(
     meaningful_buyers: Any = None,
     min_score: float = ALERT_MIN_SCORE,
     min_meaningful_buyers: int = ALERT_MIN_MEANINGFUL_BUYERS,
+    inspection_complete: bool = False,
+    synthetic_level: str | None = None,
+    rug_level: str | None = None,
+    has_intelligence: bool = False,
 ) -> tuple[bool, str | None]:
-    """Intelligence gate. MUST NOT run unless eligibility already passed."""
+    """Intelligence gate. MUST NOT run unless Gate 1 already passed.
+
+    Gate 1 is not an alert. Alert requires completed inspection, acceptable
+    risk, meaningful intelligence, and score >= threshold.
+    """
     if not decision.eligible:
         filter_stats.inc("alerts_rejected")
         return False, decision.rejection_reason or ReasonCode.NOT_ELIGIBLE
+    if not inspection_complete:
+        filter_stats.inc("alerts_rejected")
+        return False, ReasonCode.INSPECTION_INCOMPLETE
+    if (synthetic_level or "").upper() == "CRITICAL" or (rug_level or "").upper() == "CRITICAL":
+        filter_stats.inc("alerts_rejected")
+        return False, ReasonCode.RISK_CRITICAL
     if score is None:
         filter_stats.inc("alerts_rejected")
         return False, ReasonCode.SCORE_UNKNOWN
@@ -848,13 +913,14 @@ def can_alert(
     if score_f + 1e-9 < float(min_score):
         filter_stats.inc("alerts_rejected")
         return False, ReasonCode.SCORE_BELOW_MIN
-    mb: int | None
-    try:
-        mb = int(meaningful_buyers) if meaningful_buyers is not None else None
-    except (TypeError, ValueError):
-        mb = None
-    if mb is None or mb < int(min_meaningful_buyers):
-        filter_stats.inc("alerts_rejected")
-        return False, ReasonCode.MEANINGFUL_BUYERS_BELOW_MIN
+    if not has_intelligence:
+        mb: int | None
+        try:
+            mb = int(meaningful_buyers) if meaningful_buyers is not None else None
+        except (TypeError, ValueError):
+            mb = None
+        if mb is None or mb < int(min_meaningful_buyers):
+            filter_stats.inc("alerts_rejected")
+            return False, ReasonCode.INTELLIGENCE_INSUFFICIENT
     filter_stats.inc("alerts_generated")
     return True, None

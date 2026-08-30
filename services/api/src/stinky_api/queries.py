@@ -25,12 +25,13 @@ def apply_canonical_gate(row: dict[str, Any], *, min_fees_sol: float = 1.0) -> d
     """Stamp eligibility from the single canonical engine. Fail closed.
 
     A bare fee number is NEVER treated as verified.
+    Unknown fees do NOT reject Gate 1.
     """
     out = dict(row)
     if evaluate_market is None:
         out["eligible"] = False
-        out["rejection_reason"] = "FEES_UNKNOWN"
-        out["reason_codes"] = ["FEES_UNKNOWN"]
+        out["rejection_reason"] = "INVALID_MARKET_DATA"
+        out["reason_codes"] = ["INVALID_MARKET_DATA"]
         return out
     fees = out.get("global_fees_sol")
     if fees is None:
@@ -72,10 +73,14 @@ def apply_canonical_gate(row: dict[str, Any], *, min_fees_sol: float = 1.0) -> d
     out["passed_filters"] = decision.passed_filters
     out["filter_version"] = decision.filter_version
     out["normalized_metrics"] = decision.normalized_metrics
+    out["fee_signal"] = (decision.metrics or {}).get("fee_signal")
     out["global_fees_verified"] = verified is True
     if verified is True and fees is not None:
         out["fees_sol"] = fees
         out["global_fees_sol"] = fees
+    else:
+        out["fees_sol"] = fees if verified is True else None
+        out["global_fees_sol"] = fees if verified is True else None
     return out
 
 
@@ -165,6 +170,7 @@ async def recent_migrations(
     limit: int = 25,
     *,
     min_fees_sol: float = 0.0,
+    min_volume_m5_usd: float = 150_000.0,
     pump_only: bool = True,
     enrich_fees: bool = False,
 ) -> list[dict]:
@@ -234,8 +240,23 @@ async def recent_migrations(
         if len(out) >= limit:
             break
 
-    # Fee enrich + HARD filter when min_fees_sol > 0 (fail-closed: unknown drops).
-    if enrich_fees and min_fees_sol > 0 and out:
+    # Fee enrich is optional evidence. Gate 1 is volume, not fees.
+    gated_out: list[dict] = []
+    for d in out:
+        if min_volume_m5_usd and d.get("volume_m5_usd") is not None:
+            try:
+                if float(d["volume_m5_usd"]) + 1e-9 < float(min_volume_m5_usd):
+                    continue
+            except (TypeError, ValueError):
+                continue
+        gated = apply_canonical_gate(d, min_fees_sol=min_fees_sol or 1.0)
+        if not gated.get("eligible"):
+            continue
+        gated_out.append(gated)
+        if len(gated_out) >= limit:
+            break
+
+    if enrich_fees and gated_out:
         import asyncio
 
         async def _one(d: dict) -> dict:
@@ -263,16 +284,10 @@ async def recent_migrations(
             d["global_fees_verified"] = verified is True
             return d
 
-        enriched = await asyncio.gather(*[_one(dict(d)) for d in out[:limit]])
-        filtered = []
-        for d in enriched:
-            gated = apply_canonical_gate(d, min_fees_sol=min_fees_sol)
-            if not gated.get("eligible"):
-                continue
-            filtered.append(gated)
-        return filtered[:limit]
+        enriched = await asyncio.gather(*[_one(dict(d)) for d in gated_out[:limit]])
+        return [apply_canonical_gate(d, min_fees_sol=min_fees_sol or 1.0) for d in enriched][:limit]
 
-    return out[:limit]
+    return gated_out[:limit]
 
 
 async def recent_alerts(session: AsyncSession, limit: int = 20) -> list[dict]:
@@ -678,15 +693,47 @@ async def mint_detail(session: AsyncSession, mint: str) -> dict[str, Any] | None
         pass
 
     if not track and not launch and not alert:
-        return None
+        inspection = await _latest_inspection(session, mint)
+        if not inspection:
+            return None
+        return {"mint": mint, "track": None, "launch": None, "alert": None, "buyers": buyers, "inspection": inspection}
 
+    inspection = await _latest_inspection(session, mint)
     return {
         "mint": mint,
         "track": track,
         "launch": launch,
         "alert": alert,
         "buyers": buyers,
+        "inspection": inspection,
     }
+
+
+async def _latest_inspection(session: AsyncSession, mint: str) -> dict[str, Any] | None:
+    try:
+        row = (
+            await session.execute(
+                text(
+                    """
+                    SELECT mint, inspected_at, model_version, pipeline_status,
+                           gate1_passed, volume_m5_usd, synthetic_score, synthetic_level,
+                           rug_score, rug_level, stinky_score, runner_potential,
+                           score_confidence, fee_status, global_fees_sol,
+                           has_intelligence, evidence, missing_data, alert_ok, alert_reason
+                    FROM market_inspections
+                    WHERE mint = :m
+                    ORDER BY inspected_at DESC
+                    LIMIT 1
+                    """
+                ),
+                {"m": mint},
+            )
+        ).mappings().first()
+        if row:
+            return _ser(dict(row))
+    except Exception:
+        return None
+    return None
 
 
 def explain_wallet(row: dict[str, Any]) -> dict[str, Any]:

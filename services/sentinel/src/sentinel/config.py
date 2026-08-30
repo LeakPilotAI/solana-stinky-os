@@ -46,7 +46,7 @@ class Settings(BaseSettings):
 
     event_log_url: str | None = "http://localhost:8002"
 
-    # Early migration observation threshold (not the opportunity screen)
+    # Early migration observation threshold (not Gate 1)
     volume_threshold_usd: float = 25_000.0
     volume_poll_interval_sec: float = 20.0
     volume_max_watch_sec: float = 900.0
@@ -54,17 +54,17 @@ class Settings(BaseSettings):
     allowed_dex_ids: str = "pumpswap,pumpfun,pump"
     denied_dex_ids: str = "meteora,raydium,orca,phoenix,lifinity,saber,aldrin,fluxbeam,pumpamm"
     require_pump_mint_suffix: bool = True
-    # Hard ops floor: 1.0 SOL. Override via STINKY_MIN_FEES_SOL.
-    # HARD GATE: missing / unverified / below floor ? REJECT.
+    # Optional evidence floor. NOT a Gate 1 reject.
     min_fees_sol: float = 1.0
     birdeye_api_key: str | None = None
 
-    # Full opportunity screen (FilterEngine) ? separate from early volume watch
-    filter_version: str = "axiom-parity-v1.0.0"
+    # Gate 1 — investigation trigger (not a buy signal)
+    filter_version: str = "volume-first-v1.0.0"
     min_liquidity_usd: float = 8.0
-    min_volume_usd: float = 100_000.0
+    min_volume_usd: float = 150_000.0
+    gate1_volume_5m_usd: float = 150_000.0
     min_market_cap_usd: float = 31_333.0
-    require_at_least_one_social: bool = True
+    require_at_least_one_social: bool = False
 
 
 settings = Settings()

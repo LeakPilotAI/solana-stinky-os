@@ -54,22 +54,23 @@ def test_resolver_version():
 def test_verified_0_reject():
     obs = verified_observation(MINT, 0.00, protocol="pump", source="fixture", confidence=1.0)
     d = _admit(obs)
-    assert d.eligible is False
-    assert d.rejection_reason == ReasonCode.FEES_BELOW_MIN
+    assert d.eligible is True
+    assert d.metrics.get("fee_signal") == "negative"
+    assert ReasonCode.FEES_BELOW_MIN not in d.reason_codes
 
 
 def test_verified_050_reject():
     obs = verified_observation(MINT, 0.50, protocol="pump", source="fixture", confidence=1.0)
     d = _admit(obs)
-    assert d.eligible is False
-    assert d.rejection_reason == ReasonCode.FEES_BELOW_MIN
+    assert d.eligible is True
+    assert d.metrics.get("fee_signal") == "negative"
 
 
 def test_verified_099_reject():
     obs = verified_observation(MINT, 0.99, protocol="pump", source="fixture", confidence=1.0)
     d = _admit(obs)
-    assert d.eligible is False
-    assert d.rejection_reason == ReasonCode.FEES_BELOW_MIN
+    assert d.eligible is True
+    assert d.metrics.get("fee_signal") == "negative"
 
 
 def test_verified_100_pass_fee_condition():
@@ -78,6 +79,7 @@ def test_verified_100_pass_fee_condition():
     assert d.rejection_reason != ReasonCode.FEES_BELOW_MIN
     assert d.rejection_reason != ReasonCode.FEES_UNKNOWN
     assert any(f["name"] == "global_fees" and f["passed"] for f in d.passed_filters)
+    assert d.metrics.get("fee_signal") == "positive"
 
 
 def test_verified_300_pass_fee_condition():
@@ -89,9 +91,9 @@ def test_verified_300_pass_fee_condition():
 def test_unknown_fees_reject():
     obs = unknown_observation(MINT, protocol="pump", error="NO_TRADES")
     d = _admit(obs)
-    assert d.eligible is False
-    assert d.rejection_reason == ReasonCode.FEES_UNKNOWN
-    assert d.metrics["fees_verified"] is False
+    assert d.eligible is True
+    assert ReasonCode.FEES_UNKNOWN not in d.reason_codes
+    assert d.metrics.get("fee_signal") == "unavailable"
 
 
 def test_stale_fees_reject():
@@ -100,8 +102,8 @@ def test_stale_fees_reject():
     assert stale.fees_status == FeeStatus.STALE
     assert stale.fees_verified is False
     d = _admit(stale)
-    assert d.eligible is False
-    assert d.rejection_reason == ReasonCode.FEES_UNKNOWN
+    assert d.eligible is True
+    assert d.metrics.get("fee_signal") == "unavailable"
 
 
 def test_freshness_window():
@@ -124,14 +126,15 @@ def test_malformed_fee_response_reject():
     d = evaluate_market(
         _base_market(global_fees_sol="nope", global_fees_verified=True)
     )
-    assert d.eligible is False
-    assert d.rejection_reason in (ReasonCode.FEES_UNKNOWN, ReasonCode.INVALID_MARKET_DATA)
+    assert d.eligible is True
+    assert d.metrics.get("fee_signal") == "unavailable"
 
 
 def test_negative_fee_reject():
     assert parse_explicit_fee_number(-1.0) is None
     d = evaluate_market(_base_market(global_fees_sol=-1.0, global_fees_verified=True))
-    assert d.eligible is False
+    assert d.eligible is True
+    assert d.metrics.get("global_fees_sol") is None
 
 
 def test_non_finite_fee_reject():
@@ -139,9 +142,9 @@ def test_non_finite_fee_reject():
     assert parse_explicit_fee_number(float("inf")) is None
     assert parse_explicit_fee_number(float("-inf")) is None
     d = evaluate_market(_base_market(global_fees_sol=float("nan"), global_fees_verified=True))
-    assert d.eligible is False
+    assert d.eligible is True
     d2 = evaluate_market(_base_market(global_fees_sol=float("inf"), global_fees_verified=True))
-    assert d2.eligible is False
+    assert d2.eligible is True
 
 
 def test_duplicate_fee_observations_deterministic():
@@ -192,8 +195,7 @@ def test_unsupported_protocol_unknown():
 def test_canonical_admission_is_only_gate():
     obs = verified_observation(MINT, 3.0, protocol="pump", source="fixture", confidence=1.0)
     d = _admit(obs)
-    assert d.filter_version == "axiom-parity-v1.0.0"
-    # score cannot be passed into admission
+    assert d.filter_version == "volume-first-v1.0.0"
     d2 = evaluate_market(
         _base_market(
             global_fees_sol=0.2,
@@ -201,7 +203,8 @@ def test_canonical_admission_is_only_gate():
             stinky_score=99,
         )
     )
-    assert d2.eligible is False
+    assert d2.eligible is True
+    assert d2.metrics.get("fee_signal") == "negative"
 
 
 def test_creator_fees_field_is_not_global_fees():
@@ -259,8 +262,9 @@ def test_volume_is_not_a_fee_substitute():
             market_cap_usd=2_000_000,
         )
     )
-    assert d.eligible is False
-    assert d.rejection_reason == ReasonCode.FEES_UNKNOWN
+    assert d.eligible is True
+    assert d.metrics.get("global_fees_sol") is None
+    assert d.metrics.get("fee_signal") == "unavailable"
 
 
 def test_native_and_wsol_not_double_counted():

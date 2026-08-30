@@ -1,4 +1,4 @@
-"""Discord quality gate must call the canonical engine, then intelligence."""
+"""Discord quality gate: Gate 1 then intelligence. Fees are not an admission reject."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from stinky_core.identity import AlertLedger
 MINT = "AbCdEf1234567890AbCdEf1234567890pump"
 
 
-def test_missing_fees_cannot_alert_even_with_high_score_payload():
+def test_unknown_fees_pass_gate1_but_cannot_alert_without_inspection():
     d = evaluate_admission(
         mint=MINT,
         protocol="pumpswap",
@@ -27,13 +27,13 @@ def test_missing_fees_cannot_alert_even_with_high_score_payload():
         twitter="https://x.com/abc",
         migrated=True,
     )
-    assert d.accepted is False
-    ok, reason = can_alert(d, score=99, meaningful_buyers=20)
+    assert d.accepted is True
+    ok, reason = can_alert(d, score=99, meaningful_buyers=20, inspection_complete=False)
     assert ok is False
-    assert reason == ReasonCode.FEES_UNKNOWN
+    assert reason == ReasonCode.INSPECTION_INCOMPLETE
 
 
-def test_low_fees_high_volume_rejected():
+def test_low_verified_fees_do_not_block_gate1():
     d = evaluate_admission(
         mint=MINT,
         protocol="pumpswap",
@@ -45,9 +45,9 @@ def test_low_fees_high_volume_rejected():
         twitter="https://x.com/abc",
         migrated=True,
     )
-    assert d.accepted is False
-    assert d.rejection_reason == ReasonCode.FEES_BELOW_MIN
-    assert can_alert(d, score=94, meaningful_buyers=12)[0] is False
+    assert d.accepted is True
+    assert d.metrics.get("fee_signal") == "negative"
+    assert can_alert(d, score=94, meaningful_buyers=12, inspection_complete=False)[0] is False
 
 
 def test_duplicate_discord_delivery_blocked():

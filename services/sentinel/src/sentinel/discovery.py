@@ -21,6 +21,14 @@ from sentinel.volume import DexScreenerClient, resolve_global_fees
 if TYPE_CHECKING:
     from sentinel.volume import VolumeMonitor
 
+try:
+    from stinky_core.admission import GATE1_VOLUME_5M_USD, clamp_gate1_volume
+except ImportError:
+    GATE1_VOLUME_5M_USD = 150_000.0
+
+    def clamp_gate1_volume(v):
+        return float(v) if v else GATE1_VOLUME_5M_USD
+
 logger = structlog.get_logger(__name__)
 
 BOOSTS_URL = "https://api.dexscreener.com/token-boosts/top/v1"
@@ -39,12 +47,13 @@ class HighVolumeDiscovery:
     ) -> None:
         self._volume = volume
         self._interval = float(interval_sec)
-        # Discovery uses the same runner floor (default 50k) so CC/runners fill;
-        # Trending still requires 100k via API.
-        self._min_vol = float(
+        # Discovery hands mints to volume watch at Gate 1 (investigation trigger).
+        self._min_vol = clamp_gate1_volume(
             min_volume_usd
             if min_volume_usd is not None
-            else getattr(settings, "volume_threshold_usd", 50_000.0) or 50_000.0
+            else getattr(settings, "gate1_volume_5m_usd", None)
+            or getattr(settings, "min_volume_usd", GATE1_VOLUME_5M_USD)
+            or GATE1_VOLUME_5M_USD
         )
         self._stop = asyncio.Event()
         self._seen: set[str] = set()

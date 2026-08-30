@@ -1,14 +1,16 @@
-"""Mandatory admission tests for StinkyFilterEngine (axiom-parity-v1.0.0)."""
+"""Gate 1 tests for StinkyFilterEngine (volume-first-v1.0.0)."""
 
 from __future__ import annotations
 
 from sentinel.filter_engine import (
     DEFAULT_MIN_GLOBAL_FEES_SOL,
     FILTER_VERSION,
+    GATE1_VOLUME_5M_USD,
     FilterConfig,
     ReasonCode,
     StinkyFilterEngine,
     evaluate_admission,
+    evaluate_gate1,
 )
 
 
@@ -20,9 +22,8 @@ def _base(**overrides):
     d = {
         "mint": "AbCdEf1234567890AbCdEf1234567890pump",
         "protocol": "pumpfun",
-        "global_fees_sol": 6.0,
-        "global_fees_verified": True,
-        "global_fees_source": "pump.fun/total_fees",
+        "global_fees_sol": None,
+        "global_fees_verified": None,
         "liquidity_usd": 50.0,
         "volume_usd": 150_000.0,
         "market_cap_usd": 50_000.0,
@@ -34,81 +35,70 @@ def _base(**overrides):
     return d
 
 
-def test_fees_zero_reject():
-    d = evaluate_admission(**_base(global_fees_sol=0.0))
+def test_gate1_volume_149999_reject():
+    d = evaluate_gate1(_base(volume_usd=149_999))
     assert d.accepted is False
-    assert d.rejection_reason == ReasonCode.FEES_BELOW_MIN
+    assert d.rejection_reason == ReasonCode.VOLUME_BELOW_MIN
 
 
-def test_fees_half_reject():
-    d = evaluate_admission(**_base(global_fees_sol=0.5))
-    assert d.accepted is False
-    assert d.rejection_reason == ReasonCode.FEES_BELOW_MIN
-
-
-def test_fees_point99_reject():
-    d = evaluate_admission(**_base(global_fees_sol=0.99))
-    assert d.accepted is False
-    assert d.rejection_reason == ReasonCode.FEES_BELOW_MIN
-
-
-def test_fees_one_pass():
-    d = evaluate_admission(**_base(global_fees_sol=1.0))
+def test_gate1_volume_150000_pass():
+    d = evaluate_gate1(_base(volume_usd=150_000))
     assert d.accepted is True
     assert d.eligible is True
-    assert d.rejection_reason is None
+
+
+def test_gate1_volume_200000_pass():
+    d = evaluate_gate1(_base(volume_usd=200_000))
+    assert d.accepted is True
+
+
+def test_unknown_fees_do_not_reject():
+    d = evaluate_admission(**_base(global_fees_sol=None, global_fees_verified=None))
+    assert d.accepted is True
+    assert ReasonCode.FEES_UNKNOWN not in d.reason_codes
+
+
+def test_verified_fees_below_one_are_evidence_not_reject():
+    d = evaluate_admission(**_base(global_fees_sol=0.0, global_fees_verified=True))
+    assert d.accepted is True
+    assert d.metrics.get("fee_signal") == "negative"
+
+
+def test_fees_half_evidence_not_reject():
+    d = evaluate_admission(**_base(global_fees_sol=0.5, global_fees_verified=True))
+    assert d.accepted is True
+    assert d.metrics.get("fee_signal") == "negative"
+
+
+def test_fees_point99_evidence_not_reject():
+    d = evaluate_admission(**_base(global_fees_sol=0.99, global_fees_verified=True))
+    assert d.accepted is True
+
+
+def test_fees_one_positive_evidence():
+    d = evaluate_admission(**_base(global_fees_sol=1.0, global_fees_verified=True))
+    assert d.accepted is True
+    assert d.metrics.get("fee_signal") == "positive"
     assert any(f["name"] == "global_fees" for f in d.passed_filters)
 
 
-def test_fees_two_pass():
-    d = evaluate_admission(**_base(global_fees_sol=2.0))
-    assert d.accepted is True
-
-
-def test_fees_three_pass():
-    d = evaluate_admission(**_base(global_fees_sol=3.0))
-    assert d.accepted is True
-
-
-def test_fees_missing_reject():
-    d = evaluate_admission(**_base(global_fees_sol=None, global_fees_verified=None))
-    assert d.accepted is False
-    assert d.rejection_reason == ReasonCode.FEES_UNKNOWN
-
-
-def test_fees_malformed_reject():
+def test_fees_malformed_does_not_reject_gate1():
     d = evaluate_admission(**_base(global_fees_sol="not-a-number", global_fees_verified=True))  # type: ignore[arg-type]
-    assert d.accepted is False
-    assert d.rejection_reason in (ReasonCode.FEES_UNKNOWN, ReasonCode.INVALID_MARKET_DATA)
+    assert d.accepted is True
+    assert d.metrics.get("fee_signal") == "unavailable"
 
 
-def test_fees_negative_reject():
-    d = evaluate_admission(**_base(global_fees_sol=-1.0, global_fees_verified=True))
-    assert d.accepted is False
-
-
-def test_fees_nan_reject():
-    d = evaluate_admission(**_base(global_fees_sol=float("nan"), global_fees_verified=True))
-    assert d.accepted is False
-
-
-def test_fees_unverified_even_with_number_reject():
+def test_unverified_fees_do_not_reject():
     d = evaluate_admission(**_base(global_fees_sol=10.0, global_fees_verified=False))
-    assert d.accepted is False
-    assert d.rejection_reason == ReasonCode.FEES_UNKNOWN
+    assert d.accepted is True
+    assert ReasonCode.FEES_UNKNOWN not in d.reason_codes
 
 
-def test_fees_verified_none_with_number_reject():
-    d = evaluate_admission(**_base(global_fees_sol=10.0, global_fees_verified=None))
-    assert d.accepted is False
-    assert d.rejection_reason == ReasonCode.FEES_UNKNOWN
-
-
-def test_high_score_cannot_override_low_fees():
-    d = evaluate_admission(**_base(global_fees_sol=0.42))
+def test_score_cannot_override_volume_gate():
+    d = evaluate_admission(**_base(volume_usd=1_000))
     assert d.accepted is False
     assert "score" not in d.metrics
-    assert d.rejection_reason == ReasonCode.FEES_BELOW_MIN
+    assert d.rejection_reason == ReasonCode.VOLUME_BELOW_MIN
 
 
 def test_volume_99999_reject():
@@ -117,63 +107,31 @@ def test_volume_99999_reject():
     assert d.rejection_reason == ReasonCode.VOLUME_BELOW_MIN
 
 
-def test_volume_100000_pass():
+def test_volume_100000_below_gate1():
     d = evaluate_admission(**_base(volume_usd=100_000))
+    assert d.accepted is False
+    assert d.rejection_reason == ReasonCode.VOLUME_BELOW_MIN
+
+
+def test_liquidity_and_social_not_required():
+    d = evaluate_admission(
+        **_base(
+            liquidity_usd=1.0,
+            market_cap_usd=1.0,
+            twitter=None,
+            website=None,
+            telegram=None,
+            tiktok=None,
+            socials=None,
+        )
+    )
     assert d.accepted is True
-
-
-def test_mcap_31332_reject():
-    d = evaluate_admission(**_base(market_cap_usd=31_332))
-    assert d.accepted is False
-    assert d.rejection_reason == ReasonCode.MARKET_CAP_BELOW_MIN
-
-
-def test_mcap_31332_99_reject():
-    d = evaluate_admission(**_base(market_cap_usd=31_332.99))
-    assert d.accepted is False
-    assert d.rejection_reason == ReasonCode.MARKET_CAP_BELOW_MIN
-
-
-def test_mcap_31333_pass():
-    d = evaluate_admission(**_base(market_cap_usd=31_333))
-    assert d.accepted is True
-
-
-def test_liquidity_7_99_reject():
-    d = evaluate_admission(**_base(liquidity_usd=7.99))
-    assert d.accepted is False
-    assert d.rejection_reason == ReasonCode.LIQUIDITY_BELOW_MIN
-
-
-def test_liquidity_8_pass():
-    d = evaluate_admission(**_base(liquidity_usd=8.0))
-    assert d.accepted is True
-
-
-def test_missing_liquidity_reject():
-    d = evaluate_admission(**_base(liquidity_usd=None))
-    assert d.accepted is False
-    assert d.rejection_reason == ReasonCode.LIQUIDITY_UNKNOWN
 
 
 def test_missing_volume_reject():
     d = evaluate_admission(**_base(volume_usd=None))
     assert d.accepted is False
     assert d.rejection_reason == ReasonCode.VOLUME_UNKNOWN
-
-
-def test_social_missing_reject():
-    d = evaluate_admission(
-        **_base(twitter=None, website=None, telegram=None, tiktok=None, socials=None)
-    )
-    assert d.accepted is False
-    assert d.rejection_reason == ReasonCode.NO_SOCIAL
-
-
-def test_social_placeholder_reject():
-    d = evaluate_admission(**_base(twitter="https://", website=None))
-    assert d.accepted is False
-    assert d.rejection_reason == ReasonCode.NO_SOCIAL
 
 
 def test_unknown_protocol_reject():
@@ -215,20 +173,15 @@ def test_allowed_protocols_pass_gate():
         assert d.accepted is True, proto
 
 
-def test_invariant_no_sub_one_sol_accepted():
-    for fee in (0.0, 0.01, 0.1, 0.3, 0.5, 0.99):
-        d = evaluate_admission(**_base(global_fees_sol=fee))
-        assert d.accepted is False, f"fees={fee} must reject"
-
-
-def test_default_min_fees_is_one():
+def test_optional_fees_floor_still_one():
     assert DEFAULT_MIN_GLOBAL_FEES_SOL == 1.0
     assert _engine().config.min_global_fees_sol == 1.0
+    assert GATE1_VOLUME_5M_USD == 150_000.0
 
 
 def test_filter_version():
     d = evaluate_admission(**_base())
-    assert d.filter_version == FILTER_VERSION == "axiom-parity-v1.0.0"
+    assert d.filter_version == FILTER_VERSION == "volume-first-v1.0.0"
 
 
 def test_decision_serializable():
@@ -242,11 +195,3 @@ def test_decision_serializable():
     assert "reason_codes" in payload
     assert "normalized_metrics" in payload
     assert "source_metadata" in payload
-
-
-def test_stale_unverified_fees_reject():
-    d = evaluate_admission(
-        **_base(global_fees_sol=12.0, global_fees_verified=False, global_fees_source="stale-cache")
-    )
-    assert d.accepted is False
-    assert d.rejection_reason == ReasonCode.FEES_UNKNOWN

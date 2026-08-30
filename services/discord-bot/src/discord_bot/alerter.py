@@ -173,6 +173,10 @@ class AlertDispatcher:
             meaningful_buyers=payload.get("meaningful_buyer_count"),
             min_score=float(settings.alert_min_score),
             min_meaningful_buyers=int(settings.alert_min_meaningful_buyers),
+            inspection_complete=bool(payload.get("inspection_complete")),
+            synthetic_level=payload.get("synthetic_level"),
+            rug_level=payload.get("rug_level"),
+            has_intelligence=bool(payload.get("has_intelligence")),
         )
         if not ok:
             logger.info("alerter.gate_blocked", mint=mint, reason=intel_reason)

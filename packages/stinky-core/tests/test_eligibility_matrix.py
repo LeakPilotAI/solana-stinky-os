@@ -1,21 +1,22 @@
-"""Required eligibility matrix — axiom-parity-v1.0.0.
-
-These are product requirements, not suggestions.
-"""
+"""Gate 1 + pipeline matrix — volume-first-v1.0.0."""
 
 from __future__ import annotations
 
 from stinky_core.admission import (
-    DEFAULT_MIN_GLOBAL_FEES_SOL,
+    DEFAULT_MIN_VOLUME_USD,
     FILTER_VERSION,
+    GATE1_VOLUME_5M_USD,
+    LEGACY_FEE_GATE_CONFIG,
     ReasonCode,
     can_alert,
     evaluate_admission,
+    evaluate_gate1,
     evaluate_market,
     filter_stats,
 )
 from stinky_core.backtest import backtest_candidates
 from stinky_core.identity import UniqueMintIndex
+from stinky_core.intelligence import investigate
 from stinky_core.outcomes import FADE, HELD, RUNNER, UNKNOWN, label_outcome
 from stinky_core.pools import is_rankable_wallet
 
@@ -26,13 +27,7 @@ def _base(**kw):
     d = dict(
         mint=MINT,
         protocol="pumpfun",
-        global_fees_sol=3.0,
-        global_fees_verified=True,
-        global_fees_source="pump.fun/total_fees",
-        liquidity_usd=20.0,
         volume_usd=150_000.0,
-        market_cap_usd=50_000.0,
-        twitter="https://x.com/abc",
         migrated=True,
         tab="migrated",
     )
@@ -40,183 +35,96 @@ def _base(**kw):
     return d
 
 
+def _buyers(n=8, smart=4):
+    buyers = [{"wallet": f"W{i:02d}xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "sol_spent": 0.2} for i in range(n)]
+    perf = {
+        b["wallet"]: {"early_buy_count": 5, "tokens_purchased": 5, "hit_rate": 0.62, "avg_return_pct": 40}
+        for b in buyers[:smart]
+    }
+    return buyers, perf
+
+
 def setup_function() -> None:
     filter_stats.reset()
 
 
-# --- 1-6 fees ---
-
-
-def test_fees_0_00_reject():
-    d = evaluate_admission(**_base(global_fees_sol=0.00))
-    assert d.eligible is False
-    assert d.rejection_reason == ReasonCode.FEES_BELOW_MIN
-    assert ReasonCode.FEES_BELOW_MIN in d.reason_codes
-
-
-def test_fees_0_50_reject():
-    d = evaluate_admission(**_base(global_fees_sol=0.50))
-    assert d.eligible is False
-    assert d.rejection_reason == ReasonCode.FEES_BELOW_MIN
-
-
-def test_fees_0_99_reject():
-    d = evaluate_admission(**_base(global_fees_sol=0.99))
-    assert d.eligible is False
-    assert d.rejection_reason == ReasonCode.FEES_BELOW_MIN
-
-
-def test_fees_1_00_pass_fee_gate():
-    d = evaluate_admission(**_base(global_fees_sol=1.00))
-    assert d.eligible is True
-    assert d.rejection_reason is None
-    assert any(f["name"] == "global_fees" and f["passed"] for f in d.passed_filters)
-
-
-def test_fees_3_00_pass_fee_gate():
-    d = evaluate_admission(**_base(global_fees_sol=3.00))
-    assert d.eligible is True
-
-
-def test_missing_fees_reject():
-    d = evaluate_admission(**_base(global_fees_sol=None, global_fees_verified=None))
-    assert d.eligible is False
-    assert d.rejection_reason == ReasonCode.FEES_UNKNOWN
-
-
-def test_unverified_fees_reject():
-    d = evaluate_admission(**_base(global_fees_sol=12.0, global_fees_verified=False))
-    assert d.eligible is False
-    assert d.rejection_reason == ReasonCode.FEES_UNKNOWN
-
-
-# --- 7-8 liquidity ---
-
-
-def test_liquidity_7_99_reject():
-    d = evaluate_admission(**_base(liquidity_usd=7.99))
-    assert d.eligible is False
-    assert d.rejection_reason == ReasonCode.LIQUIDITY_BELOW_MIN
-
-
-def test_liquidity_8_00_pass():
-    d = evaluate_admission(**_base(liquidity_usd=8.00))
-    assert d.eligible is True
-
-
-# --- 9-10 volume ---
-
-
-def test_volume_99999_reject():
-    d = evaluate_admission(**_base(volume_usd=99_999))
+def test_gate1_volume_149999_reject():
+    d = evaluate_gate1(_base(volume_usd=149_999))
     assert d.eligible is False
     assert d.rejection_reason == ReasonCode.VOLUME_BELOW_MIN
 
 
-def test_volume_100000_pass():
-    d = evaluate_admission(**_base(volume_usd=100_000))
+def test_gate1_volume_150000_pass():
+    d = evaluate_gate1(_base(volume_usd=150_000))
+    assert d.eligible is True
+    assert d.filter_version == FILTER_VERSION
+    assert GATE1_VOLUME_5M_USD == DEFAULT_MIN_VOLUME_USD == 150_000.0
+
+
+def test_gate1_volume_200000_pass():
+    d = evaluate_gate1(_base(volume_usd=200_000))
     assert d.eligible is True
 
 
-# --- 11-12 market cap ---
-
-
-def test_market_cap_31332_99_reject():
-    d = evaluate_admission(**_base(market_cap_usd=31_332.99))
+def test_gate1_invalid_volume_reject():
+    d = evaluate_gate1(_base(volume_usd="nope"))
     assert d.eligible is False
-    assert d.rejection_reason == ReasonCode.MARKET_CAP_BELOW_MIN
+    assert d.rejection_reason in (ReasonCode.VOLUME_UNKNOWN, ReasonCode.INVALID_MARKET_DATA)
 
 
-def test_market_cap_31333_pass():
-    d = evaluate_admission(**_base(market_cap_usd=31_333))
-    assert d.eligible is True
+def test_gate1_missing_volume_reject():
+    d = evaluate_gate1(_base(volume_usd=None))
+    assert d.eligible is False
+    assert d.rejection_reason == ReasonCode.VOLUME_UNKNOWN
 
 
-# --- 13-14 protocol ---
+def test_gate1_negative_volume_reject():
+    d = evaluate_gate1(_base(volume_usd=-1))
+    assert d.eligible is False
+
+
+def test_enabled_protocol_eligible():
+    for proto in ("pump", "pumpfun", "pumpswap", "mayhem", "moonshot", "bonk", "bags"):
+        assert evaluate_gate1(_base(protocol=proto)).eligible is True, proto
 
 
 def test_disabled_protocol_reject():
     for proto in ("raydium", "pumpAmm", "meteoraAmmV2", "orca"):
-        d = evaluate_admission(**_base(protocol=proto))
+        d = evaluate_gate1(_base(protocol=proto))
         assert d.eligible is False, proto
         assert d.rejection_reason == ReasonCode.PROTOCOL_DISABLED
 
 
-def test_unknown_protocol_reject():
-    d = evaluate_admission(**_base(protocol=None, dex_id=None))
+def test_unknown_fees_do_not_reject_gate1():
+    d = evaluate_admission(**_base(global_fees_sol=None, global_fees_verified=None))
+    assert d.eligible is True
+    assert ReasonCode.FEES_UNKNOWN not in d.reason_codes
+
+
+def test_verified_fees_below_one_are_evidence_not_reject():
+    d = evaluate_admission(**_base(global_fees_sol=0.4, global_fees_verified=True))
+    assert d.eligible is True
+    assert d.metrics.get("fee_signal") == "negative"
+
+
+def test_verified_fees_ge_one_positive_evidence():
+    d = evaluate_admission(**_base(global_fees_sol=1.0, global_fees_verified=True))
+    assert d.eligible is True
+    assert d.metrics.get("fee_signal") == "positive"
+    assert any(f["name"] == "global_fees" and f["passed"] for f in d.passed_filters)
+
+
+def test_legacy_profile_still_requires_fees():
+    d = evaluate_market(_base(global_fees_sol=None), config=LEGACY_FEE_GATE_CONFIG)
     assert d.eligible is False
-    assert d.rejection_reason == ReasonCode.PROTOCOL_UNKNOWN
+    assert d.rejection_reason == ReasonCode.FEES_UNKNOWN
 
 
-# --- 15 social ---
-
-
-def test_no_social_reject():
+def test_liquidity_and_social_not_gate1():
     d = evaluate_admission(
-        **_base(twitter=None, website=None, telegram=None, tiktok=None, socials=None)
+        **_base(liquidity_usd=1.0, twitter=None, website=None, telegram=None, tiktok=None, socials=None)
     )
-    assert d.eligible is False
-    assert d.rejection_reason == ReasonCode.NO_SOCIAL
-
-
-# --- 16 duplicate mint ---
-
-
-def test_duplicate_mint_one_candidate():
-    idx = UniqueMintIndex()
-    assert idx.add(MINT) is True
-    assert idx.add(MINT) is False
-    assert idx.add("  " + MINT) is False
-    assert len(idx) == 1
-    result = backtest_candidates([_base(), _base(), _base(mint=MINT)])
-    assert result["unique_mints"] == 1
-    assert result["duplicate_mints_dropped"] == 2
-
-
-# --- 21 backtest == live ---
-
-
-def test_backtest_and_live_filter_identical():
-    market = _base(global_fees_sol=0.42)
-    live = evaluate_market(market)
-    bt = evaluate_market(market)
-    assert live.eligible is False
-    assert bt.eligible is False
-    assert live.rejection_reason == bt.rejection_reason == ReasonCode.FEES_BELOW_MIN
-    assert live.reason_codes == bt.reason_codes
-    passing = _base(global_fees_sol=1.0)
-    assert evaluate_market(passing).eligible is evaluate_admission(**passing).eligible is True
-
-
-# --- 22 alert cannot bypass ---
-
-
-def test_alert_cannot_bypass_eligibility_gate():
-    d = evaluate_admission(**_base(global_fees_sol=0.2))
-    ok, reason = can_alert(d, score=99, meaningful_buyers=20)
-    assert d.eligible is False
-    assert ok is False
-    assert reason == ReasonCode.FEES_BELOW_MIN
-
-
-def test_alert_requires_score_and_buyers_after_eligibility():
-    d = evaluate_admission(**_base())
     assert d.eligible is True
-    assert can_alert(d, score=40, meaningful_buyers=10)[0] is False
-    assert can_alert(d, score=80, meaningful_buyers=1)[0] is False
-    assert can_alert(d, score=80, meaningful_buyers=3)[0] is True
-
-
-def test_evaluate_market_dict_api():
-    d = evaluate_market(_base())
-    assert d.eligible is True
-    assert isinstance(d.failed_filters, list)
-    assert isinstance(d.passed_filters, list)
-    assert isinstance(d.normalized_metrics, dict)
-    assert isinstance(d.source_metadata, dict)
-    assert d.reason_codes == []
-    assert d.filter_version == FILTER_VERSION
-    assert DEFAULT_MIN_GLOBAL_FEES_SOL == 1.0
 
 
 def test_not_migrated_reject():
@@ -225,51 +133,69 @@ def test_not_migrated_reject():
     assert d.rejection_reason == ReasonCode.NOT_MIGRATED
 
 
-def test_unknown_migrated_fail_closed():
-    d = evaluate_admission(**_base(migrated=None, tab=None))
+def test_duplicate_mint_one_candidate():
+    idx = UniqueMintIndex()
+    assert idx.add(MINT) is True
+    assert idx.add(MINT) is False
+    result = backtest_candidates([_base(), _base(), _base(mint=MINT)])
+    assert result["unique_mints"] == 1
+    assert result["duplicate_mints_dropped"] == 2
+
+
+def test_future_volume_cannot_pass_gate1():
+    """peak_volume is future; Gate 1 uses decision-time volume_usd only."""
+    row = _base(volume_usd=20_000, peak_volume=500_000, peak_multiple=4.0, observation_complete=True)
+    d = evaluate_gate1(row)
     assert d.eligible is False
-    assert d.rejection_reason == ReasonCode.NOT_MIGRATED
+    result = backtest_candidates([row])
+    assert result["gate1_passed"] == 0
+    assert result["alerts"] == 0
+    assert result["items"][0]["outcome"]["label"] == RUNNER  # outcome may use future, gate1 may not
 
 
-def test_collects_all_failures():
-    d = evaluate_admission(
-        **_base(
-            global_fees_sol=0.2,
-            liquidity_usd=1.0,
-            volume_usd=10.0,
-            market_cap_usd=100.0,
-            twitter=None,
-            website=None,
-            telegram=None,
-            tiktok=None,
-            socials=None,
-        )
+def test_alert_cannot_bypass_gate1():
+    d = evaluate_admission(**_base(volume_usd=1_000))
+    ok, reason = can_alert(d, score=99, meaningful_buyers=20, inspection_complete=True, has_intelligence=True)
+    assert d.eligible is False
+    assert ok is False
+    assert reason == ReasonCode.VOLUME_BELOW_MIN
+
+
+def test_alert_requires_inspection():
+    d = evaluate_admission(**_base())
+    assert d.eligible is True
+    assert can_alert(d, score=80, meaningful_buyers=8)[0] is False
+
+
+def test_evaluate_market_dict_api():
+    d = evaluate_market(_base())
+    assert d.eligible is True
+    assert d.filter_version == FILTER_VERSION
+    assert d.reason_codes == []
+
+
+def test_backtest_pipeline_counts():
+    buyers, perf = _buyers()
+    good = _base(
+        buyers=buyers,
+        wallet_performance=perf,
+        unique_wallets=12,
+        trade_count=40,
+        top4_wallet_volume_share=0.3,
+        observation_complete=True,
+        peak_multiple=3.0,
+        fee_status="UNKNOWN",
     )
-    assert d.eligible is False
-    assert ReasonCode.FEES_BELOW_MIN in d.reason_codes
-    assert ReasonCode.LIQUIDITY_BELOW_MIN in d.reason_codes
-    assert ReasonCode.VOLUME_BELOW_MIN in d.reason_codes
-    assert ReasonCode.MARKET_CAP_BELOW_MIN in d.reason_codes
-    assert ReasonCode.NO_SOCIAL in d.reason_codes
+    weak = _base(mint="OtherMint11111111111111111111111111111pump", volume_usd=10_000)
+    result = backtest_candidates([good, weak])
+    assert result["unique_candidates"] == 2
+    assert result["gate1_passed"] == 1
+    assert result["deep_inspected"] == 1
+    assert result["engine"].startswith("stinky-backtest-v1.1.0")
 
 
-def test_observability_counts():
-    filter_stats.reset()
-    evaluate_admission(**_base(global_fees_sol=0.5))
-    evaluate_admission(**_base())
-    snap = filter_stats.snapshot()
-    assert snap["markets_seen"] == 2
-    assert snap["markets_rejected"] == 1
-    assert snap["markets_eligible"] == 1
-    assert snap["fee_below_min_count"] >= 1
-
-
-def test_outcome_unknown_when_incomplete():
-    o = label_outcome(peak_multiple=4.0, observation_complete=False)
-    assert o.label == UNKNOWN
-
-
-def test_outcome_runner_held_fade():
+def test_outcome_labels():
+    assert label_outcome(peak_multiple=4.0, observation_complete=False).label == UNKNOWN
     assert label_outcome(peak_multiple=2.5, observation_complete=True).label == RUNNER
     assert label_outcome(peak_multiple=1.1, drawdown=0.1, observation_complete=True).label == HELD
     assert label_outcome(peak_multiple=1.1, drawdown=0.8, observation_complete=True).label == FADE
@@ -281,52 +207,8 @@ def test_pool_wallet_excluded():
     assert is_rankable_wallet("HumanWallet1111111111111111111111111111111") is True
 
 
-def test_backtest_uses_canonical_filter_and_alert_gate():
-    markets = [
-        _base(stinky_score=80, meaningful_buyer_count=5, observation_complete=True, peak_multiple=3.0),
-        _base(global_fees_sol=0.4, stinky_score=99, meaningful_buyer_count=20),
-        _base(stinky_score=10, meaningful_buyer_count=5),
-    ]
-    result = backtest_candidates(markets)
-    assert result["unique_mints"] == 1  # same mint
-    # only first unique mint kept (passing)
-    item = result["items"][0]
-    assert item["eligible"] is True
-    assert item["alert_ok"] is True
-    assert item["outcome"]["label"] == RUNNER
-    assert result["fee_verified"] == 1
-    assert result["fee_passed"] == 1
-    assert result["final_candidates"] == 1
-    assert result["fee_verified_rate"] == 1.0
-
-
-def test_backtest_unknown_fees_fail_closed_and_counted():
-    passing = _base(mint=MINT, stinky_score=80, meaningful_buyer_count=5)
-    unknown = _base(
-        mint="OtherMint11111111111111111111111111111pump",
-        global_fees_sol=None,
-        global_fees_verified=None,
-        stinky_score=99,
-        meaningful_buyer_count=20,
-    )
-    below = _base(
-        mint="BelowMint11111111111111111111111111111pump",
-        global_fees_sol=0.2,
-        global_fees_verified=True,
-        stinky_score=99,
-        meaningful_buyer_count=20,
-    )
-    result = backtest_candidates([passing, unknown, below])
-    assert result["total_candidates"] == 3
-    assert result["fee_verified"] == 2  # passing + below (verified but below min)
-    assert result["fee_unknown"] == 1
-    assert result["fee_rejected"] == 2
-    assert result["fee_passed"] == 1
-    assert result["final_candidates"] == 1
-    assert result["eligible"] == 1
-    assert abs(result["fee_verified_rate"] - (2 / 3)) < 1e-9
-    # unknown historical record must not magically pass
-    unknown_item = next(i for i in result["items"] if i["mint"].startswith("Other"))
-    assert unknown_item["eligible"] is False
-    assert unknown_item["rejection_reason"] == ReasonCode.FEES_UNKNOWN
-
+def test_investigate_uses_only_provided_evidence():
+    inv = investigate(_base())
+    assert inv.complete is True
+    assert inv.global_fees_sol is None
+    assert inv.fee_status == "UNKNOWN"

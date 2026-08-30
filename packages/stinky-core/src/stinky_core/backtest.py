@@ -1,7 +1,6 @@
-"""Backtest population builder.
+"""Backtest: Gate 1 at decision-time volume, then inspection, then outcome.
 
-Live eligibility and historical backtest eligibility MUST use the same
-`evaluate_market` implementation. Duplicate mints are one candidate.
+Peak / future volume MUST NOT decide Gate 1.
 """
 
 from __future__ import annotations
@@ -9,16 +8,16 @@ from __future__ import annotations
 from typing import Any, Iterable, Mapping
 
 from stinky_core.admission import (
-    ALERT_MIN_MEANINGFUL_BUYERS,
     ALERT_MIN_SCORE,
     FILTER_VERSION,
+    GATE1_VOLUME_5M_USD,
     FilterConfig,
     FilterDecision,
     ReasonCode,
-    can_alert,
-    evaluate_market,
+    evaluate_gate1,
 )
 from stinky_core.identity import UniqueMintIndex
+from stinky_core.intelligence import can_alert_investigation, investigate
 from stinky_core.outcomes import label_outcome
 
 
@@ -27,12 +26,8 @@ def backtest_candidates(
     *,
     config: FilterConfig | None = None,
     min_score: float = ALERT_MIN_SCORE,
-    min_meaningful_buyers: int = ALERT_MIN_MEANINGFUL_BUYERS,
+    min_volume_usd: float = GATE1_VOLUME_5M_USD,
 ) -> dict[str, Any]:
-    """Deduplicate by mint → canonical eligibility → alert gate → outcome.
-
-    Never reports duplicate-mint rows as independent opportunities.
-    """
     idx = UniqueMintIndex()
     unique: list[Mapping[str, Any]] = []
     dropped_dupes = 0
@@ -44,7 +39,8 @@ def backtest_candidates(
             dropped_dupes += 1
 
     evaluated: list[dict[str, Any]] = []
-    eligible_n = 0
+    gate1_n = 0
+    deep_n = 0
     alerted_n = 0
     runners = 0
     held = 0
@@ -52,20 +48,30 @@ def backtest_candidates(
     unknown = 0
     fee_verified = 0
     fee_unknown = 0
-    fee_rejected = 0
-    fee_passed = 0
 
     for m in unique:
-        decision: FilterDecision = evaluate_market(m, config=config)
-        score = m.get("stinky_score") if "stinky_score" in m else m.get("score")
-        mb = m.get("meaningful_buyer_count") or m.get("meaningful_buyers")
-        alert_ok, alert_reason = can_alert(
-            decision,
-            score=score,
-            meaningful_buyers=mb,
-            min_score=min_score,
-            min_meaningful_buyers=min_meaningful_buyers,
-        )
+        # Decision-time volume only. peak_volume is reserved for outcomes.
+        snap = dict(m)
+        snap.pop("peak_volume", None)
+        snap.pop("peak_volume_m5_usd", None)
+        snap.pop("peak_multiple", None)
+        decision: FilterDecision = evaluate_gate1(snap, min_volume_usd=min_volume_usd)
+        inv = None
+        alert_ok = False
+        alert_reason = decision.rejection_reason
+        if decision.eligible:
+            gate1_n += 1
+            inv = investigate(snap)
+            deep_n += 1
+            alert_ok, alert_reason = can_alert_investigation(
+                True, inv, min_score=min_score, rejection_reason=None
+            )
+            if alert_ok:
+                inv.pipeline_status = "ALERT"
+        if inv and inv.fee_status == "VERIFIED":
+            fee_verified += 1
+        else:
+            fee_unknown += 1
         outcome = label_outcome(
             peak_multiple=m.get("peak_multiple"),
             peak_volume=m.get("peak_volume") or m.get("peak_volume_m5_usd"),
@@ -76,25 +82,6 @@ def backtest_candidates(
             observation_window=m.get("observation_window"),
             observation_complete=bool(m.get("observation_complete")),
         )
-        if decision.eligible:
-            eligible_n += 1
-        fee_codes = set(decision.reason_codes)
-        fee_ok = any(f.get("name") == "global_fees" and f.get("passed") for f in decision.passed_filters)
-        if ReasonCode.FEES_UNKNOWN in fee_codes:
-            fee_unknown += 1
-            fee_rejected += 1
-        elif ReasonCode.FEES_BELOW_MIN in fee_codes:
-            fee_rejected += 1
-            if decision.metrics.get("fees_verified") is True:
-                fee_verified += 1
-        elif fee_ok:
-            fee_passed += 1
-            fee_verified += 1
-        elif decision.metrics.get("fees_verified") is True:
-            fee_verified += 1
-        else:
-            fee_unknown += 1
-            fee_rejected += 1
         if alert_ok:
             alerted_n += 1
             if outcome.label == "RUNNER":
@@ -109,10 +96,13 @@ def backtest_candidates(
             {
                 "mint": decision.mint,
                 "eligible": decision.eligible,
+                "gate1_passed": decision.eligible,
                 "rejection_reason": decision.rejection_reason,
                 "reason_codes": decision.reason_codes,
                 "alert_ok": alert_ok,
                 "alert_reason": alert_reason,
+                "pipeline_status": inv.pipeline_status if inv else "REJECTED",
+                "stinky_score": inv.score.score if inv else None,
                 "outcome": outcome.to_dict(),
                 "filter_version": decision.filter_version,
             }
@@ -121,24 +111,24 @@ def backtest_candidates(
     precision = (runners / alerted_n) if alerted_n else None
     total = len(unique)
     return {
-        "engine": "stinky-backtest-v1.0.0",
+        "engine": "stinky-backtest-v1.1.0-volume-first",
         "filter_version": FILTER_VERSION,
         "input": len(unique) + dropped_dupes,
         "unique_mints": len(unique),
+        "unique_candidates": total,
         "duplicate_mints_dropped": dropped_dupes,
-        "total_candidates": total,
-        "fee_verified": fee_verified,
-        "fee_unknown": fee_unknown,
-        "fee_rejected": fee_rejected,
-        "fee_passed": fee_passed,
-        "fee_verified_rate": (fee_verified / total) if total else None,
-        "eligible": eligible_n,
-        "final_candidates": eligible_n,
+        "gate1_passed": gate1_n,
+        "deep_inspected": deep_n,
+        "eligible": gate1_n,
+        "alerts": alerted_n,
         "alerted": alerted_n,
         "runners": runners,
         "held": held,
         "fades": fades,
         "unknown": unknown,
         "precision_runner": precision,
+        "fee_verified": fee_verified,
+        "fee_unknown": fee_unknown,
+        "fee_verified_rate": (fee_verified / total) if total else None,
         "items": evaluated,
     }

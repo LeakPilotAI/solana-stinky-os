@@ -608,13 +608,13 @@ export function CommandCenter() {
       </div>
 
       
-      {/* ── TRENDING: any age, measured 5m vol >= $100k ── */}
+      {/* ── TRENDING: Gate 1 5m vol >= $150k ── */}
       <section className="flex min-h-[220px] flex-col overflow-hidden rounded-xl border border-emerald-500/25 bg-[#0a0e0a]">
         <div className="flex items-center justify-between border-b border-terminal-border px-3 py-2">
           <div className="flex items-center gap-2">
             <span className="text-emerald-400">📈</span>
             <h2 className="text-[11px] font-semibold uppercase tracking-wider text-terminal-text">
-              Trending · 5m ≥ $100k
+              Trending · Gate 1 $150k 5m
             </h2>
             <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] text-emerald-300">
               any age
@@ -645,7 +645,7 @@ export function CommandCenter() {
               {(data.trending?.items ?? []).length === 0 && (
                 <tr>
                   <td colSpan={8} className="px-3 py-8 text-center text-[12px] text-terminal-muted">
-                    No measured coins at ≥ $100k 5m volume yet. Fills as market_snapshots update.
+                    No measured coins at ≥ $150k 5m volume yet. Gate 1 is an investigation trigger, not a buy.
                   </td>
                 </tr>
               )}

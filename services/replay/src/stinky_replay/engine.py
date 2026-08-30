@@ -19,7 +19,8 @@ def _canonical_gate(row: dict[str, Any]) -> tuple[bool, str | None]:
         core = Path(__file__).resolve().parents[4] / "packages" / "stinky-core" / "src"
         if str(core) not in sys.path:
             sys.path.insert(0, str(core))
-        from stinky_core.admission import can_alert, evaluate_market
+        from stinky_core.admission import evaluate_market
+        from stinky_core.intelligence import can_alert_investigation, investigate
     except Exception:
         return False, "FILTER_UNAVAILABLE"
     decision = evaluate_market(
@@ -40,13 +41,8 @@ def _canonical_gate(row: dict[str, Any]) -> tuple[bool, str | None]:
     )
     if not decision.eligible:
         return False, decision.rejection_reason
-    ok, reason = can_alert(
-        decision,
-        score=row.get("score") or row.get("stinky_score"),
-        meaningful_buyers=row.get("meaningful_buyer_count"),
-        min_score=float(settings.alert_min_score),
-    )
-    return ok, reason
+    inv = investigate(row)
+    return can_alert_investigation(True, inv, min_score=float(settings.alert_min_score))
 
 
 

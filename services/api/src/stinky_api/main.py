@@ -104,16 +104,13 @@ async def health(session: Annotated[AsyncSession, Depends(get_session)]) -> dict
 
 async def _trending_m5(
     *,
-    min_volume_usd: float = 100_000.0,
+    min_volume_usd: float = 150_000.0,
     min_fees_sol: float = 1.0,
     limit: int = 30,
 ) -> list[dict]:
-    """Pump-only trending: measured 5m volume >= threshold AND mint ends with pump.
+    """Pump-only trending: measured 5m volume >= Gate 1.
 
-    HARD GATES (aligned with Live Runners):
-      - mint must end with "pump" (no non-pump CAs via dex_id side-door)
-      - global fees: fail-closed when min_fees_sol > 0 (missing/low fees DROPPED)
-      - uses filter_evaluations when present; never invent fees
+    Gate 1 is volume + protocol + mint. Unknown fees do NOT drop the row.
     """
     from sqlalchemy import text
     from stinky_api.db import SessionLocal
@@ -279,7 +276,7 @@ async def _trending_m5(
                         d[k] = float(d[k])
                     except (TypeError, ValueError):
                         d[k] = None
-            # HARD FEE GATE via canonical engine. A bare number is not verified.
+            # Gate 1 via canonical engine. Unknown fees do not drop the row.
             gated = queries.apply_canonical_gate(
                 {
                     **d,
@@ -538,7 +535,7 @@ async def command_center() -> dict:
         _safe("wallets", _wallets, [], 6.0),
         _safe("pipeline", _pipeline, {"available": False, "tables": {}}, 6.0),
         _safe("alert_precision", _precision, {"available": False, "counts": {}}, 6.0),
-        _safe("trending", lambda: _trending_m5(min_volume_usd=100_000.0, min_fees_sol=1.0, limit=25), [], 8.0),
+        _safe("trending", lambda: _trending_m5(min_volume_usd=150_000.0, min_fees_sol=1.0, limit=25), [], 8.0),
     )
 
     opportunity = []
@@ -573,9 +570,9 @@ async def command_center() -> dict:
         "opportunity_queue": opportunity[:12],
         "trending": {
             "available": True,
-            "min_volume_m5_usd": 100000,
-            "engine": "trending-v0.1.0-measured",
-            "message": "Latest high 5m volume snapshot >= $100k (any coin age). Pump/pumpswap. Fees shown, not hard-gated.",
+            "min_volume_m5_usd": 150000,
+            "engine": "trending-v1.0.0-volume-first",
+            "message": "Gate 1: latest measured 5m volume >= $150k. Investigation trigger, not a buy signal. Fees optional evidence.",
             "items": trending or [],
             "count": len(trending or []),
         },
@@ -592,11 +589,11 @@ async def command_center() -> dict:
 
 @app.get("/v1/trending")
 async def trending(
-    min_volume_usd: float = Query(100_000.0, ge=0.0),
+    min_volume_usd: float = Query(150_000.0, ge=0.0),
     min_fees_sol: float = Query(1.0, ge=0.0),
     limit: int = Query(30, ge=1, le=100),
 ) -> dict:
-    """Trending by measured 5m volume ? age independent."""
+    """Trending by measured 5m volume — Gate 1 investigation trigger."""
     items = await _trending_m5(
         min_volume_usd=min_volume_usd,
         min_fees_sol=min_fees_sol,
@@ -606,7 +603,7 @@ async def trending(
         "available": True,
         "min_volume_m5_usd": min_volume_usd,
         "min_fees_sol": min_fees_sol,
-        "engine": "trending-v0.1.0-measured",
+        "engine": "trending-v1.0.0-volume-first",
         "items": items,
         "count": len(items),
     }
@@ -616,11 +613,11 @@ async def runners(
     session: Annotated[AsyncSession, Depends(get_session)],
     limit: int = Query(50, ge=1, le=200),
     min_fees_sol: float = Query(1.0, ge=0.0),
-    min_volume_m5_usd: float = Query(100_000.0, ge=0.0),
+    min_volume_m5_usd: float = Query(150_000.0, ge=0.0),
     enrich_fees: bool = Query(False),
     pump_only: bool = Query(True),
 ) -> dict:
-    """Live runners: canonical eligibility first (fees >= 1 SOL, vol >= $100k)."""
+    """Live runners: Gate 1 volume-first (5m >= $150k). Fees are optional evidence."""
     items = await queries.recent_migrations(
         session,
         limit=limit,

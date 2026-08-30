@@ -83,6 +83,15 @@ class DurableEventStore:
                 await session.execute(text(FEE_OBSERVATIONS_DDL))
                 for idx in FEE_OBSERVATIONS_INDEXES:
                     await session.execute(text(idx))
+            try:
+                from stinky_core.intelligence import MARKET_INSPECTIONS_DDL, MARKET_INSPECTIONS_INDEXES
+            except ImportError:
+                MARKET_INSPECTIONS_DDL = None
+                MARKET_INSPECTIONS_INDEXES = ()
+            if MARKET_INSPECTIONS_DDL:
+                await session.execute(text(MARKET_INSPECTIONS_DDL))
+                for idx in MARKET_INSPECTIONS_INDEXES:
+                    await session.execute(text(idx))
             await session.commit()
         self._ready = True
         logger.info("durable.schema_ready")
