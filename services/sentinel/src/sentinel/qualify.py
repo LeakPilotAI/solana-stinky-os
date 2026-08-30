@@ -21,6 +21,17 @@ from sentinel.filter_engine import (
 MIN_GLOBAL_FEES_PAID_SOL = 1.0  # optional evidence floor, not a gate
 
 
+def is_post_migration_dex(dex_id: str | None) -> bool:
+    """PumpSwap AMM is post-migration. pumpfun bonding curve is not."""
+    d = (dex_id or "").strip().lower().replace(" ", "").replace("_", "").replace("-", "")
+    if not d:
+        return False
+    if d == "pumpfun" or d.startswith("pumpfun"):
+        return False
+    return d in {"pumpswap", "pump"} or "pumpswap" in d
+
+
+
 @dataclass(frozen=True)
 class QualifyResult:
     accepted: bool
@@ -75,6 +86,8 @@ def qualify_fresh_pump_migration(
             for a in denied_dex_ids
         ) | cfg.denied_protocols
 
+    post = is_post_migration_dex(dex_id)
+    bonding = not post and (dex_id or "").strip().lower().replace("-", "").startswith("pumpfun")
     decision = evaluate_market(
         {
             "mint": mint_s,
@@ -83,8 +96,8 @@ def qualify_fresh_pump_migration(
             "volume_usd": volume_m5_usd,
             "global_fees_sol": global_fees_paid_sol,
             "global_fees_verified": global_fees_verified,
-            "migrated": True,
-            "tab": "migrated",
+            "migrated": False if bonding else True,
+            "tab": None if bonding else "migrated",
         },
         config=cfg,
     )

@@ -141,7 +141,7 @@ def outcome_from_ticks(
     end = _parse_ts(now) or datetime.now(timezone.utc)
     ticks = [
         t for t in getattr(memory, "market_ticks", [])
-        if t.mint == mint and t.observed_at > start
+        if t.mint == mint and t.observed_at > start and t.observed_at <= end
     ]
     if not ticks:
         oc = label_outcome(
@@ -251,9 +251,7 @@ def life_slices(
             return False
         if cutoff is None:
             return True
-        if ts < cutoff:
-            return True
-        return ts == start == cutoff
+        return ts <= cutoff
 
     t0_ticks = [
         t for t in getattr(memory, "market_ticks", [])

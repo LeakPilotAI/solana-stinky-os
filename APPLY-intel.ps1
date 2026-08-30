@@ -1,4 +1,4 @@
-# Overlay intel-v1.9.0-quality onto D:\Work\Project-Genesis
+# Overlay intel-v1.10.0-live-validation onto D:\Work\Project-Genesis
 # Usage (from the extracted overlay folder):
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\APPLY-intel.ps1
 
@@ -38,9 +38,12 @@ $paths = @(
   "packages\stinky-core\tests\test_observe.py",
   "packages\stinky-core\tests\test_quality_state.py",
   "packages\stinky-core\tests\test_hardening.py",
+  "packages\stinky-core\tests\test_live_pipeline.py",
   "packages\stinky-core\tests\test_eligibility_matrix.py",
   "services\sentinel\src\sentinel\durable.py",
   "services\sentinel\src\sentinel\volume.py",
+  "services\sentinel\src\sentinel\qualify.py",
+  "services\sentinel\src\sentinel\cli.py",
   "services\sentinel\src\sentinel\config.py",
   "services\sentinel\migrations\006_intelligence_memory.sql",
   "services\sentinel\migrations\007_memory_enrich.sql",
@@ -49,6 +52,7 @@ $paths = @(
   "services\sentinel\migrations\010_quality_states.sql",
   "services\api\src\stinky_api\main.py",
   "services\api\src\stinky_api\queries.py",
+  "services\sentinel\tests\test_qualify_fees_gate.py",
   "services\discord-bot\src\discord_bot\alerter.py",
   "services\discord-bot\src\discord_bot\policy.py",
   "services\discord-bot\tests\test_policy.py",
@@ -71,6 +75,7 @@ $paths = @(
   "docs\adr\ADR-018-observe.md",
   "docs\adr\ADR-019-genesis-boundary.md",
   "docs\adr\ADR-020-quality-state.md",
+  "docs\adr\ADR-021-live-validation.md",
   "docs\GENESIS.md",
   "docker-compose.yml",
   "README.md",
@@ -90,10 +95,10 @@ foreach ($rel in $paths) {
 }
 
 Write-Host ""
-Write-Host "Applied intel-v1.9.0-quality. Restart:"
+Write-Host "Applied intel-v1.10.0-live-validation. Restart:"
 Write-Host "  powershell -File D:\Work\Project-Genesis\stop-stinky.ps1"
 Write-Host "  powershell -File D:\Work\Project-Genesis\start-stinky.ps1"
-Write-Host "Verify: Gate 1 unchanged at `$150k. UNKNOWN does not promote. Quality dip is not a buy."
-Write-Host "Watch loop: investigate once, keep ticking to T+1800 including T+900."
-Write-Host "Quality: POST /v1/book/quality  Dips: POST /v1/book/dips  Analogues: POST /v1/book/slice-analogues"
+Write-Host "Verify: Gate 1 unchanged at `$150k. After Gate 1, ticks continue even if volume dumps."
+Write-Host "Restart: open investigations inside T+1800 resume. pumpfun bonding is not migrated."
+Write-Host "Quality: POST /v1/book/quality  Dips: POST /v1/book/dips"
 Write-Host "Discord: state-change only. Same state silent. Not a trade signal."

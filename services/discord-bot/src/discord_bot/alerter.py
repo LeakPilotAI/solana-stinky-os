@@ -23,7 +23,7 @@ if _CORE.exists() and str(_CORE) not in sys.path:
 
 from discord_bot.config import settings
 from discord_bot.store import Store
-from discord_bot.policy import should_alert
+from discord_bot.policy import should_alert, format_quality_alert
 from stinky_core.admission import can_alert, evaluate_gate1
 from stinky_core.identity import alert_candidate_key, canonical_mint
 
@@ -147,11 +147,12 @@ class AlertDispatcher:
             logger.info("alerter.quality_skip", mint=mint, reason="no_state_change_or_cooldown")
             return
         self._quality_last[mint] = (now, str(spec["category"]))
-        text = (
-            f"**STINKY {spec['category']}**\n"
-            f"CA: `{mint}`\n"
-            f"{spec['previous_state']} → {spec['current_state']}\n"
-            f"Not a buy. Quality is setup deterioration, not a trade signal."
+        text = format_quality_alert(
+            spec,
+            why=payload.get("why") if isinstance(payload.get("why"), list) else None,
+            evidence_quality=str(payload.get("evidence_quality") or "UNKNOWN"),
+            timestamp=str(payload.get("as_of") or payload.get("timestamp") or ""),
+            unknown=payload.get("unknown") if isinstance(payload.get("unknown"), list) else None,
         )
         channel_id = settings.discord_alert_channel_id
         if channel_id:

@@ -63,3 +63,21 @@ def test_config_above_200k_clamped():
     r2 = _q(volume_m5_usd=210_000, min_volume_usd=500_000)
     assert r2.required == 200_000.0
     assert r2.accepted is True
+
+
+def test_pumpfun_bonding_is_not_migrated():
+    from sentinel.qualify import is_post_migration_dex
+
+    assert is_post_migration_dex("pumpswap") is True
+    assert is_post_migration_dex("pumpfun") is False
+    r = _q(dex_id="pumpfun", volume_m5_usd=180_000)
+    assert r.accepted is False
+    assert r.reason == ReasonCode.NOT_MIGRATED
+
+
+def test_watch_tick_decision_imported():
+    from stinky_core.observation import watch_should_resume, watch_tick_decision
+
+    assert watch_tick_decision(investigated=True, gate_ok=False, reason="VOLUME_BELOW_MIN") == "tick"
+    assert watch_should_resume(elapsed_sec=0, max_watch_sec=1800) is True
+    assert watch_should_resume(elapsed_sec=1800, max_watch_sec=1800) is False

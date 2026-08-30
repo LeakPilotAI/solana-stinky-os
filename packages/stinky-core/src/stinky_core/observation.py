@@ -14,6 +14,47 @@ from stinky_core.outcomes import LABEL_VERSION, label_outcome
 from stinky_core.stages import STAGES_VERSION, slice_stage
 
 OBSERVATION_VERSION = "observation-v1.1.0"
+
+WATCH_STOP_REASONS = frozenset(
+    {
+        "PROTOCOL_DISABLED",
+        "PROTOCOL_UNKNOWN",
+        "INVALID_MINT",
+        "INVALID_MARKET_DATA",
+        "NOT_PUMP_MINT",
+    }
+)
+
+
+def watch_tick_decision(*, investigated: bool, gate_ok: bool, reason: str | None) -> str:
+    """Live watch action for one DexScreener poll.
+
+    After Gate 1, keep recording ticks even if 5m volume falls below $150k.
+    Quality cannot observe deterioration without those ticks.
+    Returns: stop | wait | investigate | tick
+    """
+    reason_u = (reason or "").upper()
+    if not investigated:
+        if gate_ok:
+            return "investigate"
+        if reason_u in WATCH_STOP_REASONS:
+            return "stop"
+        return "wait"
+    if reason_u in ("PROTOCOL_DISABLED", "INVALID_MINT"):
+        return "stop"
+    return "tick"
+
+
+def watch_should_resume(*, elapsed_sec: float, max_watch_sec: float = 1800.0) -> bool:
+    """After restart: resume only if still inside the T+1800 window."""
+    try:
+        e = float(elapsed_sec)
+        m = float(max_watch_sec)
+    except (TypeError, ValueError):
+        return False
+    return 0 <= e < m
+
+
 OBSERVATION_SLICES_SEC = (0, 15, 30, 60, 90, 120, 180, 300, 600, 900, 1200, 1800)
 
 
@@ -133,9 +174,7 @@ def observation_slices(
             return False
         if cutoff is None:
             return True
-        if ts < cutoff:
-            return True
-        return ts == start == cutoff
+        return ts <= cutoff
 
     ticks = sorted(
         (t for t in getattr(memory, "market_ticks", []) if t.mint == mint),
@@ -193,7 +232,7 @@ def observation_slices(
         "expected_slice_count": len(OBSERVATION_SLICES_SEC),
         "completeness": round(observed_n / len(OBSERVATION_SLICES_SEC), 2),
         "calibrated_probability": False,
-        "note": "Missing offsets stay UNKNOWN. Values are last-known ticks at or before the offset, never interpolated, never from the future.",
+        "note": "Missing offsets stay UNKNOWN. Values are last-known ticks at or before the offset, never interpolated, never from the future. A tick at as_of is visible.",
     }
 
 
@@ -223,7 +262,7 @@ def what_happened_next(
         }
     later = [
         t for t in getattr(memory, "market_ticks", [])
-        if t.mint == mint and t.observed_at > start and (cutoff is None or t.observed_at < cutoff)
+        if t.mint == mint and t.observed_at > start and (cutoff is None or t.observed_at <= cutoff)
     ]
     entry = next(
         (t for t in sorted(getattr(memory, "market_ticks", []), key=lambda x: x.observed_at)
@@ -308,6 +347,8 @@ def observation_book(memory: IntelligenceMemory, *, as_of: Any = None) -> list[d
             continue
         seen.add(mint)
         path = observation_slices(memory, mint=mint, t0=ts, as_of=as_of) if ts else {"slices": [], "observed_slice_count": 0, "expected_slice_count": len(OBSERVATION_SLICES_SEC), "completeness": 0}
+        later = what_happened_next(memory, mint=mint, t0=ts, as_of=as_of) if ts else {}
+        oc = later.get("outcome") if isinstance(later.get("outcome"), dict) else {}
         rows.append({
             "mint": mint,
             "protocol": rec.get("protocol"),
@@ -318,7 +359,7 @@ def observation_book(memory: IntelligenceMemory, *, as_of: Any = None) -> list[d
             "observed_slice_count": path.get("observed_slice_count"),
             "expected_slice_count": path.get("expected_slice_count"),
             "completeness": path.get("completeness"),
-            "outcome_label": rec.get("outcome_label") or "UNKNOWN",
+            "outcome_label": (oc or {}).get("label") or rec.get("outcome_label") or "UNKNOWN",
             "immutable": bool(rec.get("immutable", True)),
             "calibrated_probability": False,
         })
@@ -382,7 +423,9 @@ def slice_analogues(
         rel = abs(ov - cur_vol) / cur_vol
         if rel > 0.35:
             continue
-        lab = str(rec.get("outcome_label") or "UNKNOWN").upper()
+        later = what_happened_next(memory, mint=other, t0=ots, as_of=as_of)
+        oc = later.get("outcome") if isinstance(later.get("outcome"), dict) else {}
+        lab = str((oc or {}).get("label") or rec.get("outcome_label") or "UNKNOWN").upper()
         if lab not in ("RUNNER", "HELD", "FADE", "RUG", "UNKNOWN"):
             lab = "UNKNOWN"
         matches.append({"mint": other, "offset_sec": offset, "volume_5m": ov, "outcome": lab, "rel_volume_delta": round(rel, 4)})

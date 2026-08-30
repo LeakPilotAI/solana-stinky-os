@@ -31,7 +31,7 @@ from stinky_core.stages import investigation_stages
 from stinky_core.observation import investigation_record as build_investigation_record
 from stinky_core.recipes import runner_recipe
 
-INTEL_VERSION = "intel-v1.9.0-quality"
+INTEL_VERSION = "intel-v1.10.0-live-validation"
 SCORE_VERSION = "score-v1.1.0-intel-not-volume"
 RUNNER_VERSION = "runner-potential-v1.1.0-intel-not-volume"
 
@@ -207,6 +207,7 @@ class ScoreBreakdown:
     promotable: bool = False
     actionable: bool = False
     interpretation: str = "INSUFFICIENT_EVIDENCE"
+    calibrated_probability: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {

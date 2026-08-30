@@ -1,4 +1,4 @@
-from discord_bot.policy import should_alert, category_for_transition
+from discord_bot.policy import should_alert, category_for_transition, format_quality_alert
 
 
 def test_same_state_is_silent():
@@ -56,7 +56,7 @@ def test_resolve_from_dip():
     assert spec["category"] == "RESOLVED"
 
 
-def test_severity_upgrade_is_new_alert():
+def test_severity_upgrade_bypasses_same_category_only():
     spec = should_alert(
         mint="MintA",
         previous_state="WATCH",
@@ -67,3 +67,29 @@ def test_severity_upgrade_is_new_alert():
     )
     assert spec is not None
     assert spec["category"] == "WARNING"
+
+
+def test_format_quality_alert_is_not_a_trade():
+    spec = should_alert(
+        mint="MintA",
+        previous_state="STABLE",
+        current_state="DETERIORATING",
+        now=1.0,
+    )
+    assert spec is not None
+    text = format_quality_alert(
+        spec,
+        why=[{"explanation": "liquidity down ≥ 70% vs Gate 1"}],
+        evidence_quality="GOOD",
+        timestamp="2026-01-01T00:05:00+00:00",
+        unknown=["unique_buyers"],
+    )
+    assert "MintA" in text
+    assert "STABLE" in text and "DETERIORATING" in text
+    assert "liquidity down" in text
+    assert "GOOD" in text
+    assert "unique_buyers" in text
+    assert "Not a buy" in text
+    assert "Not a sell" in text
+    assert spec["not_a_buy"] is True
+    assert spec["not_a_sell"] is True

@@ -74,6 +74,8 @@ except ImportError:  # pragma: no cover
         investigate,
     )
 
+from stinky_core.observation import watch_should_resume, watch_tick_decision
+
 logger = structlog.get_logger(__name__)
 
 def _allowed_dexes() -> set[str]:
@@ -439,6 +441,49 @@ class VolumeMonitor:
             self._memory = None
         self._memory_hydrated = False
 
+    async def start(self) -> None:
+        """Hydrate memory and resume open T+1800 watches. Fail-soft."""
+        await self._hydrate_memory()
+        await self._resume_open_watches()
+
+    async def _resume_open_watches(self) -> None:
+        """After restart: keep observing investigations still inside the window."""
+        mem = getattr(self, "_memory", None)
+        if mem is None:
+            return
+        try:
+            from stinky_core.memory import _parse_ts
+        except Exception:
+            return
+        now = datetime.now(timezone.utc)
+        n = 0
+        for rec in list(getattr(mem, "investigations", []) or []):
+            mint = str(rec.get("mint") or "").strip()
+            if not mint or mint in self._active:
+                continue
+            t0 = _parse_ts(rec.get("gate1_at") or rec.get("decision_timestamp"))
+            if t0 is None:
+                continue
+            elapsed = (now - t0).total_seconds()
+            if not watch_should_resume(elapsed_sec=elapsed, max_watch_sec=self._max_watch):
+                continue
+            mig = DetectedMigration(
+                mint=mint,
+                pool=str(rec.get("pair_identifier") or rec.get("pool") or ""),
+                creator=rec.get("creator"),
+                destination=str(rec.get("protocol") or "pumpswap"),
+                source="resume-watch",
+                block_time=t0,
+            )
+            self._active.add(mint)
+            asyncio.create_task(
+                self._run_watch(mig, started=t0, investigated=True),
+                name=f"vol-resume-{mint[:8]}",
+            )
+            n += 1
+        if n:
+            logger.info("volume.watches_resumed", n=n, max_watch_sec=self._max_watch)
+
     async def close(self) -> None:
         await self._client.close()
         await self._engine.dispose()
@@ -585,9 +630,18 @@ class VolumeMonitor:
         self._active.add(migration.mint)
         asyncio.create_task(self._run_watch(migration), name=f"vol-{migration.mint[:8]}")
 
-    async def _run_watch(self, migration: DetectedMigration) -> None:
+    async def _run_watch(
+        self,
+        migration: DetectedMigration,
+        *,
+        started: datetime | None = None,
+        investigated: bool = False,
+    ) -> None:
         mint = migration.mint
-        started = datetime.now(timezone.utc)
+        started = started or datetime.now(timezone.utc)
+        mem = getattr(self, "_memory", None)
+        if mem is not None and any(str(r.get("mint")) == mint for r in getattr(mem, "investigations", []) or []):
+            investigated = True
         logger.info(
             "volume.watch_start",
             mint=mint,
@@ -595,11 +649,14 @@ class VolumeMonitor:
             observation_threshold_usd=self._threshold,
             gate1_volume_usd=self._gate1_volume(),
             max_watch_sec=self._max_watch,
+            resumed=investigated,
+            source=migration.source,
         )
         try:
-            elapsed = 0.0
-            investigated = False
-            while elapsed < self._max_watch:
+            while True:
+                elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+                if elapsed >= self._max_watch:
+                    break
                 snap = await self._client.fetch_volume(mint)
                 if snap:
                     if snap.dex_id and not _dex_allowed(snap.dex_id):
@@ -622,7 +679,6 @@ class VolumeMonitor:
                         return
 
                     await self._persist_market_snapshot(mint, snap)
-                    # Gate 1 BEFORE expensive fee resolve.
                     ok, reason = self._passes_pump_quality(
                         mint, snap, None, fees_verified=None
                     )
@@ -634,6 +690,9 @@ class VolumeMonitor:
                         fees_verified=False,
                         snap=snap,
                         fees_source="gate1.pre_fee",
+                    )
+                    action = watch_tick_decision(
+                        investigated=investigated, gate_ok=bool(ok), reason=reason
                     )
                     logger.info(
                         "volume.snapshot",
@@ -647,31 +706,29 @@ class VolumeMonitor:
                         gate1_ok=ok,
                         gate1_reason=reason,
                         investigated=investigated,
+                        action=action,
                     )
-                    if not ok:
-                        if reason in (
-                            "PROTOCOL_DISABLED",
-                            "PROTOCOL_UNKNOWN",
-                            "INVALID_MINT",
-                            "INVALID_MARKET_DATA",
-                            "NOT_PUMP_MINT",
+                    if action == "stop":
+                        return
+                    if action == "investigate":
+                        if mem is not None and any(
+                            str(r.get("mint")) == mint for r in getattr(mem, "investigations", []) or []
                         ):
-                            return
-                        # VOLUME_BELOW_MIN / VOLUME_UNKNOWN: keep watching
-                    elif not investigated:
-                        await self._investigate_and_maybe_alert(migration, snap)
-                        investigated = True
-                        await self._record_followup_tick(migration, snap)
-                    else:
+                            investigated = True
+                            await self._record_followup_tick(migration, snap)
+                        else:
+                            await self._investigate_and_maybe_alert(migration, snap)
+                            investigated = True
+                            await self._record_followup_tick(migration, snap)
+                    elif action == "tick":
                         await self._record_followup_tick(migration, snap)
                 await asyncio.sleep(self._interval)
-                elapsed = (datetime.now(timezone.utc) - started).total_seconds()
 
             logger.info(
                 "volume.watch_timeout",
                 mint=mint,
                 threshold_usd=self._threshold,
-                watched_sec=round(elapsed, 1),
+                watched_sec=round((datetime.now(timezone.utc) - started).total_seconds(), 1),
             )
         except Exception as exc:
             logger.error("volume.watch_failed", mint=mint, error=str(exc))
@@ -950,6 +1007,8 @@ class VolumeMonitor:
                                         "severity": st.get("severity"),
                                         "why": st.get("why"),
                                         "evidence_quality": st.get("evidence_quality"),
+                                        "unknown": st.get("unknown"),
+                                        "as_of": st.get("as_of"),
                                         "not_a_buy": True,
                                         "calibrated_probability": False,
                                     },

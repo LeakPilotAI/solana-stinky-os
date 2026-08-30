@@ -84,5 +84,40 @@ def should_alert(
         "current_state": cur,
         "calibrated_probability": False,
         "not_a_buy": True,
+        "not_a_sell": True,
         "note": "State-change notification. Not a trade signal.",
     }
+
+
+def format_quality_alert(
+    spec: dict[str, Any],
+    *,
+    why: list[Any] | None = None,
+    evidence_quality: str | None = None,
+    timestamp: str | None = None,
+    unknown: list[str] | None = None,
+) -> str:
+    """Render Discord text. Never a buy/sell. Does not send."""
+    reasons: list[str] = []
+    for item in why or []:
+        if isinstance(item, dict):
+            exp = str(item.get("explanation") or "").strip()
+            if exp:
+                reasons.append(exp)
+        else:
+            s = str(item).strip()
+            if s:
+                reasons.append(s)
+    why_line = "; ".join(reasons[:4]) if reasons else "state change observed"
+    unk = ", ".join(unknown or []) if unknown else "—"
+    return (
+        f"**STINKY {spec.get('category')}**\n"
+        f"CA: `{spec.get('mint')}`\n"
+        f"{spec.get('previous_state')} → {spec.get('current_state')}\n"
+        f"Why: {why_line}\n"
+        f"Evidence: {evidence_quality or 'UNKNOWN'}\n"
+        f"Time: {timestamp or 'UNKNOWN'}\n"
+        f"UNKNOWN fields: {unk}\n"
+        f"Not a buy. Not a sell. Quality is setup deterioration, not a trade signal."
+    )
+

@@ -72,6 +72,7 @@ async def _run() -> None:
     await publisher.connect()
 
     volume = VolumeMonitor(publisher)
+    await volume.start()
     history = WalletHistory(rpc)
     discovery = HighVolumeDiscovery(volume, interval_sec=45.0)
 
