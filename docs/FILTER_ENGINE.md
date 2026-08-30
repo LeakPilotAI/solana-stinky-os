@@ -43,16 +43,16 @@ silently honor a threshold above $200,000.
 
 ## Investigation (after Gate 1)
 
-`investigate()` (`intel-v1.1.0-harden`, `inspect-v1.1.0-harden`):
+`investigate()` (`intel-v1.3.0-failclosed`, `inspect-v1.2.0-independent`):
 
 | Component | UNKNOWN vs LOW |
 |-----------|----------------|
-| Synthetic | UNKNOWN unless ≥3 independent flow signals (must include concentration or diversity) **or** a risk finding on partial data |
+| Synthetic | UNKNOWN unless ≥3 independent flow signals (must include concentration or diversity) **or** a risk finding on partial data. HIGH/CRITICAL needs ≥2 independent families |
 | Rug | UNKNOWN when there are no risk findings. Unknown creator is missing, not a hit |
-| Wallets | UNKNOWN with no buyers; OBSERVED without sample≥3 history; KNOWN only with smart-money evidence |
-| Patterns | UNKNOWN without inputs; structural matches are decision-time only |
-| Runner potential | 0–100 score. `calibrated_probability = false`. Not a probability |
-| Stinky Score | Base 50 + labeled components. Weights unchanged. Volume is a component, not the score |
+| Wallets | UNKNOWN with no buyers; OBSERVED without sample≥3 resolved history; KNOWN only with measured edge |
+| Patterns | UNKNOWN without inputs; resemblance needs fingerprint sample ≥5 |
+| Runner potential | None when insufficient evidence. Otherwise 0–100. `calibrated_probability = false`. Not a probability |
+| Stinky Score | Volume component is always 0. Volume is Gate 1, not bullish. Insufficient evidence → `interpretation=INSUFFICIENT_EVIDENCE`, `actionable=false`. The number is not a grade |
 
 Pipeline: `REJECTED` → `DISCOVERED` → `INVESTIGATING` → `UNKNOWN` / `QUALIFIED` / `HIGH_RISK` / `ALERT`.
 
@@ -64,16 +64,18 @@ QUALIFIED is “has stored intelligence, not high-risk.” It is not “safe” 
 
 - inspection complete
 - synthetic and rug not CRITICAL
-- meaningful intelligence (stored smart-money sample ≥ 3 **or** known creator)
-- score ≥ 55
+- stored intelligence (smart-money sample ≥ 3 **or** known creator with ≥ 3 launches)
+- actionable score ≥ 55
 
-Volume alone cannot alert. UNKNOWN / insufficient evidence never promotes
-(`promote=false`). A score without stored wallet or creator history is
-diagnostic only — it is not a reason to like the CA.
+Intelligence is checked **before** the numeric score. Volume alone cannot alert.
+UNKNOWN / insufficient evidence never promotes (`promote=false`). A 50-point
+base with Gate 1 volume is not a near-miss buy. UNKNOWN means: we don't know →
+insufficient evidence → do not promote.
 
-Pattern resemblance and co-buy links are as-of-decision (ADR-012). Sample
-floors: smart money ≥ 3 resolved tokens; creator KNOWN ≥ 3 launches;
-fingerprint resemblance ≥ 5 prior prints. Below that: UNKNOWN. Unique-wallet counts are not intelligence.
+Pattern resemblance and co-buy / deployer-buyer links are as-of-decision
+(ADR-012, ADR-013). Sample floors: smart money ≥ 3 resolved tokens; creator
+KNOWN ≥ 3 launches; fingerprint resemblance ≥ 5 prior prints. Below that:
+UNKNOWN. Unique-wallet counts and 5m volume are not intelligence.
 
 ## Authoritative fee metric (optional)
 

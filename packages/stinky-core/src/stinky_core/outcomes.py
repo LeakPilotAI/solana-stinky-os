@@ -31,6 +31,10 @@ class Outcome:
     time_to_peak: float | None
     time_to_drawdown: float | None
     reason: str
+    entry_volume: float | None = None
+    entry_price: float | None = None
+    decision_timestamp: str | None = None
+    peak_after_alert: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -53,6 +57,8 @@ def label_outcome(
     peak_multiple: Any = None,
     peak_volume: Any = None,
     entry_volume: Any = None,
+    entry_price: Any = None,
+    decision_timestamp: Any = None,
     drawdown: Any = None,
     time_to_peak: Any = None,
     time_to_drawdown: Any = None,
@@ -63,7 +69,8 @@ def label_outcome(
 ) -> Outcome:
     """Assign RUNNER / HELD / FADE / UNKNOWN from measured path statistics.
 
-    Insufficient data → UNKNOWN. Never force a label.
+    Insufficient data → UNKNOWN. Never force a label. Future path never
+    belongs on the original decision — this label is for later evaluation only.
     """
     window = _f(observation_window)
     multiple = _f(peak_multiple)
@@ -76,61 +83,11 @@ def label_outcome(
     dd = _f(drawdown)
     ttp = _f(time_to_peak)
     ttd = _f(time_to_drawdown)
+    entry_vol = _f(entry_volume)
+    entry_px = _f(entry_price)
+    decision_ts = str(decision_timestamp) if decision_timestamp else None
 
-    if not observation_complete or (multiple is None and peak_vol is None):
-        return Outcome(
-            label=UNKNOWN,
-            label_version=LABEL_VERSION,
-            observation_window=window,
-            peak_multiple=multiple,
-            peak_volume=peak_vol,
-            drawdown=dd,
-            time_to_peak=ttp,
-            time_to_drawdown=ttd,
-            reason="insufficient_observation",
-        )
-
-    if multiple is not None and multiple + 1e-9 >= float(runner_peak_multiple):
-        return Outcome(
-            label=RUNNER,
-            label_version=LABEL_VERSION,
-            observation_window=window,
-            peak_multiple=multiple,
-            peak_volume=peak_vol,
-            drawdown=dd,
-            time_to_peak=ttp,
-            time_to_drawdown=ttd,
-            reason="peak_multiple_met",
-        )
-
-    if dd is not None and dd + 1e-9 >= 0.5:
-        return Outcome(
-            label=FADE,
-            label_version=LABEL_VERSION,
-            observation_window=window,
-            peak_multiple=multiple,
-            peak_volume=peak_vol,
-            drawdown=dd,
-            time_to_peak=ttp,
-            time_to_drawdown=ttd,
-            reason="drawdown_fade",
-        )
-
-    if dd is not None and dd <= float(held_drawdown_max):
-        return Outcome(
-            label=HELD,
-            label_version=LABEL_VERSION,
-            observation_window=window,
-            peak_multiple=multiple,
-            peak_volume=peak_vol,
-            drawdown=dd,
-            time_to_peak=ttp,
-            time_to_drawdown=ttd,
-            reason="held_within_drawdown",
-        )
-
-    return Outcome(
-        label=UNKNOWN,
+    common = dict(
         label_version=LABEL_VERSION,
         observation_window=window,
         peak_multiple=multiple,
@@ -138,5 +95,22 @@ def label_outcome(
         drawdown=dd,
         time_to_peak=ttp,
         time_to_drawdown=ttd,
-        reason="no_deterministic_class",
+        entry_volume=entry_vol,
+        entry_price=entry_px,
+        decision_timestamp=decision_ts,
+        peak_after_alert=peak_vol,
     )
+
+    if not observation_complete or (multiple is None and peak_vol is None):
+        return Outcome(label=UNKNOWN, reason="insufficient_observation", **common)
+
+    if multiple is not None and multiple + 1e-9 >= float(runner_peak_multiple):
+        return Outcome(label=RUNNER, reason="peak_multiple_met", **common)
+
+    if dd is not None and dd + 1e-9 >= 0.5:
+        return Outcome(label=FADE, reason="drawdown_fade", **common)
+
+    if dd is not None and dd <= float(held_drawdown_max):
+        return Outcome(label=HELD, reason="held_within_drawdown", **common)
+
+    return Outcome(label=UNKNOWN, reason="no_deterministic_class", **common)

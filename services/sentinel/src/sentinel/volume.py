@@ -429,6 +429,7 @@ class VolumeMonitor:
             self._memory = IntelligenceMemory()
         except Exception:
             self._memory = None
+        self._memory_hydrated = False
 
     async def close(self) -> None:
         await self._client.close()
@@ -680,11 +681,107 @@ class VolumeMonitor:
                 error=f"{type(exc).__name__}: {exc}"[:200],
             )
 
+    async def _hydrate_memory(self) -> None:
+        """Load as-of observations from Postgres. Fail-soft. Never fabricates."""
+        if self._memory is None or self._memory_hydrated:
+            return
+        try:
+            from stinky_core.memory import (
+                MEMORY_SELECT_CREATOR_OBS,
+                MEMORY_SELECT_CREATOR_OUTCOME,
+                MEMORY_SELECT_FINGERPRINT,
+                MEMORY_SELECT_FINGERPRINT_OUTCOME,
+                MEMORY_SELECT_WALLET_OBS,
+                MEMORY_SELECT_WALLET_OUTCOME,
+            )
+            async with self._sessions() as session:
+                wobs = (await session.execute(text(MEMORY_SELECT_WALLET_OBS))).mappings().all()
+                wout = (await session.execute(text(MEMORY_SELECT_WALLET_OUTCOME))).mappings().all()
+                cobs = (await session.execute(text(MEMORY_SELECT_CREATOR_OBS))).mappings().all()
+                cout = (await session.execute(text(MEMORY_SELECT_CREATOR_OUTCOME))).mappings().all()
+                fps = (await session.execute(text(MEMORY_SELECT_FINGERPRINT))).mappings().all()
+                fpout = (await session.execute(text(MEMORY_SELECT_FINGERPRINT_OUTCOME))).mappings().all()
+            self._memory.hydrate({
+                "wallet_obs": [dict(r) for r in wobs],
+                "wallet_outcomes": [dict(r) for r in wout],
+                "creator_obs": [dict(r) for r in cobs],
+                "creator_outcomes": [dict(r) for r in cout],
+                "fingerprints": [dict(r) for r in fps],
+                "fingerprint_outcomes": [dict(r) for r in fpout],
+            })
+            logger.info("memory.hydrated", **self._memory.to_stats())
+        except Exception as exc:
+            logger.warning("memory.hydrate_failed", error=str(exc)[:200])
+        self._memory_hydrated = True
+
+    async def _persist_memory_decision(
+        self,
+        *,
+        mint: str,
+        observed_at: Any,
+        buyers: list[dict[str, Any]] | None,
+        creator: str | None,
+        fingerprint: str | None,
+    ) -> None:
+        try:
+            from stinky_core.memory import (
+                MEMORY_INSERT_CREATOR_OBS,
+                MEMORY_INSERT_FINGERPRINT,
+                MEMORY_INSERT_WALLET_OBS,
+            )
+            import json
+            async with self._sessions() as session:
+                for b in buyers or []:
+                    w = str(b.get("wallet") or b.get("userAddress") or "").strip()
+                    if not w:
+                        continue
+                    spent = b.get("sol_spent") if b.get("sol_spent") is not None else b.get("amountSol")
+                    try:
+                        spent_f = float(spent) if spent is not None else None
+                    except (TypeError, ValueError):
+                        spent_f = None
+                    await session.execute(
+                        text(MEMORY_INSERT_WALLET_OBS),
+                        {
+                            "wallet": w,
+                            "mint": mint,
+                            "observed_at": observed_at,
+                            "role": "early_buyer",
+                            "sol_spent": spent_f,
+                            "source": "observed",
+                        },
+                    )
+                if creator:
+                    await session.execute(
+                        text(MEMORY_INSERT_CREATOR_OBS),
+                        {
+                            "creator": creator,
+                            "mint": mint,
+                            "observed_at": observed_at,
+                            "migrated": True,
+                            "source": "observed",
+                        },
+                    )
+                if fingerprint:
+                    await session.execute(
+                        text(MEMORY_INSERT_FINGERPRINT),
+                        {
+                            "fingerprint": fingerprint,
+                            "mint": mint,
+                            "observed_at": observed_at,
+                            "features": json.dumps({}),
+                        },
+                    )
+                await session.commit()
+        except Exception as exc:
+            logger.warning("memory.persist_failed", mint=mint, error=str(exc)[:200])
+
     async def _investigate_and_maybe_alert(
         self, migration: DetectedMigration, snap: VolumeSnapshot
     ) -> bool:
         """Deep inspect after Gate 1. Returns True if an ALERT_CANDIDATE was emitted."""
         mint = migration.mint
+        await self._hydrate_memory()
         obs = await resolve_global_fees(
             mint, protocol=snap.dex_id, pool=snap.pair_address
         )
@@ -764,6 +861,13 @@ class VolumeMonitor:
         if mem is not None:
             try:
                 mem.ingest_decision(
+                    mint=mint,
+                    observed_at=bundle.get("decision_timestamp"),
+                    buyers=buyers_rows,
+                    creator=migration.creator,
+                    fingerprint=inv.fingerprint,
+                )
+                await self._persist_memory_decision(
                     mint=mint,
                     observed_at=bundle.get("decision_timestamp"),
                     buyers=buyers_rows,

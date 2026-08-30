@@ -15,7 +15,7 @@ from typing import Any, Iterable
 
 from stinky_core.pools import is_rankable_wallet
 
-MEMORY_VERSION = "memory-v1.0.0-asof"
+MEMORY_VERSION = "memory-v1.1.0-hydrate"
 
 MEMORY_DDL = """
 CREATE TABLE IF NOT EXISTS wallet_observations (
@@ -118,6 +118,48 @@ CREATE TABLE IF NOT EXISTS intelligence_decisions (
 );
 """
 MEMORY_INDEXES: tuple[str, ...] = ()
+
+MEMORY_INSERT_WALLET_OBS = """
+INSERT INTO wallet_observations (wallet, mint, observed_at, role, sol_spent, source)
+VALUES (:wallet, :mint, :observed_at, :role, :sol_spent, :source)
+ON CONFLICT (wallet, mint, role) DO NOTHING
+"""
+MEMORY_INSERT_WALLET_OUTCOME = """
+INSERT INTO wallet_outcome_labels (wallet, mint, labeled_at, label, label_version, source)
+VALUES (:wallet, :mint, :labeled_at, :label, :label_version, :source)
+ON CONFLICT (wallet, mint) DO NOTHING
+"""
+MEMORY_INSERT_CREATOR_OBS = """
+INSERT INTO creator_observations (creator, mint, observed_at, migrated, source)
+VALUES (:creator, :mint, :observed_at, :migrated, :source)
+ON CONFLICT (creator, mint) DO NOTHING
+"""
+MEMORY_INSERT_CREATOR_OUTCOME = """
+INSERT INTO creator_outcome_labels (creator, mint, labeled_at, label, label_version)
+VALUES (:creator, :mint, :labeled_at, :label, :label_version)
+ON CONFLICT (creator, mint) DO NOTHING
+"""
+MEMORY_INSERT_FINGERPRINT = """
+INSERT INTO pattern_fingerprints (fingerprint, mint, observed_at, features)
+VALUES (:fingerprint, :mint, :observed_at, CAST(:features AS jsonb))
+ON CONFLICT (fingerprint, mint) DO NOTHING
+"""
+MEMORY_INSERT_FINGERPRINT_OUTCOME = """
+INSERT INTO pattern_outcomes (fingerprint, mint, labeled_at, label, label_version)
+VALUES (:fingerprint, :mint, :labeled_at, :label, :label_version)
+ON CONFLICT (fingerprint, mint) DO NOTHING
+"""
+MEMORY_INSERT_RELATIONSHIP = """
+INSERT INTO wallet_relationships (wallet_a, wallet_b, kind, mint, observed_at, confidence, reason, evidence)
+VALUES (:wallet_a, :wallet_b, :kind, :mint, :observed_at, :confidence, :reason, CAST(:evidence AS jsonb))
+"""
+MEMORY_SELECT_WALLET_OBS = "SELECT wallet, mint, observed_at, role, sol_spent, source FROM wallet_observations"
+MEMORY_SELECT_WALLET_OUTCOME = "SELECT wallet AS subject, mint, labeled_at, label, label_version FROM wallet_outcome_labels"
+MEMORY_SELECT_CREATOR_OBS = "SELECT creator AS wallet, mint, observed_at, 'creator' AS role, NULL AS sol_spent, source FROM creator_observations"
+MEMORY_SELECT_CREATOR_OUTCOME = "SELECT creator AS subject, mint, labeled_at, label, label_version FROM creator_outcome_labels"
+MEMORY_SELECT_FINGERPRINT = "SELECT fingerprint, mint, observed_at, features FROM pattern_fingerprints"
+MEMORY_SELECT_FINGERPRINT_OUTCOME = "SELECT fingerprint AS subject, mint, labeled_at, label, label_version FROM pattern_outcomes"
+MEMORY_SELECT_RELATIONSHIP = "SELECT wallet_a, wallet_b, kind, mint, observed_at, confidence, reason, evidence FROM wallet_relationships"
 
 
 def _parse_ts(v: Any) -> datetime | None:
@@ -470,12 +512,57 @@ class IntelligenceMemory:
                 "evidence": {"mints": sorted(mints)[:12], "sample": shared},
                 "source": MEMORY_VERSION,
             })
+        links.extend(self.deployer_buyer_as_of(wanted, as_of=as_of, exclude_mint=exclude_mint, min_shared=min_shared))
         return {
             "status": "KNOWN" if links else "UNKNOWN",
             "links": links,
             "link_count": len(links),
             "missing": [] if links else ["prior_co_buy"],
         }
+
+    def deployer_buyer_as_of(
+        self,
+        wallets: Iterable[str],
+        *,
+        as_of: Any = None,
+        exclude_mint: str | None = None,
+        min_shared: int = 2,
+    ) -> list[dict[str, Any]]:
+        """Same wallet bought ≥ min_shared prior mints of the same creator. No identity merge."""
+        cutoff = _parse_ts(as_of)
+        exclude = (exclude_mint or "").strip()
+        wanted = {(w or "").strip() for w in wallets if w}
+        creator_mints: dict[str, set[str]] = {}
+        for o in self.creator_obs:
+            if o.mint == exclude or not _before(o.observed_at, cutoff):
+                continue
+            creator_mints.setdefault(o.wallet, set()).add(o.mint)
+        wallet_mints: dict[str, set[str]] = {}
+        for o in self.wallet_obs:
+            if o.mint == exclude or not _before(o.observed_at, cutoff):
+                continue
+            if o.role != "early_buyer" or o.wallet not in wanted:
+                continue
+            wallet_mints.setdefault(o.wallet, set()).add(o.mint)
+        out: list[dict[str, Any]] = []
+        for w, wm in wallet_mints.items():
+            for c, cm in creator_mints.items():
+                if w == c:
+                    continue
+                shared = wm & cm
+                if len(shared) < min_shared:
+                    continue
+                out.append({
+                    "wallet_a": min(w, c),
+                    "wallet_b": max(w, c),
+                    "kind": "deployer_buyer",
+                    "shared_mints": len(shared),
+                    "confidence": 0.55 if len(shared) < 5 else 0.70,
+                    "reason": "repeat_deployer_buyer",
+                    "evidence": {"mints": sorted(shared)[:12], "sample": len(shared), "creator": c, "buyer": w},
+                    "source": MEMORY_VERSION,
+                })
+        return out
 
     def pattern_match_as_of(
         self,
@@ -544,6 +631,158 @@ class IntelligenceMemory:
             self.record_creator(creator=creator, mint=mint, observed_at=ts)
         if fingerprint:
             self.record_fingerprint(fingerprint=fingerprint, mint=mint, observed_at=ts, features=features)
+
+    def snapshot_rows(self) -> dict[str, list[dict[str, Any]]]:
+        """SQL-ready dump. Used to persist and to hydrate a fresh process."""
+        def _iso(v: Any) -> Any:
+            if isinstance(v, datetime):
+                return v.isoformat()
+            return v
+
+        wallet_obs = [
+            {"wallet": o.wallet, "mint": o.mint, "observed_at": _iso(o.observed_at),
+             "role": o.role, "sol_spent": o.sol_spent, "source": o.source}
+            for o in self.wallet_obs
+        ]
+        wallet_outcomes = [
+            {"subject": o.subject, "wallet": o.subject, "mint": o.mint, "labeled_at": _iso(o.labeled_at),
+             "label": o.label, "label_version": o.label_version, "source": o.label_version}
+            for o in self.wallet_outcomes
+        ]
+        creator_obs = [
+            {"wallet": o.wallet, "creator": o.wallet, "mint": o.mint, "observed_at": _iso(o.observed_at),
+             "role": "creator", "sol_spent": None, "source": o.source,
+             "migrated": o.source != "observed_unmigrated"}
+            for o in self.creator_obs
+        ]
+        creator_outcomes = [
+            {"subject": o.subject, "creator": o.subject, "mint": o.mint, "labeled_at": _iso(o.labeled_at),
+             "label": o.label, "label_version": o.label_version}
+            for o in self.creator_outcomes
+        ]
+        fingerprints = [
+            {"fingerprint": r.fingerprint, "mint": r.mint, "observed_at": _iso(r.observed_at),
+             "features": dict(r.features)}
+            for r in self.fingerprints
+        ]
+        fingerprint_outcomes = [
+            {"subject": o.subject, "fingerprint": o.subject, "mint": o.mint, "labeled_at": _iso(o.labeled_at),
+             "label": o.label, "label_version": o.label_version}
+            for o in self.fingerprint_outcomes
+        ]
+        relationships = [
+            {"wallet_a": e.wallet_a, "wallet_b": e.wallet_b, "kind": e.kind, "mint": e.mint,
+             "observed_at": _iso(e.observed_at), "confidence": e.confidence, "reason": e.reason,
+             "evidence": dict(e.evidence)}
+            for e in self.relationships
+        ]
+        return {
+            "wallet_obs": wallet_obs,
+            "wallet_outcomes": wallet_outcomes,
+            "creator_obs": creator_obs,
+            "creator_outcomes": creator_outcomes,
+            "fingerprints": fingerprints,
+            "fingerprint_outcomes": fingerprint_outcomes,
+            "relationships": relationships,
+        }
+
+    def load_wallet_obs(self, rows: Iterable[Any]) -> int:
+        n = 0
+        for r in rows:
+            d = dict(r)
+            if self.record_wallet(
+                wallet=str(d.get("wallet") or ""),
+                mint=str(d.get("mint") or ""),
+                observed_at=d.get("observed_at"),
+                role=str(d.get("role") or "early_buyer"),
+                sol_spent=d.get("sol_spent") if d.get("sol_spent") is None else float(d.get("sol_spent")),
+                source=str(d.get("source") or "observed"),
+            ):
+                n += 1
+        return n
+
+    def load_wallet_outcomes(self, rows: Iterable[Any]) -> int:
+        n = 0
+        for r in rows:
+            d = dict(r)
+            before = len(self.wallet_outcomes)
+            self.record_outcome(
+                mint=str(d.get("mint") or ""),
+                labeled_at=d.get("labeled_at"),
+                label=str(d.get("label") or "UNKNOWN"),
+                wallets=[str(d.get("subject") or d.get("wallet") or "")],
+                label_version=str(d.get("label_version") or "outcome-v1.0.0"),
+            )
+            n += len(self.wallet_outcomes) - before
+        return n
+
+    def load_creator_obs(self, rows: Iterable[Any]) -> int:
+        n = 0
+        for r in rows:
+            d = dict(r)
+            if self.record_creator(
+                creator=str(d.get("wallet") or d.get("creator") or ""),
+                mint=str(d.get("mint") or ""),
+                observed_at=d.get("observed_at"),
+                migrated=d.get("migrated") if d.get("migrated") is not None else True,
+            ):
+                n += 1
+        return n
+
+    def load_creator_outcomes(self, rows: Iterable[Any]) -> int:
+        n = 0
+        for r in rows:
+            d = dict(r)
+            before = len(self.creator_outcomes)
+            self.record_outcome(
+                mint=str(d.get("mint") or ""),
+                labeled_at=d.get("labeled_at"),
+                label=str(d.get("label") or "UNKNOWN"),
+                creator=str(d.get("subject") or d.get("creator") or ""),
+                label_version=str(d.get("label_version") or "outcome-v1.0.0"),
+            )
+            n += len(self.creator_outcomes) - before
+        return n
+
+    def load_fingerprints(self, rows: Iterable[Any]) -> int:
+        n = 0
+        for r in rows:
+            d = dict(r)
+            feats = d.get("features") if isinstance(d.get("features"), dict) else {}
+            if self.record_fingerprint(
+                fingerprint=str(d.get("fingerprint") or ""),
+                mint=str(d.get("mint") or ""),
+                observed_at=d.get("observed_at"),
+                features=feats,
+            ):
+                n += 1
+        return n
+
+    def load_fingerprint_outcomes(self, rows: Iterable[Any]) -> int:
+        n = 0
+        for r in rows:
+            d = dict(r)
+            before = len(self.fingerprint_outcomes)
+            self.record_outcome(
+                mint=str(d.get("mint") or ""),
+                labeled_at=d.get("labeled_at"),
+                label=str(d.get("label") or "UNKNOWN"),
+                fingerprint=str(d.get("subject") or d.get("fingerprint") or ""),
+                label_version=str(d.get("label_version") or "outcome-v1.0.0"),
+            )
+            n += len(self.fingerprint_outcomes) - before
+        return n
+
+    def hydrate(self, snapshot: dict[str, Any] | None) -> dict[str, int]:
+        snap = snapshot or {}
+        return {
+            "wallet_obs": self.load_wallet_obs(snap.get("wallet_obs") or []),
+            "wallet_outcomes": self.load_wallet_outcomes(snap.get("wallet_outcomes") or []),
+            "creator_obs": self.load_creator_obs(snap.get("creator_obs") or []),
+            "creator_outcomes": self.load_creator_outcomes(snap.get("creator_outcomes") or []),
+            "fingerprints": self.load_fingerprints(snap.get("fingerprints") or []),
+            "fingerprint_outcomes": self.load_fingerprint_outcomes(snap.get("fingerprint_outcomes") or []),
+        }
 
     def to_stats(self) -> dict[str, int]:
         return {

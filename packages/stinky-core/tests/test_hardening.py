@@ -102,7 +102,9 @@ def test_unknown_intelligence_cannot_alert():
     assert inv.pipeline_status == STATUS_UNKNOWN
     ok, reason = can_alert_investigation(True, inv)
     assert ok is False
-    assert reason in ("INTELLIGENCE_INSUFFICIENT", "SCORE_BELOW_MIN")
+    assert reason == "INTELLIGENCE_INSUFFICIENT"
+    assert inv.score.interpretation == "INSUFFICIENT_EVIDENCE"
+    assert inv.runner.score is None
 
 
 def test_volume_only_is_not_qualified():
@@ -271,7 +273,9 @@ def test_score_attribution_decomposable():
     assert "base_score" in comps
     assert "volume_component" in comps
     assert "final_score" in comps
-    assert comps["volume_component"] == 12
+    assert comps["volume_component"] == 0
+    assert inv.score.interpretation == "INSUFFICIENT_EVIDENCE"
+    assert inv.promote is False
     assert inv.score.to_dict()["calibrated_probability"] is False
     assert inv.runner.to_dict()["calibrated_probability"] is False
 

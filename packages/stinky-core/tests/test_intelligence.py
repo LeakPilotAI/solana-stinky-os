@@ -207,7 +207,12 @@ def test_volume_only_insufficient_intelligence():
     )
     ok, reason = can_alert_investigation(True, inv)
     assert ok is False
-    assert reason in ("INTELLIGENCE_INSUFFICIENT", "SCORE_BELOW_MIN")
+    assert reason == "INTELLIGENCE_INSUFFICIENT"
+    assert inv.promote is False
+    assert inv.score.interpretation == "INSUFFICIENT_EVIDENCE"
+    assert inv.score.actionable is False
+    assert inv.runner.score is None
+    assert inv.score.components.get("volume_component") == 0
 
 
 def test_gate1_constant():

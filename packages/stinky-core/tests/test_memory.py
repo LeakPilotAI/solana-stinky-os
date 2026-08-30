@@ -75,11 +75,43 @@ def test_unknown_does_not_promote():
     assert inv.pipeline_status == STATUS_UNKNOWN
     assert inv.promote is False
     assert inv.score.promotable is False
+    assert inv.score.actionable is False
+    assert inv.score.interpretation == "INSUFFICIENT_EVIDENCE"
+    assert inv.runner.score is None
     d = evaluate_gate1({"mint": MINT_A, "protocol": "pumpswap", "volume_usd": 400_000, "migrated": True})
     ok, reason = can_alert_investigation(True, inv)
     assert ok is False
     assert reason == "INTELLIGENCE_INSUFFICIENT"
     assert can_alert(d, score=inv.score.score, has_intelligence=False, inspection_complete=True)[0] is False
+    assert can_alert(d, score=99, meaningful_buyers=20, inspection_complete=True, has_intelligence=False)[1] == "INTELLIGENCE_INSUFFICIENT"
+
+
+def test_volume_is_not_bullish():
+    """$150k and $400k without intelligence must not produce a maybe-buy grade."""
+    a = investigate({"mint": MINT_A, "volume_usd": 150_000})
+    b = investigate({"mint": MINT_B, "volume_usd": 400_000})
+    assert a.promote is False and b.promote is False
+    assert a.score.components["volume_component"] == 0
+    assert b.score.components["volume_component"] == 0
+    assert a.score.interpretation == "INSUFFICIENT_EVIDENCE"
+    assert b.score.interpretation == "INSUFFICIENT_EVIDENCE"
+    assert a.runner.score is None and b.runner.score is None
+    assert a.score.score == b.score.score
+    pos_reasons = " ".join(p["reason"] for p in a.score.positive)
+    assert "Gate 1" not in pos_reasons
+    assert "volume" not in pos_reasons.lower()
+    ok, reason = can_alert_investigation(True, b)
+    assert ok is False
+    assert reason == "INTELLIGENCE_INSUFFICIENT"
+
+
+def test_observed_buyers_are_not_a_positive():
+    inv = investigate({"mint": MINT_A, "volume_usd": 180_000, "buyers": _buyers(W, W2)})
+    assert inv.has_intelligence is False
+    assert inv.promote is False
+    assert (inv.score.components.get("wallet_component") or 0) <= 0
+    assert inv.score.interpretation == "INSUFFICIENT_EVIDENCE"
+    assert inv.runner.score is None
 
 
 def test_as_of_wallet_excludes_future_outcomes():
@@ -220,6 +252,40 @@ def test_score_attribution_still_decomposable():
     assert inv.score.to_dict()["calibrated_probability"] is False
     assert inv.has_intelligence is True
     assert inv.wallets.winner_count == 1
+    assert inv.score.interpretation == "EVIDENCE_BASED"
+    assert inv.score.actionable is True
+    assert inv.score.components["volume_component"] == 0
+
+
+def test_memory_hydrate_roundtrip():
+    mem = IntelligenceMemory()
+    mem.record_wallet(wallet=W, mint=MINT_A, observed_at=T0)
+    mem.record_creator(creator=CREATOR, mint=MINT_A, observed_at=T0)
+    mem.record_outcome(mint=MINT_A, labeled_at=T0, label="RUNNER", wallets=[W], creator=CREATOR)
+    snap = mem.snapshot_rows()
+    mem2 = IntelligenceMemory()
+    loaded = mem2.hydrate(snap)
+    assert loaded["wallet_obs"] == 1
+    assert loaded["creator_obs"] == 1
+    perf = mem2.wallet_performance_as_of([W], as_of=T0 + timedelta(hours=1), exclude_mint=MINT_B)
+    assert perf[W]["runners"] == 1
+    assert perf[W]["early_buy_count"] == 1
+
+
+def test_deployer_buyer_requires_two_prior_mints():
+    mem = IntelligenceMemory()
+    mem.record_creator(creator=CREATOR, mint=MINT_A, observed_at=T0)
+    mem.record_wallet(wallet=W, mint=MINT_A, observed_at=T0)
+    one = mem.deployer_buyer_as_of([W], as_of=T0 + timedelta(days=1), exclude_mint=MINT_C)
+    assert one == []
+    mem.record_creator(creator=CREATOR, mint=MINT_B, observed_at=T0 + timedelta(hours=1))
+    mem.record_wallet(wallet=W, mint=MINT_B, observed_at=T0 + timedelta(hours=1))
+    two = mem.deployer_buyer_as_of([W], as_of=T0 + timedelta(days=1), exclude_mint=MINT_C)
+    assert len(two) == 1
+    assert two[0]["kind"] == "deployer_buyer"
+    assert two[0]["shared_mints"] == 2
+    future = mem.deployer_buyer_as_of([W], as_of=T0 + timedelta(minutes=1), exclude_mint=MINT_C)
+    assert future == []
 
 
 def test_dataset_unique_mint():

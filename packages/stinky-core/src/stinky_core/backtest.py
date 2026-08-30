@@ -147,6 +147,8 @@ def backtest_candidates(
             peak_multiple=m.get("peak_multiple"),
             peak_volume=m.get("peak_volume") or m.get("peak_volume_m5_usd"),
             entry_volume=m.get("volume_usd") or m.get("volume_m5_usd"),
+            entry_price=m.get("entry_price") or m.get("price_usd"),
+            decision_timestamp=ts.isoformat(),
             drawdown=m.get("drawdown"),
             time_to_peak=m.get("time_to_peak"),
             time_to_drawdown=m.get("time_to_drawdown"),
@@ -239,7 +241,7 @@ def backtest_candidates(
     recall = (runners / outcome_runner_all) if outcome_runner_all else None
     unknown_rate = (outcome_unknown_all / total) if total else None
     return {
-        "engine": "stinky-backtest-v1.2.0-memory",
+        "engine": "stinky-backtest-v1.3.0-failclosed",
         "filter_version": FILTER_VERSION,
         "memory_version": mem.version,
         "input": len(unique) + dropped_dupes,

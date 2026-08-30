@@ -906,6 +906,11 @@ def can_alert(
     if (synthetic_level or "").upper() == "CRITICAL" or (rug_level or "").upper() == "CRITICAL":
         filter_stats.inc("alerts_rejected")
         return False, ReasonCode.RISK_CRITICAL
+    # Buyer count is not intelligence. Check intel before the numeric score
+    # so a 50-point volume print cannot look like a near-miss buy.
+    if not has_intelligence:
+        filter_stats.inc("alerts_rejected")
+        return False, ReasonCode.INTELLIGENCE_INSUFFICIENT
     if score is None:
         filter_stats.inc("alerts_rejected")
         return False, ReasonCode.SCORE_UNKNOWN
@@ -917,14 +922,5 @@ def can_alert(
     if score_f + 1e-9 < float(min_score):
         filter_stats.inc("alerts_rejected")
         return False, ReasonCode.SCORE_BELOW_MIN
-    if not has_intelligence:
-        mb: int | None
-        try:
-            mb = int(meaningful_buyers) if meaningful_buyers is not None else None
-        except (TypeError, ValueError):
-            mb = None
-        if mb is None or mb < int(min_meaningful_buyers):
-            filter_stats.inc("alerts_rejected")
-            return False, ReasonCode.INTELLIGENCE_INSUFFICIENT
     filter_stats.inc("alerts_generated")
     return True, None

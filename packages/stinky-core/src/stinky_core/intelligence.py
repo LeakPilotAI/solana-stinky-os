@@ -24,9 +24,9 @@ from stinky_core.evidence import EvidenceBundle, item as eitem
 from stinky_core.fingerprint import book_fingerprint
 from stinky_core.memory import IntelligenceMemory
 
-INTEL_VERSION = "intel-v1.2.0-memory"
-SCORE_VERSION = "score-v1.0.0-volume-first"
-RUNNER_VERSION = "runner-potential-v1.0.0"
+INTEL_VERSION = "intel-v1.3.0-failclosed"
+SCORE_VERSION = "score-v1.1.0-intel-not-volume"
+RUNNER_VERSION = "runner-potential-v1.1.0-intel-not-volume"
 
 MARKET_INSPECTIONS_DDL = """
 CREATE TABLE IF NOT EXISTS market_inspections (
@@ -189,6 +189,8 @@ class ScoreBreakdown:
     components: dict[str, float] = field(default_factory=dict)
     model_version: str = SCORE_VERSION
     promotable: bool = False
+    actionable: bool = False
+    interpretation: str = "INSUFFICIENT_EVIDENCE"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -201,6 +203,8 @@ class ScoreBreakdown:
             "model_version": self.model_version,
             "calibrated_probability": False,
             "promotable": self.promotable,
+            "actionable": self.actionable,
+            "interpretation": self.interpretation,
         }
 
 
@@ -256,6 +260,9 @@ class Investigation:
             "evidence": dict(self.evidence),
             "model_version": self.model_version,
             "inspect_version": INSPECT_VERSION,
+            "score_interpretation": self.score.interpretation,
+            "score_actionable": self.score.actionable,
+            "unknown_not_bullish": True,
         }
 
 
@@ -471,45 +478,39 @@ def runner_potential(
     score = 50.0
     used = 0
 
-    vol = activity.volume_m5_usd
-    if vol is None:
+    # Volume already admitted the CA at Gate 1. It is not a runner signal.
+    if activity.volume_m5_usd is None:
         missing.append("volume_m5")
-    else:
-        used += 1
-        ratio = vol / volume_gate if volume_gate else 1.0
-        if ratio >= 2:
-            score += 14
-            pos.append({"delta": 14, "reason": f"5m volume {vol:,.0f} (≥2× Gate 1)"})
-        elif ratio >= 1:
-            score += 8
-            pos.append({"delta": 8, "reason": f"5m volume {vol:,.0f} cleared Gate 1"})
 
     if wallets.status == "UNKNOWN":
         missing.append("wallets")
     else:
         used += 1
-        mb = wallets.meaningful_buyer_count or 0
-        if mb >= 8:
-            score += 12
-            pos.append({"delta": 12, "reason": f"{mb} meaningful early buyers"})
-        elif mb >= 3:
-            score += 6
-            pos.append({"delta": 6, "reason": f"{mb} meaningful early buyers"})
         sw = wallets.smart_wallet_count or 0
+        mb = wallets.meaningful_buyer_count or 0
         if sw >= 3:
             score += 10
-            pos.append({"delta": 10, "reason": f"{sw} wallets with measured edge"})
-        elif sw == 0 and mb >= 3:
+            pos.append({"delta": 10, "reason": f"{sw} wallets with measured edge (sample ≥ 3)"})
+        elif sw >= 1:
+            score += 6
+            pos.append({"delta": 6, "reason": f"{sw} wallet(s) with measured edge (sample ≥ 3)"})
+        elif mb >= 3:
             score -= 4
             neg.append({"delta": -4, "reason": "Meaningful capital without prior-edge wallets"})
 
     if creator.status == "UNKNOWN":
         missing.append("creator")
+    elif creator.status == "OBSERVED":
+        missing.append("creator_sample")
+        used += 1
+        if creator.serial_risk == "HIGH":
+            score -= 10
+            neg.append({"delta": -10, "reason": "Serial deployer risk HIGH"})
     else:
         used += 1
-        if (creator.historical_runners or 0) >= 3:
+        if (creator.historical_runners or 0) >= 3 and (creator.launches or 0) >= 5:
             score += 8
-            pos.append({"delta": 8, "reason": "Creator has stored runners"})
+            pos.append({"delta": 8, "reason": "Creator has stored runners (sample ≥ 5 launches)"})
         if creator.serial_risk == "HIGH":
             score -= 10
             neg.append({"delta": -10, "reason": "Serial deployer risk HIGH"})
@@ -538,11 +539,14 @@ def runner_potential(
     if patterns.pattern_confidence == "UNKNOWN" and not patterns.matches:
         missing.append("patterns")
     elif patterns.matches:
-        used += 1
         kinds = {m.get("kind") for m in patterns.matches}
-        if "measured_edge" in kinds or "dense_early_book" in kinds:
+        intel_kinds = kinds & {"measured_edge", "historical_resemblance", "repeat_early_buyer"}
+        if intel_kinds:
+            used += 1
             score += 6
-            pos.append({"delta": 6, "reason": "Structural pattern match on this book"})
+            pos.append({"delta": 6, "reason": "Historical/edge pattern match (not volume)"})
+        elif "dense_early_book" in kinds or "co_buy_cluster" in kinds:
+            missing.append("pattern_history")
 
     if used == 0:
         return RunnerPotential(score=None, confidence=None, positive=pos, negative=neg, missing=missing)
@@ -570,7 +574,7 @@ def compose_stinky_score(
     volume_gate: float = 150_000.0,
     entity_link_count: int = 0,
 ) -> ScoreBreakdown:
-    """Volume is the entry, not the score. Weights unchanged; components labeled."""
+    """Volume is the investigation trigger, not the score. No ML calibration."""
     pos: list[dict[str, Any]] = []
     neg: list[dict[str, Any]] = []
     missing: list[str] = []
@@ -607,32 +611,24 @@ def compose_stinky_score(
     if vol is None:
         missing.append("volume")
     else:
-        ratio = vol / volume_gate if volume_gate else 1
-        if ratio >= 2:
-            plus(12, "high-quality volume (≥2× Gate 1)", "volume_component")
-            conf += 0.08
-        elif ratio >= 1:
-            plus(6, "Gate 1 volume cleared", "volume_component")
-            conf += 0.04
+        # Gate 1 already used volume. Recording 0 keeps the component labeled
+        # so nobody can mistake a missing key for "volume was ignored by accident."
+        components["volume_component"] = 0.0
 
     if wallets.status == "UNKNOWN":
         missing.append("wallets")
-        minus(-2, "no early-wallet intelligence", "wallet_component")
         conf -= 0.04
+    elif wallets.status == "OBSERVED":
+        missing.append("wallet_history")
+        conf -= 0.02
     else:
-        mb = wallets.meaningful_buyer_count or 0
         sw = wallets.smart_wallet_count or 0
         if sw >= 3:
-            plus(14, "strong early-wallet quality", "wallet_component")
+            plus(14, "strong early-wallet quality (sample ≥ 3)", "wallet_component")
             conf += 0.12
         elif sw >= 1:
-            plus(6, "some measured-edge wallets", "wallet_component")
+            plus(6, "some measured-edge wallets (sample ≥ 3)", "wallet_component")
             conf += 0.06
-        if mb >= 8:
-            plus(8, "healthy buyer diversity", "wallet_component")
-            conf += 0.06
-        elif mb >= 3:
-            plus(3, "adequate meaningful buyers", "wallet_component")
 
     if creator.status == "UNKNOWN":
         missing.append("creator")
@@ -644,9 +640,12 @@ def compose_stinky_score(
     elif creator.status == "OBSERVED":
         missing.append("creator_sample")
 
-    pos_matches = [m for m in patterns.matches if m.get("kind") != "serial_deployer"]
-    if pos_matches:
-        plus(8, "historical/structural pattern match", "pattern_component")
+    intel_matches = [
+        m for m in patterns.matches
+        if m.get("kind") in ("measured_edge", "historical_resemblance", "repeat_early_buyer")
+    ]
+    if intel_matches:
+        plus(8, "historical/edge pattern match", "pattern_component")
         conf += 0.05
     elif patterns.pattern_confidence == "UNKNOWN":
         missing.append("patterns")
@@ -700,7 +699,9 @@ def compose_stinky_score(
         negative=neg,
         missing=missing,
         components=components,
-        promotable=False,  # set by investigate() after intelligence check
+        promotable=False,
+        actionable=False,
+        interpretation="INSUFFICIENT_EVIDENCE",
     )
 
 
@@ -764,7 +765,7 @@ def _build_evidence(
 ) -> EvidenceBundle:
     b = EvidenceBundle(promote=promote, insufficient_evidence=insufficient, would_change_conclusion=list(would_change))
     vol_st = "OBSERVED" if activity.volume_m5_usd is not None else "MISSING"
-    b.add(eitem("MARKET", "volume_5m", activity.volume_m5_usd, status=vol_st, source="market", explanation="5-minute volume (Gate 1 input, not a bullish score)"))
+    b.add(eitem("MARKET", "volume_5m", activity.volume_m5_usd, status=vol_st, source="market", explanation="5-minute volume is Gate 1 (investigation trigger). It is not a bullish score."))
     b.add(eitem("MARKET", "liquidity", activity.liquidity_usd, status="OBSERVED" if activity.liquidity_usd is not None else "MISSING", source="market", explanation="Liquidity USD"))
     b.add(eitem("MARKET", "volume_liquidity_ratio", activity.volume_liquidity_ratio, status="OBSERVED" if activity.volume_liquidity_ratio is not None else "MISSING", source="derived", explanation="Volume / liquidity"))
     b.add(eitem("FLOW", "unique_wallets", activity.unique_wallets, status="OBSERVED" if activity.unique_wallets is not None else "MISSING", source="book", explanation="Unique wallets on observed book"))
@@ -921,6 +922,20 @@ def investigate(
     inv.promote = inv.pipeline_status == STATUS_QUALIFIED and intel
     inv.insufficient_evidence = not intel
     inv.score.promotable = inv.promote
+    if not intel:
+        # UNKNOWN is not a grade. Do not leave a 50-ish number that looks mid-pack.
+        inv.runner = RunnerPotential(
+            score=None,
+            confidence=None,
+            positive=inv.runner.positive,
+            negative=inv.runner.negative,
+            missing=inv.runner.missing,
+        )
+        inv.score.actionable = False
+        inv.score.interpretation = "INSUFFICIENT_EVIDENCE"
+    else:
+        inv.score.actionable = inv.pipeline_status in (STATUS_QUALIFIED, STATUS_ALERT, STATUS_HIGH_RISK)
+        inv.score.interpretation = "EVIDENCE_BASED"
     inv.evidence = _build_evidence(
         activity=activity, synthetic=synthetic, rug=rug, wallets=wallets, creator=creator,
         patterns=patterns, entities=entities, fee_status=fee_status,
@@ -943,11 +958,14 @@ def can_alert_investigation(
         return False, "INSPECTION_INCOMPLETE"
     if investigation.synthetic.level == "CRITICAL" or investigation.rug.level == "CRITICAL":
         return False, "RISK_CRITICAL"
-    if investigation.score.score + 1e-9 < float(min_score):
-        return False, "SCORE_BELOW_MIN"
+    # Intelligence before score: a 50-point volume print is not a near-miss.
     if not investigation.has_intelligence or investigation.insufficient_evidence:
         return False, "INTELLIGENCE_INSUFFICIENT"
     if investigation.pipeline_status == STATUS_UNKNOWN:
+        return False, "INTELLIGENCE_INSUFFICIENT"
+    if investigation.score.score + 1e-9 < float(min_score):
+        return False, "SCORE_BELOW_MIN"
+    if not investigation.score.actionable:
         return False, "INTELLIGENCE_INSUFFICIENT"
     return True, None
 
