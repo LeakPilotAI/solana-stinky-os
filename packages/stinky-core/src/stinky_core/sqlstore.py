@@ -111,7 +111,30 @@ CREATE TABLE IF NOT EXISTS market_observations (
     volume_m5_usd REAL,
     price_usd REAL,
     liquidity_usd REAL,
-    source TEXT NOT NULL DEFAULT 'observed'
+    source TEXT NOT NULL DEFAULT 'observed',
+    market_cap_usd REAL,
+    buys INTEGER,
+    sells INTEGER,
+    txns INTEGER,
+    unique_buyers INTEGER,
+    unique_sellers INTEGER,
+    volume_since_gate REAL
+);
+CREATE TABLE IF NOT EXISTS intelligence_investigations (
+    mint TEXT PRIMARY KEY,
+    gate1_at TEXT NOT NULL,
+    discovered_at TEXT,
+    protocol TEXT,
+    volume_5m_at_gate REAL,
+    liquidity_at_gate REAL,
+    market_cap_at_gate REAL,
+    price_at_gate REAL,
+    pair_identifier TEXT,
+    creator TEXT,
+    gate_decision TEXT,
+    investigation_status TEXT,
+    correlation_id TEXT,
+    row TEXT NOT NULL
 );
 """
 
@@ -122,6 +145,19 @@ class SqliteMemoryStore:
         self.conn = sqlite3.connect(self.path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SQLITE_DDL)
+        for alt in (
+            "ALTER TABLE market_observations ADD COLUMN market_cap_usd REAL",
+            "ALTER TABLE market_observations ADD COLUMN buys INTEGER",
+            "ALTER TABLE market_observations ADD COLUMN sells INTEGER",
+            "ALTER TABLE market_observations ADD COLUMN txns INTEGER",
+            "ALTER TABLE market_observations ADD COLUMN unique_buyers INTEGER",
+            "ALTER TABLE market_observations ADD COLUMN unique_sellers INTEGER",
+            "ALTER TABLE market_observations ADD COLUMN volume_since_gate REAL",
+        ):
+            try:
+                self.conn.execute(alt)
+            except sqlite3.OperationalError:
+                pass
         self.conn.commit()
 
     def close(self) -> None:
@@ -139,6 +175,7 @@ class SqliteMemoryStore:
             "pattern_outcomes",
             "intelligence_decisions",
             "market_observations",
+            "intelligence_investigations",
         ):
             out[table] = int(self.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
         return out
@@ -227,10 +264,38 @@ class SqliteMemoryStore:
         for r in snap.get("market_ticks") or []:
             self.conn.execute(
                 """INSERT INTO market_observations
-                   (mint, observed_at, volume_m5_usd, price_usd, liquidity_usd, source)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                   (mint, observed_at, volume_m5_usd, price_usd, liquidity_usd, source,
+                    market_cap_usd, buys, sells, txns, unique_buyers, unique_sellers, volume_since_gate)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (r["mint"], r["observed_at"], r.get("volume_m5_usd"), r.get("price_usd"),
-                 r.get("liquidity_usd"), r.get("source") or "observed"),
+                 r.get("liquidity_usd"), r.get("source") or "observed",
+                 r.get("market_cap_usd"), r.get("buys"), r.get("sells"), r.get("txns"),
+                 r.get("unique_buyers"), r.get("unique_sellers"), r.get("volume_since_gate")),
+            )
+        for r in snap.get("investigations") or []:
+            nested = dict(r)
+            self.conn.execute(
+                """INSERT OR IGNORE INTO intelligence_investigations
+                   (mint, gate1_at, discovered_at, protocol, volume_5m_at_gate, liquidity_at_gate,
+                    market_cap_at_gate, price_at_gate, pair_identifier, creator, gate_decision,
+                    investigation_status, correlation_id, row)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    r.get("mint"),
+                    r.get("gate1_at") or r.get("decision_timestamp") or "",
+                    r.get("discovered_at"),
+                    r.get("protocol"),
+                    r.get("volume_5m_at_gate"),
+                    r.get("liquidity_at_gate"),
+                    r.get("market_cap_at_gate"),
+                    r.get("price_at_gate"),
+                    r.get("pair_identifier"),
+                    r.get("creator"),
+                    r.get("gate_decision"),
+                    r.get("investigation_status"),
+                    r.get("correlation_id"),
+                    json.dumps(nested, default=str),
+                ),
             )
         self.conn.commit()
         after = self.counts()
@@ -266,6 +331,17 @@ class SqliteMemoryStore:
             r["promote"] = bool(r.get("promote"))
             r["alert_ok"] = bool(r.get("alert_ok"))
         mem.load_decisions(decs)
-        ticks = rows("SELECT mint, observed_at, volume_m5_usd, price_usd, liquidity_usd, source FROM market_observations")
+        ticks = rows("SELECT mint, observed_at, volume_m5_usd, price_usd, liquidity_usd, source, market_cap_usd, buys, sells, txns, unique_buyers, unique_sellers, volume_since_gate FROM market_observations")
         mem.load_market_ticks(ticks)
+        try:
+            invs = rows("SELECT mint, gate1_at, discovered_at, protocol, volume_5m_at_gate, liquidity_at_gate, market_cap_at_gate, price_at_gate, pair_identifier, creator, gate_decision, investigation_status, correlation_id, row FROM intelligence_investigations")
+            for r in invs:
+                if isinstance(r.get("row"), str):
+                    try:
+                        r["row"] = json.loads(r["row"] or "{}")
+                    except json.JSONDecodeError:
+                        r["row"] = {}
+            mem.load_investigations(invs)
+        except sqlite3.OperationalError:
+            pass
         return mem

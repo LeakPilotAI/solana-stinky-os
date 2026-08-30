@@ -9,10 +9,14 @@ export default function TokenPage() {
   const params = useParams();
   const mint = String(params.mint || "");
   const [data, setData] = useState<Record<string, unknown> | null>(null);
+  const [happened, setHappened] = useState<Record<string, unknown> | null>(null);
+  const [recipe, setRecipe] = useState<Record<string, unknown> | null>(null);
 
   useEffect(() => {
     if (!mint) return;
     api.token(mint).then(setData).catch(() => setData({ available: false }));
+    api.bookWhatHappened(mint).then(setHappened).catch(() => setHappened(null));
+    api.bookRecipe({ mint, exclude_mint: mint }).then(setRecipe).catch(() => setRecipe(null));
   }, [mint]);
 
   if (!data) {
@@ -158,6 +162,65 @@ export default function TokenPage() {
           )}
         </div>
       </div>
+
+      {happened && (
+        <div className="panel p-3">
+          <h2 className="text-2xs uppercase tracking-wide text-terminal-muted">What happened next</h2>
+          <p className="mt-1 text-[11px] text-terminal-dim">
+            Stored ticks only. Missing offsets stay UNKNOWN. Outcome is later, not a decision input.
+          </p>
+          <dl className="mt-2 grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
+            <div>
+              <dt className="text-terminal-muted">Peak 5m vol</dt>
+              <dd className="tabular">
+                {happened.peak_volume == null && happened.peakVolume == null
+                  ? "UNKNOWN"
+                  : fmtUsd(Number(happened.peak_volume ?? happened.peakVolume))}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-terminal-muted">Peak price</dt>
+              <dd className="tabular">
+                {happened.peak_price == null && happened.peakPrice == null
+                  ? "UNKNOWN"
+                  : String(happened.peak_price ?? happened.peakPrice)}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-terminal-muted">Later outcome</dt>
+              <dd>
+                {(() => {
+                  const oc = happened.outcome;
+                  if (oc && typeof oc === "object" && oc !== null && "label" in oc) {
+                    return String((oc as { label?: string }).label || "UNKNOWN");
+                  }
+                  return typeof oc === "string" ? oc : "UNKNOWN";
+                })()}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-terminal-muted">Source</dt>
+              <dd>{String(happened.source || "—")}</dd>
+            </div>
+          </dl>
+        </div>
+      )}
+
+      {recipe && (
+        <div className="panel p-3">
+          <h2 className="text-2xs uppercase tracking-wide text-terminal-muted">Runner recipe</h2>
+          <p className="mt-1 text-[11px] text-terminal-dim">{String(recipe.note || "Not a probability.")}</p>
+          <p className="mt-2 text-xs text-terminal-muted">
+            Analogues {String(recipe.analogue_count ?? 0)} · RUNNER {String(recipe.runner_count ?? 0)} / FADE{" "}
+            {String(recipe.fade_count ?? 0)} / HELD {String(recipe.held_count ?? 0)}
+          </p>
+          {recipe.sample_sufficient !== true && (
+            <p className="mt-1 text-[11px] text-terminal-muted">
+              UNKNOWN — need 5 or more historical analogues as-of.
+            </p>
+          )}
+        </div>
+      )}
 
       <div className="panel overflow-x-auto">
         <div className="border-b border-terminal-border px-3 py-2 text-2xs uppercase text-terminal-muted">

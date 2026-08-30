@@ -17,7 +17,7 @@ import json
 from stinky_core.pools import is_rankable_wallet
 from stinky_core.reputation import creator_reputation, wallet_reputation
 
-MEMORY_VERSION = "memory-v1.5.0-evidence"
+MEMORY_VERSION = "memory-v1.6.0-observe"
 
 MEMORY_DDL = """
 CREATE TABLE IF NOT EXISTS wallet_observations (
@@ -129,8 +129,25 @@ CREATE TABLE IF NOT EXISTS market_observations (
     source TEXT NOT NULL DEFAULT 'observed'
 );
 CREATE INDEX IF NOT EXISTS idx_mkt_obs_mint_time ON market_observations (mint, observed_at);
+
+CREATE TABLE IF NOT EXISTS intelligence_investigations (
+    mint TEXT PRIMARY KEY,
+    gate1_at TIMESTAMPTZ NOT NULL,
+    discovered_at TIMESTAMPTZ,
+    protocol TEXT,
+    volume_5m_at_gate DOUBLE PRECISION,
+    liquidity_at_gate DOUBLE PRECISION,
+    market_cap_at_gate DOUBLE PRECISION,
+    price_at_gate DOUBLE PRECISION,
+    pair_identifier TEXT,
+    creator TEXT,
+    gate_decision TEXT,
+    investigation_status TEXT,
+    correlation_id TEXT,
+    row JSONB NOT NULL
+);
 """
-# Extra columns for existing Postgres installs (007). CREATE TABLE IF NOT EXISTS
+# Extra columns for existing Postgres installs. CREATE TABLE IF NOT EXISTS
 # above will not add them to an already-created table.
 MEMORY_ALTERS = (
     "ALTER TABLE wallet_observations ADD COLUMN IF NOT EXISTS side TEXT DEFAULT 'buy'",
@@ -138,6 +155,13 @@ MEMORY_ALTERS = (
     "ALTER TABLE wallet_observations ADD COLUMN IF NOT EXISTS exit_size DOUBLE PRECISION",
     "ALTER TABLE wallet_observations ADD COLUMN IF NOT EXISTS exit_price DOUBLE PRECISION",
     "ALTER TABLE wallet_observations ADD COLUMN IF NOT EXISTS ret_pct DOUBLE PRECISION",
+    "ALTER TABLE market_observations ADD COLUMN IF NOT EXISTS market_cap_usd DOUBLE PRECISION",
+    "ALTER TABLE market_observations ADD COLUMN IF NOT EXISTS buys INTEGER",
+    "ALTER TABLE market_observations ADD COLUMN IF NOT EXISTS sells INTEGER",
+    "ALTER TABLE market_observations ADD COLUMN IF NOT EXISTS txns INTEGER",
+    "ALTER TABLE market_observations ADD COLUMN IF NOT EXISTS unique_buyers INTEGER",
+    "ALTER TABLE market_observations ADD COLUMN IF NOT EXISTS unique_sellers INTEGER",
+    "ALTER TABLE market_observations ADD COLUMN IF NOT EXISTS volume_since_gate DOUBLE PRECISION",
 )
 MEMORY_INDEXES: tuple[str, ...] = ()
 
@@ -216,11 +240,37 @@ SELECT mint, decision_timestamp, protocol, volume_m5_usd, pipeline_status,
 FROM intelligence_decisions
 """
 MEMORY_INSERT_MARKET_OBS = """
-INSERT INTO market_observations (mint, observed_at, volume_m5_usd, price_usd, liquidity_usd, source)
-VALUES (:mint, :observed_at, :volume_m5_usd, :price_usd, :liquidity_usd, :source)
+INSERT INTO market_observations (
+    mint, observed_at, volume_m5_usd, price_usd, liquidity_usd, source,
+    market_cap_usd, buys, sells, txns, unique_buyers, unique_sellers, volume_since_gate
+)
+VALUES (
+    :mint, :observed_at, :volume_m5_usd, :price_usd, :liquidity_usd, :source,
+    :market_cap_usd, :buys, :sells, :txns, :unique_buyers, :unique_sellers, :volume_since_gate
+)
 """
 MEMORY_SELECT_MARKET_OBS = """
-SELECT mint, observed_at, volume_m5_usd, price_usd, liquidity_usd, source FROM market_observations
+SELECT mint, observed_at, volume_m5_usd, price_usd, liquidity_usd, source,
+       market_cap_usd, buys, sells, txns, unique_buyers, unique_sellers, volume_since_gate
+FROM market_observations
+"""
+MEMORY_INSERT_INVESTIGATION = """
+INSERT INTO intelligence_investigations (
+    mint, gate1_at, discovered_at, protocol, volume_5m_at_gate, liquidity_at_gate,
+    market_cap_at_gate, price_at_gate, pair_identifier, creator, gate_decision,
+    investigation_status, correlation_id, row
+) VALUES (
+    :mint, :gate1_at, :discovered_at, :protocol, :volume_5m_at_gate, :liquidity_at_gate,
+    :market_cap_at_gate, :price_at_gate, :pair_identifier, :creator, :gate_decision,
+    :investigation_status, :correlation_id, CAST(:row AS jsonb)
+)
+ON CONFLICT (mint) DO NOTHING
+"""
+MEMORY_SELECT_INVESTIGATION = """
+SELECT mint, gate1_at, discovered_at, protocol, volume_5m_at_gate, liquidity_at_gate,
+       market_cap_at_gate, price_at_gate, pair_identifier, creator, gate_decision,
+       investigation_status, correlation_id, row
+FROM intelligence_investigations
 """
 
 
@@ -269,6 +319,16 @@ def _maybe_float(v: Any) -> float | None:
     if x != x:
         return None
     return x
+
+
+def _maybe_int(v: Any) -> int | None:
+    if v is None or v is True or v is False:
+        return None
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return None
+    return n if n >= 0 else None
 
 
 @dataclass
@@ -323,6 +383,14 @@ class MarketTick:
     price_usd: float | None = None
     liquidity_usd: float | None = None
     source: str = "observed"
+    market_cap_usd: float | None = None
+    buys: int | None = None
+    sells: int | None = None
+    txns: int | None = None
+    unique_buyers: int | None = None
+    unique_sellers: int | None = None
+    volume_since_gate: float | None = None
+    buy_sell_ratio: float | None = None
 
 
 class IntelligenceMemory:
@@ -338,6 +406,7 @@ class IntelligenceMemory:
         self.fingerprint_outcomes: list[OutcomeLabel] = []
         self.decisions: list[dict[str, Any]] = []
         self.market_ticks: list[MarketTick] = []
+        self.investigations: list[dict[str, Any]] = []
         self.version = MEMORY_VERSION
 
     def record_wallet(
@@ -901,6 +970,21 @@ class IntelligenceMemory:
         self.decisions.append(compact)
         return True
 
+    def record_investigation(self, rec: dict[str, Any] | None) -> bool:
+        """Immutable Gate-1 snapshot. Second write for the same mint is a no-op."""
+        if not rec:
+            return False
+        mint = str(rec.get("mint") or "").strip()
+        if not mint:
+            return False
+        for existing in self.investigations:
+            if str(existing.get("mint")) == mint:
+                return False
+        row = dict(rec)
+        row["immutable"] = True
+        self.investigations.append(row)
+        return True
+
     def record_market_tick(
         self,
         *,
@@ -910,6 +994,13 @@ class IntelligenceMemory:
         price_usd: float | None = None,
         liquidity_usd: float | None = None,
         source: str = "observed",
+        market_cap_usd: float | None = None,
+        buys: int | None = None,
+        sells: int | None = None,
+        txns: int | None = None,
+        unique_buyers: int | None = None,
+        unique_sellers: int | None = None,
+        volume_since_gate: float | None = None,
     ) -> bool:
         ts = _parse_ts(observed_at)
         m = (mint or "").strip()
@@ -918,6 +1009,11 @@ class IntelligenceMemory:
         for existing in self.market_ticks:
             if existing.mint == m and existing.observed_at == ts:
                 return False
+        buys_i = _maybe_int(buys)
+        sells_i = _maybe_int(sells)
+        ratio = None
+        if buys_i is not None and sells_i is not None and (buys_i + sells_i) > 0:
+            ratio = round(buys_i / (buys_i + sells_i), 4)
         self.market_ticks.append(
             MarketTick(
                 mint=m, observed_at=ts,
@@ -925,6 +1021,14 @@ class IntelligenceMemory:
                 price_usd=_maybe_float(price_usd),
                 liquidity_usd=_maybe_float(liquidity_usd),
                 source=source or "observed",
+                market_cap_usd=_maybe_float(market_cap_usd),
+                buys=buys_i,
+                sells=sells_i,
+                txns=_maybe_int(txns),
+                unique_buyers=_maybe_int(unique_buyers),
+                unique_sellers=_maybe_int(unique_sellers),
+                volume_since_gate=_maybe_float(volume_since_gate),
+                buy_sell_ratio=ratio,
             )
         )
         return True
@@ -979,9 +1083,13 @@ class IntelligenceMemory:
         market_ticks = [
             {"mint": t.mint, "observed_at": _iso(t.observed_at),
              "volume_m5_usd": t.volume_m5_usd, "price_usd": t.price_usd,
-             "liquidity_usd": t.liquidity_usd, "source": t.source}
+             "liquidity_usd": t.liquidity_usd, "source": t.source,
+             "market_cap_usd": t.market_cap_usd, "buys": t.buys, "sells": t.sells,
+             "txns": t.txns, "unique_buyers": t.unique_buyers, "unique_sellers": t.unique_sellers,
+             "volume_since_gate": t.volume_since_gate, "buy_sell_ratio": t.buy_sell_ratio}
             for t in self.market_ticks
         ]
+        investigations = [dict(r) for r in self.investigations]
         return {
             "wallet_obs": wallet_obs,
             "wallet_outcomes": wallet_outcomes,
@@ -992,6 +1100,7 @@ class IntelligenceMemory:
             "relationships": relationships,
             "decisions": decisions,
             "market_ticks": market_ticks,
+            "investigations": investigations,
         }
 
     def load_wallet_obs(self, rows: Iterable[Any]) -> int:
@@ -1113,7 +1222,30 @@ class IntelligenceMemory:
                 price_usd=_maybe_float(d.get("price_usd")),
                 liquidity_usd=_maybe_float(d.get("liquidity_usd")),
                 source=str(d.get("source") or "observed"),
+                market_cap_usd=_maybe_float(d.get("market_cap_usd")),
+                buys=_maybe_int(d.get("buys")),
+                sells=_maybe_int(d.get("sells")),
+                txns=_maybe_int(d.get("txns")),
+                unique_buyers=_maybe_int(d.get("unique_buyers")),
+                unique_sellers=_maybe_int(d.get("unique_sellers")),
+                volume_since_gate=_maybe_float(d.get("volume_since_gate")),
             ):
+                n += 1
+        return n
+
+    def load_investigations(self, rows: Iterable[Any]) -> int:
+        n = 0
+        for r in rows:
+            d = dict(r)
+            nested = d.get("row")
+            if isinstance(nested, str):
+                try:
+                    nested = json.loads(nested or "{}")
+                except Exception:
+                    nested = {}
+            if isinstance(nested, dict) and nested.get("mint"):
+                d = {**nested, **{k: v for k, v in d.items() if k != "row" and v is not None}}
+            if self.record_investigation(d):
                 n += 1
         return n
 
@@ -1128,6 +1260,7 @@ class IntelligenceMemory:
             "fingerprint_outcomes": self.load_fingerprint_outcomes(snap.get("fingerprint_outcomes") or []),
             "decisions": self.load_decisions(snap.get("decisions") or []),
             "market_ticks": self.load_market_ticks(snap.get("market_ticks") or []),
+            "investigations": self.load_investigations(snap.get("investigations") or []),
         }
 
     def to_stats(self) -> dict[str, int]:
@@ -1141,6 +1274,7 @@ class IntelligenceMemory:
             "fingerprint_outcomes": len(self.fingerprint_outcomes),
             "intelligence_decisions": len(self.decisions),
             "market_ticks": len(self.market_ticks),
+            "investigations": len(self.investigations),
         }
 
 

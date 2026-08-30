@@ -3240,3 +3240,44 @@ async def alert_precision_summary(session: AsyncSession) -> dict[str, Any]:
             return await replay_score_gate_backtest(session, min_score=55.0, limit=100)
         except Exception as exc:
             return {"available": False, "error": str(exc)}
+
+
+async def load_memory_snapshot(session: AsyncSession) -> dict[str, Any]:
+    """Hydrate IntelligenceMemory from Postgres. Missing tables stay empty. Never invented."""
+    from stinky_core.memory import (
+        MEMORY_SELECT_CREATOR_OBS,
+        MEMORY_SELECT_CREATOR_OUTCOME,
+        MEMORY_SELECT_DECISION,
+        MEMORY_SELECT_FINGERPRINT,
+        MEMORY_SELECT_FINGERPRINT_OUTCOME,
+        MEMORY_SELECT_INVESTIGATION,
+        MEMORY_SELECT_MARKET_OBS,
+        MEMORY_SELECT_WALLET_OBS,
+        MEMORY_SELECT_WALLET_OUTCOME,
+    )
+
+    def _clean(row: Any) -> dict[str, Any]:
+        d = dict(row)
+        for k, v in list(d.items()):
+            if hasattr(v, "isoformat"):
+                d[k] = v.isoformat()
+        return d
+
+    async def rows(sql: str) -> list[dict[str, Any]]:
+        try:
+            found = (await session.execute(text(sql))).mappings().all()
+            return [_clean(r) for r in found]
+        except Exception:
+            return []
+
+    return {
+        "wallet_obs": await rows(MEMORY_SELECT_WALLET_OBS),
+        "wallet_outcomes": await rows(MEMORY_SELECT_WALLET_OUTCOME),
+        "creator_obs": await rows(MEMORY_SELECT_CREATOR_OBS),
+        "creator_outcomes": await rows(MEMORY_SELECT_CREATOR_OUTCOME),
+        "fingerprints": await rows(MEMORY_SELECT_FINGERPRINT),
+        "fingerprint_outcomes": await rows(MEMORY_SELECT_FINGERPRINT_OUTCOME),
+        "decisions": await rows(MEMORY_SELECT_DECISION),
+        "market_ticks": await rows(MEMORY_SELECT_MARKET_OBS),
+        "investigations": await rows(MEMORY_SELECT_INVESTIGATION),
+    }

@@ -17,12 +17,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const routes = [
       "/command-center",
       "/runners",
+      "/investigations",
       "/wallets",
       "/entities",
       "/alerts",
       "/patterns",
+      "/recipes",
+      "/observations",
+      "/unknown",
       "/graph",
       "/smart-money",
+      "/health",
     ];
     routes.forEach((r) => {
       try {
@@ -64,14 +69,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       const map: Record<string, string> = {
         c: "/command-center",
         r: "/runners",
+        v: "/investigations",
         w: "/wallets",
         e: "/entities",
         a: "/alerts",
         s: "/smart-money",
         p: "/patterns",
+        y: "/recipes",
+        o: "/observations",
+        u: "/unknown",
         g: "/graph",
         t: "/time-machine",
         q: "/research",
+        b: "/backtest",
+        h: "/health",
       };
       const href = map[e.key.toLowerCase()];
       if (href) {

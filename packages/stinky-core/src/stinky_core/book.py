@@ -19,9 +19,14 @@ from stinky_core.memory import IntelligenceMemory, _before, _parse_ts
 from stinky_core.outcomes import DEFAULT_OBSERVATION_WINDOW_SEC, LABEL_VERSION, label_outcome
 from stinky_core.reputation import CREATOR_TIERS, WALLET_TIERS
 from stinky_core.stages import STAGES_VERSION, slice_stage
+from stinky_core.observation import (
+    observation_book as _observation_book,
+    what_happened_next as _what_happened_next,
+)
+from stinky_core.recipes import runner_recipe
 
-BOOK_VERSION = "book-v1.2.0-evidence"
-LIFE_SLICES_SEC = (0, 30, 60, 90, 120, 180, 300, 600, 1200, 1800)
+BOOK_VERSION = "book-v1.3.0-observe"
+LIFE_SLICES_SEC = (0, 15, 30, 60, 90, 120, 180, 300, 600, 1200, 1800)
 
 
 def wallet_book(memory: IntelligenceMemory, *, as_of: Any = None) -> list[dict[str, Any]]:
@@ -272,6 +277,11 @@ def life_slices(
         accel = None
         if offset and base_vol is not None and vol is not None:
             accel = round((vol - base_vol) / offset, 6)
+        buys = getattr(chosen, "buys", None) if chosen else None
+        sells = getattr(chosen, "sells", None) if chosen else None
+        ratio = None
+        if buys is not None and sells is not None and (buys + sells) > 0:
+            ratio = round(buys / (buys + sells), 4)
         slices.append({
             "offset_sec": offset,
             "label": f"T+{offset}s" if offset else "T+0",
@@ -279,6 +289,13 @@ def life_slices(
             "volume_m5_usd": vol,
             "price_usd": chosen.price_usd if chosen else None,
             "liquidity_usd": chosen.liquidity_usd if chosen else None,
+            "market_cap_usd": getattr(chosen, "market_cap_usd", None) if chosen else None,
+            "buys": buys,
+            "sells": sells,
+            "transaction_count": getattr(chosen, "txns", None) if chosen else None,
+            "unique_buyers": getattr(chosen, "unique_buyers", None) if chosen else None,
+            "unique_sellers": getattr(chosen, "unique_sellers", None) if chosen else None,
+            "buy_sell_ratio": ratio,
             "volume_acceleration": accel,
             "source": chosen.source if chosen else None,
             "missing": [] if chosen else ["market_tick"],
@@ -362,9 +379,49 @@ def dataset_health(memory: IntelligenceMemory, *, as_of: Any = None, exclude_min
             "labeled": len(labeled) if labeled else outcome_n,
             "unlabeled": max(0, len(decisions) - (len(labeled) if labeled else 0)),
         },
+        "warnings": _health_warnings(
+            investigated=int(stats.get("unique_mints") or 0),
+            runners=runner_ex,
+            wallet_cov=pct(wallet_cov_n) if denom else None,
+            creator_cov=pct(creator_cov_n) if denom else None,
+            outcome_cov=pct(len(labeled) if labeled else outcome_n) if denom else None,
+            fp_cov=pct(fp_n) if denom else None,
+            historical=len(historical),
+            unique=int(stats.get("unique_mints") or 0),
+        ),
         "calibrated_probability": False,
         "note": "This tells us whether Stinky is actually learning. Empty book is not a live sample.",
     }
+
+
+def _health_warnings(
+    *,
+    investigated: int,
+    runners: int,
+    wallet_cov: float | None,
+    creator_cov: float | None,
+    outcome_cov: float | None,
+    fp_cov: float | None,
+    historical: int,
+    unique: int,
+) -> list[str]:
+    out: list[str] = []
+    if investigated == 0:
+        out.append("No Gate 1 investigations stored yet.")
+        return out
+    if runners < 5:
+        out.append(f"Only {runners} RUNNER labels exist.")
+    if wallet_cov is not None and wallet_cov < 20:
+        out.append(f"Wallet history exists for {wallet_cov}% of investigations.")
+    if creator_cov is not None and creator_cov < 20:
+        out.append(f"Creator history exists for {creator_cov}% of investigations.")
+    if outcome_cov is not None and outcome_cov < 30:
+        out.append(f"Resolved outcomes cover {outcome_cov}% of investigations.")
+    if historical == 0:
+        out.append("Historical similarity is unavailable (no fingerprint with sample ≥ 5).")
+    if unique < 20:
+        out.append(f"Sample size {unique} is too small to claim precision.")
+    return out
 
 
 def unknown_queue(memory: IntelligenceMemory, *, as_of: Any = None) -> list[dict[str, Any]]:
@@ -464,5 +521,25 @@ def desk_snapshot(memory: IntelligenceMemory, *, as_of: Any = None) -> dict[str,
         "wallet_radar": wallet_radar(memory, as_of=as_of),
         "creator_radar": creator_radar(memory, as_of=as_of),
         "pattern_radar": pattern_radar(memory, as_of=as_of),
+        "observation_book": _observation_book(memory, as_of=as_of)[:40],
         "calibrated_probability": False,
     }
+
+
+def what_happened_next(memory: IntelligenceMemory, *, mint: str, t0: Any, as_of: Any = None) -> dict[str, Any]:
+    return _what_happened_next(memory, mint=mint, t0=t0, as_of=as_of)
+
+
+def observation_book(memory: IntelligenceMemory, *, as_of: Any = None) -> list[dict[str, Any]]:
+    return _observation_book(memory, as_of=as_of)
+
+
+def recipe_for(
+    memory: IntelligenceMemory,
+    fingerprint: str | None,
+    *,
+    as_of: Any = None,
+    exclude_mint: str | None = None,
+    current: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    return runner_recipe(memory, fingerprint, as_of=as_of, exclude_mint=exclude_mint, current=current)

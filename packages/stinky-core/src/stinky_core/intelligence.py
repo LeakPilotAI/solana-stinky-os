@@ -28,8 +28,10 @@ from stinky_core.metrics import ENGINE_LOG, ENGINE_METRICS
 from stinky_core.reputation import creator_reputation, wallet_reputation
 from stinky_core.similarity import historical_similarity
 from stinky_core.stages import investigation_stages
+from stinky_core.observation import investigation_record as build_investigation_record
+from stinky_core.recipes import runner_recipe
 
-INTEL_VERSION = "intel-v1.7.0-evidence"
+INTEL_VERSION = "intel-v1.8.0-observe"
 SCORE_VERSION = "score-v1.1.0-intel-not-volume"
 RUNNER_VERSION = "runner-potential-v1.1.0-intel-not-volume"
 
@@ -256,6 +258,8 @@ class Investigation:
     findings: list[dict[str, Any]] = field(default_factory=list)
     band_ledger: list[dict[str, Any]] = field(default_factory=list)
     correlation_id: str | None = None
+    investigation_record: dict[str, Any] = field(default_factory=dict)
+    recipe: dict[str, Any] = field(default_factory=dict)
     model_version: str = INTEL_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -292,6 +296,8 @@ class Investigation:
             "findings": list(self.findings),
             "band_ledger": list(self.band_ledger),
             "correlation_id": self.correlation_id,
+            "investigation_record": dict(self.investigation_record),
+            "recipe": dict(self.recipe),
             "model_version": self.model_version,
             "inspect_version": INSPECT_VERSION,
             "score_interpretation": self.score.interpretation,
@@ -493,6 +499,16 @@ def match_patterns(
     if activity.top4_wallet_volume_share is not None and activity.top4_wallet_volume_share >= 0.70:
         matches.append({"kind": "concentrated_early_book", "confidence": 0.6})
         evidence.append({"kind": "concentrated_early_book", "value": activity.top4_wallet_volume_share})
+    # Decision-time only. Missing imbalance stays absent, not a claimed pattern.
+    if activity.buy_sell_imbalance is not None and activity.unique_wallets is not None:
+        if activity.buy_sell_imbalance >= 0.70 and activity.unique_wallets >= 6:
+            matches.append({"kind": "early_buy_pressure", "confidence": 0.5})
+            evidence.append({
+                "kind": "early_buy_pressure",
+                "value": activity.buy_sell_imbalance,
+                "unique_wallets": activity.unique_wallets,
+                "explanation": "Buy share ≥ 0.70 with ≥ 6 unique wallets observed (not a probability)",
+            })
 
     hist = historical or {}
     resemble = _i(hist.get("similar_runner_count"))
@@ -1399,6 +1415,27 @@ def investigate(
         as_of=str(as_of) if as_of is not None else None,
     )
     inv.correlation_id = cid
+    inv.investigation_record = build_investigation_record(
+        bundle,
+        gate1_passed=True,
+        investigation_status=inv.pipeline_status,
+        correlation=cid,
+    )
+    inv.recipe = runner_recipe(
+        memory, fp, as_of=as_of, exclude_mint=mint,
+        current={
+            "volume_5m": activity.volume_m5_usd,
+            "liquidity": activity.liquidity_usd,
+            "top4_share": activity.top4_wallet_volume_share,
+            "unique_wallets": activity.unique_wallets,
+            "smart_wallet_count": wallets.smart_wallet_count,
+            "creator_launches": creator.launches,
+            "synthetic": synthetic.level,
+            "buy_sell_imbalance": activity.buy_sell_imbalance,
+        },
+    )
+    if memory is not None:
+        memory.record_investigation(inv.investigation_record)
     inv.why = why_this_ca(inv)
     inv.information_advantage = information_advantage(inv)
     inv.report = investigation_report(inv)

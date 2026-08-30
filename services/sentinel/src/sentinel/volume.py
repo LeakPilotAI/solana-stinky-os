@@ -170,6 +170,7 @@ class VolumeSnapshot:
     name: str | None = None
     symbol: str | None = None
     fees_sol: float | None = None
+    market_cap_usd: float | None = None
 
 
 class DexScreenerClient:
@@ -231,6 +232,7 @@ class DexScreenerClient:
             fetched_at=datetime.now(timezone.utc),
             name=base.get("name"),
             symbol=base.get("symbol"),
+            market_cap_usd=_f(best.get("marketCap")),
         )
 
 
@@ -416,7 +418,13 @@ class VolumeMonitor:
         self._client = DexScreenerClient()
         self._threshold = threshold_usd if threshold_usd is not None else settings.volume_threshold_usd
         self._interval = poll_interval_sec if poll_interval_sec is not None else settings.volume_poll_interval_sec
-        self._max_watch = max_watch_sec if max_watch_sec is not None else settings.volume_max_watch_sec
+        configured = max_watch_sec if max_watch_sec is not None else settings.volume_max_watch_sec
+        try:
+            watch = float(configured or 0)
+        except (TypeError, ValueError):
+            watch = 0.0
+        # Observation window includes T+1800. Never stop collecting earlier than that.
+        self._max_watch = max(watch, 1800.0)
         self._active: set[str] = set()
         self._engine = create_async_engine(
             settings.database_url, pool_pre_ping=True, pool_size=3
@@ -590,6 +598,7 @@ class VolumeMonitor:
         )
         try:
             elapsed = 0.0
+            investigated = False
             while elapsed < self._max_watch:
                 snap = await self._client.fetch_volume(mint)
                 if snap:
@@ -637,6 +646,7 @@ class VolumeMonitor:
                         sells_m5=snap.txns_m5_sells,
                         gate1_ok=ok,
                         gate1_reason=reason,
+                        investigated=investigated,
                     )
                     if not ok:
                         if reason in (
@@ -648,10 +658,12 @@ class VolumeMonitor:
                         ):
                             return
                         # VOLUME_BELOW_MIN / VOLUME_UNKNOWN: keep watching
+                    elif not investigated:
+                        await self._investigate_and_maybe_alert(migration, snap)
+                        investigated = True
+                        await self._record_followup_tick(migration, snap)
                     else:
-                        alerted = await self._investigate_and_maybe_alert(migration, snap)
-                        if alerted:
-                            return
+                        await self._record_followup_tick(migration, snap)
                 await asyncio.sleep(self._interval)
                 elapsed = (datetime.now(timezone.utc) - started).total_seconds()
 
@@ -732,6 +744,7 @@ class VolumeMonitor:
                 MEMORY_SELECT_DECISION,
                 MEMORY_SELECT_FINGERPRINT,
                 MEMORY_SELECT_FINGERPRINT_OUTCOME,
+                MEMORY_SELECT_INVESTIGATION,
                 MEMORY_SELECT_MARKET_OBS,
                 MEMORY_SELECT_WALLET_OBS,
                 MEMORY_SELECT_WALLET_OUTCOME,
@@ -751,6 +764,10 @@ class VolumeMonitor:
                     ticks = (await session.execute(text(MEMORY_SELECT_MARKET_OBS))).mappings().all()
                 except Exception:
                     ticks = []
+                try:
+                    invs = (await session.execute(text(MEMORY_SELECT_INVESTIGATION))).mappings().all()
+                except Exception:
+                    invs = []
             self._memory.hydrate({
                 "wallet_obs": [dict(r) for r in wobs],
                 "wallet_outcomes": [dict(r) for r in wout],
@@ -760,6 +777,7 @@ class VolumeMonitor:
                 "fingerprint_outcomes": [dict(r) for r in fpout],
                 "decisions": [dict(r) for r in decs],
                 "market_ticks": [dict(r) for r in ticks],
+                "investigations": [dict(r) for r in invs],
             })
             logger.info("memory.hydrated", **self._memory.to_stats())
         except Exception as exc:
@@ -778,11 +796,16 @@ class VolumeMonitor:
         volume_m5_usd: float | None = None,
         price_usd: float | None = None,
         liquidity_usd: float | None = None,
+        market_cap_usd: float | None = None,
+        buys: int | None = None,
+        sells: int | None = None,
+        investigation: dict[str, Any] | None = None,
     ) -> None:
         try:
             from stinky_core.memory import (
                 MEMORY_INSERT_CREATOR_OBS,
                 MEMORY_INSERT_FINGERPRINT,
+                MEMORY_INSERT_INVESTIGATION,
                 MEMORY_INSERT_MARKET_OBS,
                 MEMORY_INSERT_WALLET_OBS,
             )
@@ -843,11 +866,88 @@ class VolumeMonitor:
                         "price_usd": price_usd,
                         "liquidity_usd": liquidity_usd,
                         "source": "observed",
+                        "market_cap_usd": market_cap_usd,
+                        "buys": buys,
+                        "sells": sells,
+                        "txns": (buys or 0) + (sells or 0) if (buys is not None or sells is not None) else None,
+                        "unique_buyers": None,
+                        "unique_sellers": None,
+                        "volume_since_gate": None,
+                    },
+                )
+                if investigation and investigation.get("mint"):
+                    rec = investigation
+                    await session.execute(
+                        text(MEMORY_INSERT_INVESTIGATION),
+                        {
+                            "mint": rec.get("mint") or mint,
+                            "gate1_at": rec.get("gate1_at") or observed_at,
+                            "discovered_at": rec.get("discovered_at") or rec.get("gate1_at") or observed_at,
+                            "protocol": rec.get("protocol"),
+                            "volume_5m_at_gate": rec.get("volume_5m_at_gate"),
+                            "liquidity_at_gate": rec.get("liquidity_at_gate"),
+                            "market_cap_at_gate": rec.get("market_cap_at_gate"),
+                            "price_at_gate": rec.get("price_at_gate"),
+                            "pair_identifier": rec.get("pair_identifier"),
+                            "creator": rec.get("creator"),
+                            "gate_decision": rec.get("gate_decision") or "PASSED",
+                            "investigation_status": rec.get("investigation_status"),
+                            "correlation_id": rec.get("correlation_id"),
+                            "row": json.dumps(rec, default=str),
+                        },
+                    )
+                await session.commit()
+        except Exception as exc:
+            logger.warning("memory.persist_failed", mint=mint, error=str(exc)[:200])
+
+    async def _record_followup_tick(self, migration: DetectedMigration, snap: VolumeSnapshot) -> None:
+        """Post-Gate-1 market tick. Missing fields stay None. Never interpolates."""
+        mint = migration.mint
+        at = snap.fetched_at.isoformat() if snap.fetched_at else datetime.now(timezone.utc).isoformat()
+        buys = snap.txns_m5_buys
+        sells = snap.txns_m5_sells
+        txns = (buys or 0) + (sells or 0) if (buys is not None or sells is not None) else None
+        mem = getattr(self, "_memory", None)
+        if mem is not None:
+            mem.record_market_tick(
+                mint=mint,
+                observed_at=at,
+                volume_m5_usd=snap.volume_m5_usd,
+                price_usd=snap.price_usd,
+                liquidity_usd=snap.liquidity_usd,
+                market_cap_usd=getattr(snap, "market_cap_usd", None),
+                buys=buys,
+                sells=sells,
+                txns=txns,
+                source="observed",
+            )
+        if not self._sessions:
+            return
+        try:
+            from stinky_core.memory import MEMORY_INSERT_MARKET_OBS
+
+            async with self._sessions() as session:
+                await session.execute(
+                    text(MEMORY_INSERT_MARKET_OBS),
+                    {
+                        "mint": mint,
+                        "observed_at": at,
+                        "volume_m5_usd": snap.volume_m5_usd,
+                        "price_usd": snap.price_usd,
+                        "liquidity_usd": snap.liquidity_usd,
+                        "source": "observed",
+                        "market_cap_usd": getattr(snap, "market_cap_usd", None),
+                        "buys": buys,
+                        "sells": sells,
+                        "txns": txns,
+                        "unique_buyers": None,
+                        "unique_sellers": None,
+                        "volume_since_gate": None,
                     },
                 )
                 await session.commit()
         except Exception as exc:
-            logger.warning("memory.persist_failed", mint=mint, error=str(exc)[:200])
+            logger.debug("observation.tick_persist_failed", mint=mint, error=str(exc)[:200])
 
     async def _investigate_and_maybe_alert(
         self, migration: DetectedMigration, snap: VolumeSnapshot
@@ -931,6 +1031,8 @@ class VolumeMonitor:
             "volume_m5_usd": snap.volume_m5_usd,
             "volume_usd": snap.volume_m5_usd,
             "liquidity_usd": snap.liquidity_usd,
+            "market_cap_usd": getattr(snap, "market_cap_usd", None),
+            "price_usd": snap.price_usd,
             "txns_m5_buys": snap.txns_m5_buys,
             "txns_m5_sells": snap.txns_m5_sells,
             "buyers": buyers_rows or None,
@@ -955,12 +1057,20 @@ class VolumeMonitor:
                     fingerprint=inv.fingerprint,
                     features=inv.fingerprint_features,
                 )
+                if inv.investigation_record:
+                    mem.record_investigation(inv.investigation_record)
                 mem.record_market_tick(
                     mint=mint,
                     observed_at=bundle.get("decision_timestamp"),
                     volume_m5_usd=snap.volume_m5_usd,
                     price_usd=snap.price_usd,
                     liquidity_usd=snap.liquidity_usd,
+                    market_cap_usd=getattr(snap, "market_cap_usd", None),
+                    buys=snap.txns_m5_buys,
+                    sells=snap.txns_m5_sells,
+                    txns=(snap.txns_m5_buys or 0) + (snap.txns_m5_sells or 0)
+                    if snap.txns_m5_buys is not None or snap.txns_m5_sells is not None
+                    else None,
                 )
                 await self._persist_memory_decision(
                     mint=mint,
@@ -972,6 +1082,10 @@ class VolumeMonitor:
                     volume_m5_usd=snap.volume_m5_usd,
                     price_usd=snap.price_usd,
                     liquidity_usd=snap.liquidity_usd,
+                    market_cap_usd=getattr(snap, "market_cap_usd", None),
+                    buys=snap.txns_m5_buys,
+                    sells=snap.txns_m5_sells,
+                    investigation=inv.investigation_record,
                 )
             except Exception:
                 pass

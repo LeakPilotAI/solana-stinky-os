@@ -10,15 +10,20 @@ import type { SmartWallet } from "@/types";
 const NAV = [
   { href: "/command-center", label: "Command Center", key: "C", icon: "⌂" },
   { href: "/runners", label: "Live Runners", key: "R", icon: "◎" },
+  { href: "/investigations", label: "Investigations", key: "V", icon: "▣" },
   { href: "/wallets", label: "Wallets", key: "W", icon: "◇" },
   { href: "/entities", label: "Entities", key: "E", icon: "⬡" },
   { href: "/smart-money", label: "Smart Money", key: "S", icon: "◈" },
   { href: "/alerts", label: "Alerts", key: "A", icon: "◉" },
   { href: "/patterns", label: "Patterns", key: "P", icon: "✦" },
+  { href: "/recipes", label: "Runner Recipes", key: "Y", icon: "≡" },
+  { href: "/observations", label: "Observation Book", key: "O", icon: "◷" },
+  { href: "/unknown", label: "Unknown Queue", key: "U", icon: "?" },
   { href: "/graph", label: "Graph", key: "G", icon: "⎔" },
   { href: "/time-machine", label: "Time Machine", key: "T", icon: "◷" },
   { href: "/research", label: "Research", key: "Q", icon: "⌕" },
   { href: "/backtest", label: "Backtest", key: "B", icon: "▣" },
+  { href: "/health", label: "Dataset Health", key: "H", icon: "▦" },
 ];
 
 const TIER_COLORS = [

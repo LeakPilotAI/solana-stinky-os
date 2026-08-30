@@ -11,7 +11,7 @@ from stinky_core.admission import FILTER_VERSION
 from stinky_core.intelligence import INTEL_VERSION, Investigation
 from stinky_core.outcomes import LABEL_VERSION, Outcome
 
-DATASET_VERSION = "dataset-v1.4.0"
+DATASET_VERSION = "dataset-v1.5.0"
 
 
 def decision_row(
@@ -82,6 +82,8 @@ def decision_row(
         "findings": list(inv.findings) if inv else None,
         "finding_count": len(inv.findings) if inv else 0,
         "correlation_id": inv.correlation_id if inv else None,
+        "investigation_record": dict(inv.investigation_record) if inv else None,
+        "recipe": dict(inv.recipe) if inv else None,
         "alert_ok": bool(alert_ok),
         "alert_reason": alert_reason,
         "future_outcome": (oc or {}).get("label"),

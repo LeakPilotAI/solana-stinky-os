@@ -35,6 +35,7 @@ from stinky_core.intelligence import (
 )
 from stinky_core.memory import IntelligenceMemory, _parse_ts
 from stinky_core.outcomes import LABEL_VERSION, label_outcome
+from stinky_core.insights import candidate_insights
 
 DECISION_TIME_STRIP = (
     "peak_volume",
@@ -195,7 +196,26 @@ def backtest_candidates(
                 volume_m5_usd=snap.get("volume_usd") or snap.get("volume_m5_usd"),
                 price_usd=m.get("entry_price") or m.get("price_usd"),
                 liquidity_usd=snap.get("liquidity_usd"),
+                market_cap_usd=snap.get("market_cap_usd"),
+                buys=snap.get("txns_m5_buys") if snap.get("txns_m5_buys") is not None else m.get("buys_m5"),
+                sells=snap.get("txns_m5_sells") if snap.get("txns_m5_sells") is not None else m.get("sells_m5"),
             )
+            for tick in (m.get("ticks") if isinstance(m.get("ticks"), list) else []):
+                if not isinstance(tick, Mapping):
+                    continue
+                mem.record_market_tick(
+                    mint=str(decision.mint or m.get("mint") or ""),
+                    observed_at=tick.get("observed_at") or tick.get("at"),
+                    volume_m5_usd=tick.get("volume_m5_usd") if tick.get("volume_m5_usd") is not None else tick.get("volume"),
+                    price_usd=tick.get("price_usd") if tick.get("price_usd") is not None else tick.get("price"),
+                    liquidity_usd=tick.get("liquidity_usd") if tick.get("liquidity_usd") is not None else tick.get("liquidity"),
+                    market_cap_usd=tick.get("market_cap_usd"),
+                    buys=tick.get("buys"),
+                    sells=tick.get("sells"),
+                    txns=tick.get("txns") if tick.get("txns") is not None else tick.get("transaction_count"),
+                    unique_buyers=tick.get("unique_buyers"),
+                    unique_sellers=tick.get("unique_sellers"),
+                )
             labeled_at = _parse_ts(m.get("labeled_at") or m.get("outcome_at"))
             if labeled_at is None and m.get("observation_complete"):
                 labeled_at = ts
@@ -265,7 +285,7 @@ def backtest_candidates(
     recall = (runners / outcome_runner_all) if outcome_runner_all else None
     unknown_rate = (outcome_unknown_all / total) if total else None
     return {
-        "engine": "stinky-backtest-v1.7.0-evidence",
+        "engine": "stinky-backtest-v1.8.0-observe",
         "filter_version": FILTER_VERSION,
         "memory_version": mem.version,
         "input": len(unique) + dropped_dupes,
@@ -312,6 +332,16 @@ def backtest_candidates(
         "by_creator_status": _group_counts(dataset, "creator_status"),
         "by_protocol": _group_counts([{"protocol": r.get("protocol")} for r in dataset], "protocol"),
         "holdout": _holdout_report(evaluated),
+        "insights": candidate_insights(
+            dataset,
+            holdout_mints=[
+                r.get("mint") for r in (
+                    evaluated[max(1, int(len(evaluated) * 0.70)) + int(len(evaluated) * 0.15):]
+                    if len(evaluated) >= 10 else []
+                )
+                if r.get("mint")
+            ],
+        ),
         "items": evaluated,
         "dataset": dataset,
     }

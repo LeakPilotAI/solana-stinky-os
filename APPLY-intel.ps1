@@ -1,4 +1,4 @@
-# Overlay intel-v1.7.0-evidence onto D:\Work\Project-Genesis
+# Overlay intel-v1.8.0-observe onto D:\Work\Project-Genesis
 # Usage (from the extracted overlay folder):
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\APPLY-intel.ps1
 
@@ -24,39 +24,59 @@ $paths = @(
   "packages\stinky-core\src\stinky_core\metrics.py",
   "packages\stinky-core\src\stinky_core\evidence.py",
   "packages\stinky-core\src\stinky_core\stages.py",
+  "packages\stinky-core\src\stinky_core\observation.py",
+  "packages\stinky-core\src\stinky_core\recipes.py",
+  "packages\stinky-core\src\stinky_core\insights.py",
   "packages\stinky-core\tests\test_identity.py",
   "packages\stinky-core\tests\test_memory.py",
   "packages\stinky-core\tests\test_intelligence.py",
   "packages\stinky-core\tests\test_book.py",
   "packages\stinky-core\tests\test_recognition.py",
   "packages\stinky-core\tests\test_evidence_engine.py",
+  "packages\stinky-core\tests\test_observe.py",
   "packages\stinky-core\tests\test_hardening.py",
   "packages\stinky-core\tests\test_eligibility_matrix.py",
   "services\sentinel\src\sentinel\durable.py",
   "services\sentinel\src\sentinel\volume.py",
+  "services\sentinel\src\sentinel\config.py",
   "services\sentinel\migrations\006_intelligence_memory.sql",
   "services\sentinel\migrations\007_memory_enrich.sql",
   "services\sentinel\migrations\008_market_observations.sql",
+  "services\sentinel\migrations\009_observations.sql",
   "services\api\src\stinky_api\main.py",
+  "services\api\src\stinky_api\queries.py",
+  "apps\web\src\lib\api\client.ts",
+  "apps\web\src\components\layout\Sidebar.tsx",
+  "apps\web\src\components\layout\AppShell.tsx",
+  "apps\web\src\app\investigations\page.tsx",
+  "apps\web\src\app\observations\page.tsx",
+  "apps\web\src\app\recipes\page.tsx",
+  "apps\web\src\app\unknown\page.tsx",
+  "apps\web\src\app\health\page.tsx",
+  "apps\web\src\app\creators\[address]\page.tsx",
+  "apps\web\src\app\tokens\[mint]\page.tsx",
   "docs\adr\ADR-014-remember.md",
   "docs\adr\ADR-015-intelligence-book.md",
   "docs\adr\ADR-016-recognition.md",
-  "docs\adr\ADR-017-evidence.md"
+  "docs\adr\ADR-017-evidence.md",
+  "docs\adr\ADR-018-observe.md"
 )
 
 foreach ($rel in $paths) {
   $from = Join-Path $src $rel
   $to = Join-Path $dst $rel
-  if (-not (Test-Path $from)) { throw "Missing overlay file: $rel" }
+  if (-not (Test-Path -LiteralPath $from)) { throw "Missing overlay file: $rel" }
   $parent = Split-Path -Parent $to
-  if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
-  Copy-Item -Force $from $to
+  if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+  Copy-Item -Force -LiteralPath $from -Destination $to
   Write-Host "applied $rel"
 }
 
 Write-Host ""
-Write-Host "Applied intel-v1.7.0-evidence. Restart:"
+Write-Host "Applied intel-v1.8.0-observe. Restart:"
 Write-Host "  powershell -File D:\Work\Project-Genesis\stop-stinky.ps1"
 Write-Host "  powershell -File D:\Work\Project-Genesis\start-stinky.ps1"
 Write-Host "Verify: Gate 1 unchanged at `$150k. UNKNOWN does not promote. 2/2 is not STRONG."
-Write-Host "Dataset health: POST /v1/book/health  Desk: POST /v1/book/desk"
+Write-Host "Watch loop: investigate once, keep ticking to T+1800."
+Write-Host "Dataset health: POST /v1/book/health  Observations: POST /v1/book/observations"
+Write-Host "What happened: POST /v1/book/what-happened  Recipe: POST /v1/book/recipe"

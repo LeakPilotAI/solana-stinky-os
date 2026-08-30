@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     # Early migration observation threshold (not Gate 1)
     volume_threshold_usd: float = 25_000.0
     volume_poll_interval_sec: float = 20.0
-    volume_max_watch_sec: float = 900.0
+    volume_max_watch_sec: float = 1800.0
 
     allowed_dex_ids: str = "pumpswap,pumpfun,pump"
     denied_dex_ids: str = "meteora,raydium,orca,phoenix,lifinity,saber,aldrin,fluxbeam,pumpamm"

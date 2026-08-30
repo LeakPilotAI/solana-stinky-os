@@ -151,7 +151,39 @@ export const api = {
       timeoutMs: 12_000,
     });
   },
+  bookHealth: (body: Record<string, unknown> = {}) =>
+    postJson<Record<string, unknown>>("/v1/book/health", body),
+  bookDesk: (body: Record<string, unknown> = {}) =>
+    postJson<Record<string, unknown>>("/v1/book/desk", body),
+  bookObservations: (body: Record<string, unknown> = {}) =>
+    postJson<{ observations: Array<Record<string, unknown>>; count: number; source?: string }>(
+      "/v1/book/observations",
+      body
+    ),
+  bookWhatHappened: (mint: string, extra: Record<string, unknown> = {}) =>
+    postJson<Record<string, unknown>>("/v1/book/what-happened", { mint, ...extra }),
+  bookRecipe: (body: Record<string, unknown>) =>
+    postJson<Record<string, unknown>>("/v1/book/recipe", body),
+  bookInsights: (body: Record<string, unknown> = {}) =>
+    postJson<Record<string, unknown>>("/v1/book/insights", body),
 };
+
+async function postJson<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body ?? {}),
+    cache: "no-store",
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!res.ok) {
+    throw new Error(`API ${path} → ${res.status}`);
+  }
+  return res.json() as Promise<T>;
+}
 
 export function shortAddr(addr?: string | null, n = 4): string {
   if (!addr) return "?";

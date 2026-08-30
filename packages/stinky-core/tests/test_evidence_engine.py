@@ -213,7 +213,7 @@ def test_holdout_is_reported_not_tuned():
             "peak_multiple": 1.1,
         })
     result = backtest_candidates(rows, learn=False)
-    assert result["engine"].startswith("stinky-backtest-v1.7.0")
+    assert result["engine"].startswith("stinky-backtest-v1.8")
     hold = result["holdout"]
     assert hold["split"] == "chronological_70_15_15"
     assert hold["holdout"]["sample_size_too_small"] is True

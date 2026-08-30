@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 LABEL_VERSION = "outcome-v1.0.0"
+OUTCOME_RULE_VERSION = LABEL_VERSION
 
 RUNNER = "RUNNER"
 HELD = "HELD"

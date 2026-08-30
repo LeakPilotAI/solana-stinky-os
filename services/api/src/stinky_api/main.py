@@ -43,6 +43,27 @@ app.add_middleware(
 )
 
 
+async def _book_memory(
+    payload: dict | None,
+    session: AsyncSession | None = None,
+) -> tuple[Any, dict[str, int], str]:
+    """Hydrate from payload snapshot, else Postgres. Empty stays empty."""
+    from stinky_core.memory import IntelligenceMemory
+
+    mem = IntelligenceMemory()
+    body = payload or {}
+    snap = body.get("snapshot") if isinstance(body.get("snapshot"), dict) else None
+    if snap:
+        return mem, mem.hydrate(snap), "payload"
+    if session is not None:
+        try:
+            db_snap = await queries.load_memory_snapshot(session)
+            return mem, mem.hydrate(db_snap), "postgres"
+        except Exception:
+            return mem, {}, "unavailable"
+    return mem, {}, "empty"
+
+
 @app.post("/v1/filter/evaluate")
 async def filter_evaluate(payload: dict) -> dict:
     """Evaluate a market dict through the canonical engine. No scoring."""
@@ -161,6 +182,7 @@ async def memory_stats(session: Annotated[AsyncSession, Depends(get_session)]) -
         "intelligence_decisions",
         "market_inspections",
         "market_observations",
+        "intelligence_investigations",
     )
     counts: dict[str, Any] = {}
     available = True
@@ -176,36 +198,35 @@ async def memory_stats(session: Annotated[AsyncSession, Depends(get_session)]) -
 
 
 @app.post("/v1/book/time-machine")
-async def book_time_machine(payload: dict) -> dict:
+async def book_time_machine(
+    payload: dict, session: Annotated[AsyncSession, Depends(get_session)]
+) -> dict:
     """As-of replay for one mint. Future outcomes are hidden. Never fabricates."""
     from stinky_core.book import time_machine
-    from stinky_core.memory import IntelligenceMemory
 
-    mem = IntelligenceMemory()
-    snap = payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else None
-    if snap:
-        mem.hydrate(snap)
+    mem, loaded, source = await _book_memory(payload, session)
     mint = str(payload.get("mint") or "").strip()
     if not mint:
-        return {"error": "mint required", "calibrated_probability": False}
+        return {"error": "mint required", "calibrated_probability": False, "source": source, "hydrated": loaded}
     as_of = payload.get("as_of") or payload.get("decision_timestamp")
     bundle = payload.get("bundle") if isinstance(payload.get("bundle"), dict) else payload
-    return time_machine(mint=mint, as_of=as_of, bundle=bundle, memory=mem)
+    out = time_machine(mint=mint, as_of=as_of, bundle=bundle, memory=mem)
+    out["source"] = source
+    return out
 
 
 @app.post("/v1/book")
-async def book_summary(payload: dict | None = None) -> dict:
-    """Wallet/creator/pattern ledgers from a snapshot. Empty is empty, never invented."""
+async def book_summary(
+    payload: dict | None = None, session: Annotated[AsyncSession, Depends(get_session)] = None
+) -> dict:
+    """Wallet/creator/pattern ledgers. Empty is empty, never invented."""
     from stinky_core.book import book_stats, creator_book, pattern_book, wallet_book
-    from stinky_core.memory import IntelligenceMemory
 
-    body = payload or {}
-    mem = IntelligenceMemory()
-    snap = body.get("snapshot") if isinstance(body.get("snapshot"), dict) else None
-    loaded = mem.hydrate(snap) if snap else {}
-    as_of = body.get("as_of")
+    mem, loaded, source = await _book_memory(payload, session)
+    as_of = (payload or {}).get("as_of")
     return {
         "hydrated": loaded,
+        "source": source,
         "stats": book_stats(mem, as_of=as_of),
         "wallets": wallet_book(mem, as_of=as_of),
         "creators": creator_book(mem, as_of=as_of),
@@ -215,52 +236,54 @@ async def book_summary(payload: dict | None = None) -> dict:
 
 
 @app.post("/v1/book/similarity")
-async def book_similarity(payload: dict) -> dict:
+async def book_similarity(
+    payload: dict, session: Annotated[AsyncSession, Depends(get_session)]
+) -> dict:
     """Historical analogues. Shows runners AND fades. Not a probability."""
-    from stinky_core.memory import IntelligenceMemory
     from stinky_core.similarity import historical_similarity
 
-    mem = IntelligenceMemory()
-    snap = payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else None
-    if snap:
-        mem.hydrate(snap)
-    fp = payload.get("fingerprint")
-    return historical_similarity(
+    mem, loaded, source = await _book_memory(payload, session)
+    out = historical_similarity(
         mem,
-        fp,
+        payload.get("fingerprint"),
         as_of=payload.get("as_of") or payload.get("decision_timestamp"),
         exclude_mint=payload.get("exclude_mint") or payload.get("mint"),
         query_features=payload.get("features") if isinstance(payload.get("features"), dict) else None,
     )
+    out["source"] = source
+    out["hydrated"] = loaded
+    return out
 
 
 @app.post("/v1/book/life-slices")
-async def book_life_slices(payload: dict) -> dict:
+async def book_life_slices(
+    payload: dict, session: Annotated[AsyncSession, Depends(get_session)]
+) -> dict:
     """T+ market path. Future ticks after as_of are hidden."""
     from stinky_core.book import life_slices
-    from stinky_core.memory import IntelligenceMemory
 
-    mem = IntelligenceMemory()
-    snap = payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else None
-    if snap:
-        mem.hydrate(snap)
+    mem, loaded, source = await _book_memory(payload, session)
     mint = str(payload.get("mint") or "").strip()
     if not mint:
-        return {"error": "mint required", "calibrated_probability": False}
-    return life_slices(
+        return {"error": "mint required", "calibrated_probability": False, "source": source}
+    out = life_slices(
         mem,
         mint=mint,
         t0=payload.get("t0") or payload.get("decision_timestamp") or payload.get("as_of"),
         as_of=payload.get("as_of"),
     )
+    out["source"] = source
+    out["hydrated"] = loaded
+    return out
 
 
 @app.post("/v1/book/report")
-async def book_report(payload: dict) -> dict:
+async def book_report(
+    payload: dict, session: Annotated[AsyncSession, Depends(get_session)]
+) -> dict:
     """Structured investigation card. Gate 1 then investigate. Never fabricates."""
     from stinky_core.admission import evaluate_gate1
     from stinky_core.intelligence import investigate
-    from stinky_core.memory import IntelligenceMemory
 
     decision = evaluate_gate1(payload)
     if not decision.eligible:
@@ -272,10 +295,7 @@ async def book_report(payload: dict) -> dict:
             },
             "calibrated_probability": False,
         }
-    mem = IntelligenceMemory()
-    snap = payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else None
-    if snap:
-        mem.hydrate(snap)
+    mem, _loaded, source = await _book_memory(payload, session)
     inv = investigate(payload, memory=mem)
     return {
         "gate1_passed": True,
@@ -284,23 +304,23 @@ async def book_report(payload: dict) -> dict:
         "stages": inv.stages,
         "findings": inv.findings,
         "would_change_conclusion": inv.would_change,
+        "source": source,
         "calibrated_probability": False,
     }
 
 
 @app.post("/v1/book/health")
-async def book_health(payload: dict | None = None) -> dict:
+async def book_health(
+    payload: dict | None = None, session: Annotated[AsyncSession, Depends(get_session)] = None
+) -> dict:
     """Dataset health. Empty book is empty. Never invented."""
     from stinky_core.book import dataset_health, desk_snapshot
-    from stinky_core.memory import IntelligenceMemory
 
-    body = payload or {}
-    mem = IntelligenceMemory()
-    snap = body.get("snapshot") if isinstance(body.get("snapshot"), dict) else None
-    loaded = mem.hydrate(snap) if snap else {}
-    as_of = body.get("as_of")
+    mem, loaded, source = await _book_memory(payload, session)
+    as_of = (payload or {}).get("as_of")
     return {
         "hydrated": loaded,
+        "source": source,
         "health": dataset_health(mem, as_of=as_of),
         "desk": desk_snapshot(mem, as_of=as_of),
         "calibrated_probability": False,
@@ -308,17 +328,87 @@ async def book_health(payload: dict | None = None) -> dict:
 
 
 @app.post("/v1/book/desk")
-async def book_desk(payload: dict | None = None) -> dict:
+async def book_desk(
+    payload: dict | None = None, session: Annotated[AsyncSession, Depends(get_session)] = None
+) -> dict:
     """UNKNOWN queue + radars. Empty is empty."""
     from stinky_core.book import desk_snapshot
-    from stinky_core.memory import IntelligenceMemory
+
+    mem, loaded, source = await _book_memory(payload, session)
+    out = desk_snapshot(mem, as_of=(payload or {}).get("as_of"))
+    out["source"] = source
+    out["hydrated"] = loaded
+    return out
+
+
+@app.post("/v1/book/what-happened")
+async def book_what_happened(
+    payload: dict, session: Annotated[AsyncSession, Depends(get_session)]
+) -> dict:
+    """Post-detection path from stored ticks. Missing stays UNKNOWN."""
+    from stinky_core.book import what_happened_next
+
+    mem, loaded, source = await _book_memory(payload, session)
+    mint = str(payload.get("mint") or "").strip()
+    if not mint:
+        return {"error": "mint required", "calibrated_probability": False, "source": source}
+    out = what_happened_next(
+        mem,
+        mint=mint,
+        t0=payload.get("t0") or payload.get("decision_timestamp") or payload.get("as_of"),
+        as_of=payload.get("as_of"),
+    )
+    out["source"] = source
+    out["hydrated"] = loaded
+    return out
+
+
+@app.post("/v1/book/recipe")
+async def book_recipe(
+    payload: dict, session: Annotated[AsyncSession, Depends(get_session)]
+) -> dict:
+    """Historical RUNNER recipe. Not a probability. Sample < 5 stays UNKNOWN."""
+    from stinky_core.book import recipe_for
+
+    mem, loaded, source = await _book_memory(payload, session)
+    out = recipe_for(
+        mem,
+        payload.get("fingerprint"),
+        as_of=payload.get("as_of") or payload.get("decision_timestamp"),
+        exclude_mint=payload.get("exclude_mint") or payload.get("mint"),
+        current=payload.get("current") if isinstance(payload.get("current"), dict) else None,
+    )
+    out["source"] = source
+    out["hydrated"] = loaded
+    return out
+
+
+@app.post("/v1/book/observations")
+async def book_observations(
+    payload: dict | None = None, session: Annotated[AsyncSession, Depends(get_session)] = None
+) -> dict:
+    from stinky_core.book import observation_book
+
+    mem, loaded, source = await _book_memory(payload, session)
+    rows = observation_book(mem, as_of=(payload or {}).get("as_of"))
+    return {
+        "observations": rows,
+        "count": len(rows),
+        "source": source,
+        "hydrated": loaded,
+        "calibrated_probability": False,
+    }
+
+
+@app.post("/v1/book/insights")
+async def book_insights(payload: dict | None = None) -> dict:
+    """Candidate insights. Human review required. Never auto-tunes production."""
+    from stinky_core.insights import candidate_insights
 
     body = payload or {}
-    mem = IntelligenceMemory()
-    snap = body.get("snapshot") if isinstance(body.get("snapshot"), dict) else None
-    if snap:
-        mem.hydrate(snap)
-    return desk_snapshot(mem, as_of=body.get("as_of"))
+    rows = body.get("dataset") if isinstance(body.get("dataset"), list) else []
+    hold = body.get("holdout_mints") if isinstance(body.get("holdout_mints"), list) else []
+    return candidate_insights(rows, holdout_mints=hold)
 
 
 @app.get("/v1/metrics")
