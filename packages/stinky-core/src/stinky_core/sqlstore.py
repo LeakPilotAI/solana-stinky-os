@@ -104,6 +104,15 @@ CREATE TABLE IF NOT EXISTS intelligence_decisions (
     model_version TEXT,
     row TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS market_observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mint TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    volume_m5_usd REAL,
+    price_usd REAL,
+    liquidity_usd REAL,
+    source TEXT NOT NULL DEFAULT 'observed'
+);
 """
 
 
@@ -129,6 +138,7 @@ class SqliteMemoryStore:
             "pattern_fingerprints",
             "pattern_outcomes",
             "intelligence_decisions",
+            "market_observations",
         ):
             out[table] = int(self.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
         return out
@@ -214,6 +224,14 @@ class SqliteMemoryStore:
                     json.dumps(nested, default=str),
                 ),
             )
+        for r in snap.get("market_ticks") or []:
+            self.conn.execute(
+                """INSERT INTO market_observations
+                   (mint, observed_at, volume_m5_usd, price_usd, liquidity_usd, source)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (r["mint"], r["observed_at"], r.get("volume_m5_usd"), r.get("price_usd"),
+                 r.get("liquidity_usd"), r.get("source") or "observed"),
+            )
         self.conn.commit()
         after = self.counts()
         return {"before": before, "after": after}  # type: ignore[return-value]
@@ -248,4 +266,6 @@ class SqliteMemoryStore:
             r["promote"] = bool(r.get("promote"))
             r["alert_ok"] = bool(r.get("alert_ok"))
         mem.load_decisions(decs)
+        ticks = rows("SELECT mint, observed_at, volume_m5_usd, price_usd, liquidity_usd, source FROM market_observations")
+        mem.load_market_ticks(ticks)
         return mem

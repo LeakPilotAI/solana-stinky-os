@@ -27,7 +27,9 @@ from stinky_core.dataset import decision_row
 from stinky_core.identity import UniqueMintIndex
 from stinky_core.intelligence import (
     STATUS_ALERT,
+    STATUS_HIGH_RISK,
     STATUS_QUALIFIED,
+    STATUS_UNKNOWN,
     can_alert_investigation,
     investigate,
 )
@@ -108,6 +110,8 @@ def backtest_candidates(
     gate1_n = 0
     deep_n = 0
     qualified_n = 0
+    high_risk_n = 0
+    unknown_pipeline_n = 0
     alerted_n = 0
     runners = 0
     held = 0
@@ -134,6 +138,10 @@ def backtest_candidates(
             deep_n += 1
             if inv.pipeline_status == STATUS_QUALIFIED:
                 qualified_n += 1
+            elif inv.pipeline_status == STATUS_HIGH_RISK:
+                high_risk_n += 1
+            elif inv.pipeline_status == STATUS_UNKNOWN:
+                unknown_pipeline_n += 1
             alert_ok, alert_reason = can_alert_investigation(
                 True, inv, min_score=min_score, rejection_reason=None
             )
@@ -180,6 +188,13 @@ def backtest_candidates(
                 creator=str(m["creator"]) if m.get("creator") else None,
                 fingerprint=fp,
                 features=inv.fingerprint_features if inv else None,
+            )
+            mem.record_market_tick(
+                mint=str(decision.mint or m.get("mint") or ""),
+                observed_at=ts,
+                volume_m5_usd=snap.get("volume_usd") or snap.get("volume_m5_usd"),
+                price_usd=m.get("entry_price") or m.get("price_usd"),
+                liquidity_usd=snap.get("liquidity_usd"),
             )
             labeled_at = _parse_ts(m.get("labeled_at") or m.get("outcome_at"))
             if labeled_at is None and m.get("observation_complete"):
@@ -250,7 +265,7 @@ def backtest_candidates(
     recall = (runners / outcome_runner_all) if outcome_runner_all else None
     unknown_rate = (outcome_unknown_all / total) if total else None
     return {
-        "engine": "stinky-backtest-v1.4.0-remember",
+        "engine": "stinky-backtest-v1.5.0-book",
         "filter_version": FILTER_VERSION,
         "memory_version": mem.version,
         "input": len(unique) + dropped_dupes,
@@ -258,12 +273,19 @@ def backtest_candidates(
         "unique_candidates": total,
         "duplicate_mints_dropped": dropped_dupes,
         "gate1_passed": gate1_n,
+        "gate1_pass_rate": (gate1_n / total) if total else None,
         "investigated": deep_n,
         "deep_inspected": deep_n,
         "qualified": qualified_n,
+        "qualified_rate": (qualified_n / total) if total else None,
+        "high_risk": high_risk_n,
+        "high_risk_rate": (high_risk_n / total) if total else None,
+        "unknown_pipeline": unknown_pipeline_n,
+        "unknown_pipeline_rate": (unknown_pipeline_n / total) if total else None,
         "eligible": gate1_n,
         "alerts": alerted_n,
         "alerted": alerted_n,
+        "alert_rate": (alerted_n / total) if total else None,
         "runners": runners,
         "held": held,
         "fades": fades,
@@ -280,6 +302,11 @@ def backtest_candidates(
         "fee_unknown": fee_unknown,
         "fee_verified_rate": (fee_verified / total) if total else None,
         "memory": mem.to_stats(),
+        "book_size": mem.to_stats().get("intelligence_decisions") or mem.to_stats().get("fingerprints"),
+        "mean_advantage_count": (
+            (sum(int((r.get("information_advantage") or {}).get("advantage_count") or 0) for r in dataset) / len(dataset))
+            if dataset else None
+        ),
         "items": evaluated,
         "dataset": dataset,
     }

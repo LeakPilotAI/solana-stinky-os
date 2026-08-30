@@ -24,7 +24,7 @@ from stinky_core.evidence import EvidenceBundle, item as eitem
 from stinky_core.fingerprint import book_fingerprint, fingerprint_features
 from stinky_core.memory import IntelligenceMemory
 
-INTEL_VERSION = "intel-v1.4.0-remember"
+INTEL_VERSION = "intel-v1.5.0-book"
 SCORE_VERSION = "score-v1.1.0-intel-not-volume"
 RUNNER_VERSION = "runner-potential-v1.1.0-intel-not-volume"
 
@@ -241,6 +241,8 @@ class Investigation:
     decision_timestamp: str | None = None
     evidence: dict[str, Any] = field(default_factory=dict)
     data_quality: dict[str, Any] = field(default_factory=dict)
+    why: dict[str, Any] = field(default_factory=dict)
+    information_advantage: dict[str, Any] = field(default_factory=dict)
     model_version: str = INTEL_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -269,6 +271,8 @@ class Investigation:
             "decision_timestamp": self.decision_timestamp,
             "evidence": dict(self.evidence),
             "data_quality": dict(self.data_quality),
+            "why": dict(self.why),
+            "information_advantage": dict(self.information_advantage),
             "model_version": self.model_version,
             "inspect_version": INSPECT_VERSION,
             "score_interpretation": self.score.interpretation,
@@ -814,6 +818,123 @@ def build_data_quality(
     }
 
 
+def why_this_ca(inv: Investigation) -> dict[str, Any]:
+    """Human-readable evidence. Missing stays UNKNOWN. Not a probability."""
+    cares: list[str] = []
+    unknown: list[str] = []
+    vol = inv.activity.volume_m5_usd
+    if vol is not None:
+        cares.append(f"${vol:,.0f} 5m volume triggered investigation. Volume is not a buy.")
+    buyers = inv.wallets.meaningful_buyer_count
+    if buyers:
+        cares.append(f"{buyers} meaningful early buyers identified.")
+    else:
+        unknown.append("Meaningful early buyers: UNKNOWN")
+    smart = inv.wallets.smart_wallet_count or 0
+    if smart:
+        cares.append(f"{smart} have measurable historical edge (sample ≥ 3).")
+    else:
+        unknown.append("Historical wallet edge: UNKNOWN (need ≥ 3 resolved prior outcomes)")
+    if (inv.wallets.winner_count or 0) or (inv.wallets.loser_count or 0):
+        cares.append(f"Winners {inv.wallets.winner_count or 0} / losers {inv.wallets.loser_count or 0} among known-edge wallets.")
+    links = int((inv.entities or {}).get("link_count") or 0)
+    if links:
+        cares.append(f"{links} prior co-buy relationship(s) as-of.")
+    else:
+        unknown.append("Entity co-buy clusters: UNKNOWN")
+    if inv.creator.status == "KNOWN" and inv.creator.launches:
+        cares.append(
+            f"Creator has {inv.creator.launches} prior launches as-of: "
+            f"{inv.creator.historical_runners or 0} runners / {inv.creator.historical_fades or 0} fades."
+        )
+        if inv.creator.success_rate is None:
+            unknown.append("Creator success rate: UNKNOWN (resolved < 3)")
+    elif inv.creator.status == "OBSERVED":
+        unknown.append("Creator history: OBSERVED only (tiny sample, not intelligence)")
+    else:
+        unknown.append("Creator: UNKNOWN")
+    res = inv.patterns.resemblance or {}
+    sample = res.get("sample_count") or 0
+    if res.get("confidence") not in (None, "UNKNOWN") and sample >= 5:
+        cares.append(
+            f"Buyer/market structure resembles {sample} historical launches as-of: "
+            f"{res.get('runner_matches') or 0} runners / {res.get('held_matches') or 0} held / "
+            f"{res.get('fade_matches') or 0} fades (not a probability)."
+        )
+    else:
+        unknown.append("Historical fingerprint resemblance: UNKNOWN (need ≥ 5 matches and ≥ 3 informative bands)")
+    cares.append(f"Synthetic indicators: {inv.synthetic.level}")
+    cares.append(f"Rug indicators: {inv.rug.level}")
+    dq = (inv.data_quality or {}).get("overall") or "UNKNOWN"
+    cares.append(f"Evidence quality: {dq}")
+    if inv.fee_status != "VERIFIED":
+        unknown.append("Global fees: UNKNOWN (optional evidence, not a reject)")
+    unknown.append("Funding relationships: UNKNOWN")
+    if inv.promote:
+        expl = "Promoted: stored intelligence is sufficient. This is not a buy."
+    else:
+        expl = "Not promoted: we don't know → insufficient evidence → don't promote."
+    return {
+        "headline": "WHY STINKY CARES" if inv.has_intelligence else "INSUFFICIENT EVIDENCE",
+        "cares": cares,
+        "unknown": unknown,
+        "promote": inv.promote,
+        "promote_explanation": expl,
+        "calibrated_probability": False,
+    }
+
+
+def information_advantage(inv: Investigation) -> dict[str, Any]:
+    """How much Stinky added beyond a volume-only scanner. Not financial alpha."""
+    facts: list[str] = []
+    stinky: dict[str, Any] = {
+        "meaningful_buyers": inv.wallets.meaningful_buyer_count,
+        "edge_wallets": inv.wallets.smart_wallet_count,
+        "winners": inv.wallets.winner_count,
+        "losers": inv.wallets.loser_count,
+        "creator_launches": inv.creator.launches,
+        "creator_runners": inv.creator.historical_runners,
+        "creator_fades": inv.creator.historical_fades,
+        "entity_clusters": (inv.entities or {}).get("link_count"),
+        "historical_matches": (inv.patterns.resemblance or {}).get("sample_count"),
+        "historical_runners": (inv.patterns.resemblance or {}).get("runner_matches"),
+        "synthetic": inv.synthetic.level,
+        "rug": inv.rug.level,
+        "data_quality": (inv.data_quality or {}).get("overall"),
+    }
+    if inv.wallets.meaningful_buyer_count:
+        facts.append(f"{inv.wallets.meaningful_buyer_count} meaningful early buyers")
+    if inv.wallets.smart_wallet_count:
+        facts.append(f"{inv.wallets.smart_wallet_count} historical-edge wallets")
+    if inv.creator.launches:
+        facts.append(f"creator: {inv.creator.launches} prior launches as-of")
+    links = int((inv.entities or {}).get("link_count") or 0)
+    if links:
+        facts.append(f"{links} recurring wallet cluster(s)")
+    sample = int((inv.patterns.resemblance or {}).get("sample_count") or 0)
+    if sample >= 5 and (inv.patterns.resemblance or {}).get("confidence") not in (None, "UNKNOWN"):
+        facts.append(f"{sample} historical fingerprint matches")
+        facts.append(f"{(inv.patterns.resemblance or {}).get('runner_matches') or 0} historical runners")
+    if inv.synthetic.level not in ("UNKNOWN",):
+        facts.append(f"synthetic {inv.synthetic.level}")
+    if inv.rug.level not in ("UNKNOWN",):
+        facts.append(f"rug {inv.rug.level}")
+    n = len(facts)
+    status = "NONE" if n == 0 else ("PARTIAL" if n < 3 else "MATERIAL")
+    return {
+        "volume_scanner": {
+            "volume_m5_usd": inv.activity.volume_m5_usd,
+            "claim": "volume print only",
+        },
+        "stinky": stinky,
+        "advantage_facts": facts,
+        "advantage_count": n,
+        "advantage_status": status,
+        "note": "Not financial alpha. Count of evidence layers beyond the volume print.",
+        "calibrated_probability": False,
+    }
+
+
 def _has_intelligence(wallets: WalletIntel, creator: CreatorProfile, activity: MarketActivity) -> bool:
     """Volume is not intelligence. Tiny creator samples are not intelligence."""
     if wallets.status == "KNOWN" and (wallets.smart_wallet_count or 0) >= 1:
@@ -1073,6 +1194,8 @@ def investigate(
         wallets=wallets, creator=creator, synthetic=synthetic, rug=rug,
         patterns=patterns, entities=entities, activity=activity, fee_status=fee_status,
     )
+    inv.why = why_this_ca(inv)
+    inv.information_advantage = information_advantage(inv)
     return inv
 
 

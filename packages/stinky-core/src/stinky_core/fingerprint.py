@@ -181,11 +181,19 @@ def fingerprint_features(
             "known_edge_wallet_count": smart_wallet_count,
             "top4_wallet_volume_share": top4_wallet_volume_share,
         },
-        "creator": {"launches": creator_launches},
+        "creator": {
+            "launches": creator_launches,
+            "runner_ratio": None,
+            "failure_ratio": None,
+        },
         "entity": {"link_count": entity_link_count},
         "synthetic": {
             "level": synthetic_level,
             "repeated_size_share": repeated_size_share,
+        },
+        "extra": {
+            "market_cap_usd": market_cap_usd,
+            "note": "Extra dimensions live in features, not the 10-band key. Missing stays None.",
         },
         "key": book_fingerprint(
             top4_wallet_volume_share=top4_wallet_volume_share,

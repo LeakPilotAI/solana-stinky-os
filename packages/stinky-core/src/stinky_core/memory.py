@@ -16,7 +16,7 @@ import json
 
 from stinky_core.pools import is_rankable_wallet
 
-MEMORY_VERSION = "memory-v1.2.0-remember"
+MEMORY_VERSION = "memory-v1.3.0-book"
 
 MEMORY_DDL = """
 CREATE TABLE IF NOT EXISTS wallet_observations (
@@ -117,6 +117,17 @@ CREATE TABLE IF NOT EXISTS intelligence_decisions (
     model_version TEXT,
     row JSONB NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS market_observations (
+    id BIGSERIAL PRIMARY KEY,
+    mint TEXT NOT NULL,
+    observed_at TIMESTAMPTZ NOT NULL,
+    volume_m5_usd DOUBLE PRECISION,
+    price_usd DOUBLE PRECISION,
+    liquidity_usd DOUBLE PRECISION,
+    source TEXT NOT NULL DEFAULT 'observed'
+);
+CREATE INDEX IF NOT EXISTS idx_mkt_obs_mint_time ON market_observations (mint, observed_at);
 """
 # Extra columns for existing Postgres installs (007). CREATE TABLE IF NOT EXISTS
 # above will not add them to an already-created table.
@@ -202,6 +213,13 @@ SELECT mint, decision_timestamp, protocol, volume_m5_usd, pipeline_status,
        has_intelligence, promote, stinky_score, alert_ok, alert_reason,
        synthetic_level, rug_level, outcome_label, label_version, model_version, row
 FROM intelligence_decisions
+"""
+MEMORY_INSERT_MARKET_OBS = """
+INSERT INTO market_observations (mint, observed_at, volume_m5_usd, price_usd, liquidity_usd, source)
+VALUES (:mint, :observed_at, :volume_m5_usd, :price_usd, :liquidity_usd, :source)
+"""
+MEMORY_SELECT_MARKET_OBS = """
+SELECT mint, observed_at, volume_m5_usd, price_usd, liquidity_usd, source FROM market_observations
 """
 
 
@@ -296,6 +314,16 @@ class FingerprintRecord:
     features: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class MarketTick:
+    mint: str
+    observed_at: datetime
+    volume_m5_usd: float | None = None
+    price_usd: float | None = None
+    liquidity_usd: float | None = None
+    source: str = "observed"
+
+
 class IntelligenceMemory:
     """Accumulating store. All queries are as-of-decision unless as_of is None."""
 
@@ -308,6 +336,7 @@ class IntelligenceMemory:
         self.fingerprints: list[FingerprintRecord] = []
         self.fingerprint_outcomes: list[OutcomeLabel] = []
         self.decisions: list[dict[str, Any]] = []
+        self.market_ticks: list[MarketTick] = []
         self.version = MEMORY_VERSION
 
     def record_wallet(
@@ -839,6 +868,34 @@ class IntelligenceMemory:
         self.decisions.append(compact)
         return True
 
+    def record_market_tick(
+        self,
+        *,
+        mint: str,
+        observed_at: Any,
+        volume_m5_usd: float | None = None,
+        price_usd: float | None = None,
+        liquidity_usd: float | None = None,
+        source: str = "observed",
+    ) -> bool:
+        ts = _parse_ts(observed_at)
+        m = (mint or "").strip()
+        if not ts or not m:
+            return False
+        for existing in self.market_ticks:
+            if existing.mint == m and existing.observed_at == ts:
+                return False
+        self.market_ticks.append(
+            MarketTick(
+                mint=m, observed_at=ts,
+                volume_m5_usd=_maybe_float(volume_m5_usd),
+                price_usd=_maybe_float(price_usd),
+                liquidity_usd=_maybe_float(liquidity_usd),
+                source=source or "observed",
+            )
+        )
+        return True
+
     def snapshot_rows(self) -> dict[str, list[dict[str, Any]]]:
         """SQL-ready dump. Used to persist and to hydrate a fresh process."""
         def _iso(v: Any) -> Any:
@@ -886,6 +943,12 @@ class IntelligenceMemory:
             for e in self.relationships
         ]
         decisions = [dict(d) for d in self.decisions]
+        market_ticks = [
+            {"mint": t.mint, "observed_at": _iso(t.observed_at),
+             "volume_m5_usd": t.volume_m5_usd, "price_usd": t.price_usd,
+             "liquidity_usd": t.liquidity_usd, "source": t.source}
+            for t in self.market_ticks
+        ]
         return {
             "wallet_obs": wallet_obs,
             "wallet_outcomes": wallet_outcomes,
@@ -895,6 +958,7 @@ class IntelligenceMemory:
             "fingerprint_outcomes": fingerprint_outcomes,
             "relationships": relationships,
             "decisions": decisions,
+            "market_ticks": market_ticks,
         }
 
     def load_wallet_obs(self, rows: Iterable[Any]) -> int:
@@ -1005,6 +1069,21 @@ class IntelligenceMemory:
                 n += 1
         return n
 
+    def load_market_ticks(self, rows: Iterable[Any]) -> int:
+        n = 0
+        for r in rows:
+            d = dict(r)
+            if self.record_market_tick(
+                mint=str(d.get("mint") or ""),
+                observed_at=d.get("observed_at"),
+                volume_m5_usd=_maybe_float(d.get("volume_m5_usd")),
+                price_usd=_maybe_float(d.get("price_usd")),
+                liquidity_usd=_maybe_float(d.get("liquidity_usd")),
+                source=str(d.get("source") or "observed"),
+            ):
+                n += 1
+        return n
+
     def hydrate(self, snapshot: dict[str, Any] | None) -> dict[str, int]:
         snap = snapshot or {}
         return {
@@ -1015,6 +1094,7 @@ class IntelligenceMemory:
             "fingerprints": self.load_fingerprints(snap.get("fingerprints") or []),
             "fingerprint_outcomes": self.load_fingerprint_outcomes(snap.get("fingerprint_outcomes") or []),
             "decisions": self.load_decisions(snap.get("decisions") or []),
+            "market_ticks": self.load_market_ticks(snap.get("market_ticks") or []),
         }
 
     def to_stats(self) -> dict[str, int]:
@@ -1027,6 +1107,7 @@ class IntelligenceMemory:
             "fingerprints": len(self.fingerprints),
             "fingerprint_outcomes": len(self.fingerprint_outcomes),
             "intelligence_decisions": len(self.decisions),
+            "market_ticks": len(self.market_ticks),
         }
 
 

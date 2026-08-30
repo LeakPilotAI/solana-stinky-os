@@ -732,6 +732,7 @@ class VolumeMonitor:
                 MEMORY_SELECT_DECISION,
                 MEMORY_SELECT_FINGERPRINT,
                 MEMORY_SELECT_FINGERPRINT_OUTCOME,
+                MEMORY_SELECT_MARKET_OBS,
                 MEMORY_SELECT_WALLET_OBS,
                 MEMORY_SELECT_WALLET_OUTCOME,
             )
@@ -746,6 +747,10 @@ class VolumeMonitor:
                     decs = (await session.execute(text(MEMORY_SELECT_DECISION))).mappings().all()
                 except Exception:
                     decs = []
+                try:
+                    ticks = (await session.execute(text(MEMORY_SELECT_MARKET_OBS))).mappings().all()
+                except Exception:
+                    ticks = []
             self._memory.hydrate({
                 "wallet_obs": [dict(r) for r in wobs],
                 "wallet_outcomes": [dict(r) for r in wout],
@@ -754,6 +759,7 @@ class VolumeMonitor:
                 "fingerprints": [dict(r) for r in fps],
                 "fingerprint_outcomes": [dict(r) for r in fpout],
                 "decisions": [dict(r) for r in decs],
+                "market_ticks": [dict(r) for r in ticks],
             })
             logger.info("memory.hydrated", **self._memory.to_stats())
         except Exception as exc:
@@ -769,11 +775,15 @@ class VolumeMonitor:
         creator: str | None,
         fingerprint: str | None,
         features: dict[str, Any] | None = None,
+        volume_m5_usd: float | None = None,
+        price_usd: float | None = None,
+        liquidity_usd: float | None = None,
     ) -> None:
         try:
             from stinky_core.memory import (
                 MEMORY_INSERT_CREATOR_OBS,
                 MEMORY_INSERT_FINGERPRINT,
+                MEMORY_INSERT_MARKET_OBS,
                 MEMORY_INSERT_WALLET_OBS,
             )
             import json
@@ -824,6 +834,17 @@ class VolumeMonitor:
                             "features": json.dumps(features or {}),
                         },
                     )
+                await session.execute(
+                    text(MEMORY_INSERT_MARKET_OBS),
+                    {
+                        "mint": mint,
+                        "observed_at": observed_at,
+                        "volume_m5_usd": volume_m5_usd,
+                        "price_usd": price_usd,
+                        "liquidity_usd": liquidity_usd,
+                        "source": "observed",
+                    },
+                )
                 await session.commit()
         except Exception as exc:
             logger.warning("memory.persist_failed", mint=mint, error=str(exc)[:200])
@@ -920,6 +941,13 @@ class VolumeMonitor:
                     fingerprint=inv.fingerprint,
                     features=inv.fingerprint_features,
                 )
+                mem.record_market_tick(
+                    mint=mint,
+                    observed_at=bundle.get("decision_timestamp"),
+                    volume_m5_usd=snap.volume_m5_usd,
+                    price_usd=snap.price_usd,
+                    liquidity_usd=snap.liquidity_usd,
+                )
                 await self._persist_memory_decision(
                     mint=mint,
                     observed_at=bundle.get("decision_timestamp"),
@@ -927,6 +955,9 @@ class VolumeMonitor:
                     creator=migration.creator,
                     fingerprint=inv.fingerprint,
                     features=inv.fingerprint_features,
+                    volume_m5_usd=snap.volume_m5_usd,
+                    price_usd=snap.price_usd,
+                    liquidity_usd=snap.liquidity_usd,
                 )
             except Exception:
                 pass

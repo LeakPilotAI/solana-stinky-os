@@ -11,7 +11,7 @@ from stinky_core.admission import FILTER_VERSION
 from stinky_core.intelligence import INTEL_VERSION, Investigation
 from stinky_core.outcomes import LABEL_VERSION, Outcome
 
-DATASET_VERSION = "dataset-v1.1.0"
+DATASET_VERSION = "dataset-v1.2.0"
 
 
 def decision_row(
@@ -67,6 +67,13 @@ def decision_row(
         "rug_features": inv.rug.to_dict() if inv else None,
         "fingerprint": inv.fingerprint if inv else None,
         "data_quality": dict(inv.data_quality) if inv else None,
+        "historical_match_count": (inv.patterns.resemblance or {}).get("sample_count") if inv else None,
+        "historical_runner_count": (inv.patterns.resemblance or {}).get("runner_matches") if inv else None,
+        "historical_held_count": (inv.patterns.resemblance or {}).get("held_matches") if inv else None,
+        "historical_fade_count": (inv.patterns.resemblance or {}).get("fade_matches") if inv else None,
+        "historical_unknown_count": (inv.patterns.resemblance or {}).get("unknown_matches") if inv else None,
+        "information_advantage": dict(inv.information_advantage) if inv else None,
+        "why": dict(inv.why) if inv else None,
         "alert_ok": bool(alert_ok),
         "alert_reason": alert_reason,
         "future_outcome": (oc or {}).get("label"),

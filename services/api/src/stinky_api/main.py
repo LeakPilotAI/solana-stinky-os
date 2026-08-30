@@ -103,6 +103,8 @@ async def investigate_endpoint(payload: dict) -> dict:
         "fingerprint": inv.fingerprint,
         "data_quality": inv.data_quality,
         "resemblance": inv.patterns.resemblance,
+        "why": inv.why,
+        "information_advantage": inv.information_advantage,
         "filter_version": decision.filter_version or FILTER_VERSION,
         "investigation": inv.to_dict(),
         "alert_ok": alert_ok,
@@ -152,6 +154,7 @@ async def memory_stats(session: Annotated[AsyncSession, Depends(get_session)]) -
         "pattern_outcomes",
         "intelligence_decisions",
         "market_inspections",
+        "market_observations",
     )
     counts: dict[str, Any] = {}
     available = True
@@ -164,6 +167,45 @@ async def memory_stats(session: Annotated[AsyncSession, Depends(get_session)]) -
             counts[f"{t}_error"] = type(exc).__name__
             available = False
     return {"available": available, "counts": counts, "source": "postgres" if available else "unavailable"}
+
+
+@app.post("/v1/book/time-machine")
+async def book_time_machine(payload: dict) -> dict:
+    """As-of replay for one mint. Future outcomes are hidden. Never fabricates."""
+    from stinky_core.book import time_machine
+    from stinky_core.memory import IntelligenceMemory
+
+    mem = IntelligenceMemory()
+    snap = payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else None
+    if snap:
+        mem.hydrate(snap)
+    mint = str(payload.get("mint") or "").strip()
+    if not mint:
+        return {"error": "mint required", "calibrated_probability": False}
+    as_of = payload.get("as_of") or payload.get("decision_timestamp")
+    bundle = payload.get("bundle") if isinstance(payload.get("bundle"), dict) else payload
+    return time_machine(mint=mint, as_of=as_of, bundle=bundle, memory=mem)
+
+
+@app.post("/v1/book")
+async def book_summary(payload: dict | None = None) -> dict:
+    """Wallet/creator/pattern ledgers from a snapshot. Empty is empty, never invented."""
+    from stinky_core.book import book_stats, creator_book, pattern_book, wallet_book
+    from stinky_core.memory import IntelligenceMemory
+
+    body = payload or {}
+    mem = IntelligenceMemory()
+    snap = body.get("snapshot") if isinstance(body.get("snapshot"), dict) else None
+    loaded = mem.hydrate(snap) if snap else {}
+    as_of = body.get("as_of")
+    return {
+        "hydrated": loaded,
+        "stats": book_stats(mem, as_of=as_of),
+        "wallets": wallet_book(mem, as_of=as_of),
+        "creators": creator_book(mem, as_of=as_of),
+        "patterns": pattern_book(mem, as_of=as_of),
+        "calibrated_probability": False,
+    }
 
 
 @app.get("/v1/system/filter-stats")
