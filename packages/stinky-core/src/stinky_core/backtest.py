@@ -220,6 +220,14 @@ def backtest_candidates(
             "decision_timestamp": ts.isoformat(),
         }
         evaluated.append(row)
+        mem.record_decision({
+            **row,
+            "protocol": str(m.get("protocol") or m.get("dex_id") or ""),
+            "volume_m5_usd": snap.get("volume_usd") or snap.get("volume_m5_usd"),
+            "outcome_label": outcome.label,
+            "label_version": outcome.label_version or LABEL_VERSION,
+            "model_version": inv.model_version if inv else None,
+        })
         dataset.append(
             decision_row(
                 mint=decision.mint,

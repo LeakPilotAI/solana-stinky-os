@@ -187,6 +187,33 @@ class SqliteMemoryStore:
                 (r["wallet_a"], r["wallet_b"], r["kind"], r["mint"], r["observed_at"],
                  r["confidence"], r["reason"], json.dumps(r.get("evidence") or {})),
             )
+        for r in snap.get("decisions") or []:
+            nested = r.get("row") if isinstance(r.get("row"), dict) else {k: v for k, v in r.items() if k != "row"}
+            self.conn.execute(
+                """INSERT OR REPLACE INTO intelligence_decisions
+                   (mint, decision_timestamp, protocol, volume_m5_usd, pipeline_status,
+                    has_intelligence, promote, stinky_score, alert_ok, alert_reason,
+                    synthetic_level, rug_level, outcome_label, label_version, model_version, row)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    r.get("mint"),
+                    r.get("decision_timestamp"),
+                    r.get("protocol"),
+                    r.get("volume_m5_usd"),
+                    r.get("pipeline_status"),
+                    1 if r.get("has_intelligence") else 0,
+                    1 if r.get("promote") else 0,
+                    r.get("stinky_score"),
+                    1 if r.get("alert_ok") else 0,
+                    r.get("alert_reason"),
+                    r.get("synthetic_level"),
+                    r.get("rug_level"),
+                    r.get("outcome_label"),
+                    r.get("label_version"),
+                    r.get("model_version"),
+                    json.dumps(nested, default=str),
+                ),
+            )
         self.conn.commit()
         after = self.counts()
         return {"before": before, "after": after}  # type: ignore[return-value]
@@ -210,4 +237,15 @@ class SqliteMemoryStore:
                     r["features"] = {}
         mem.load_fingerprints(fps)
         mem.load_fingerprint_outcomes(rows("SELECT fingerprint AS subject, mint, labeled_at, label, label_version FROM pattern_outcomes"))
+        decs = rows("SELECT mint, decision_timestamp, protocol, volume_m5_usd, pipeline_status, has_intelligence, promote, stinky_score, alert_ok, alert_reason, synthetic_level, rug_level, outcome_label, label_version, model_version, row FROM intelligence_decisions")
+        for r in decs:
+            if isinstance(r.get("row"), str):
+                try:
+                    r["row"] = json.loads(r["row"] or "{}")
+                except json.JSONDecodeError:
+                    r["row"] = {}
+            r["has_intelligence"] = bool(r.get("has_intelligence"))
+            r["promote"] = bool(r.get("promote"))
+            r["alert_ok"] = bool(r.get("alert_ok"))
+        mem.load_decisions(decs)
         return mem

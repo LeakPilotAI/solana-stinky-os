@@ -681,6 +681,46 @@ class VolumeMonitor:
                 error=f"{type(exc).__name__}: {exc}"[:200],
             )
 
+    async def _persist_intelligence_decision(
+        self, inv: Any, snap: VolumeSnapshot, *, alert_ok: bool, alert_reason: str | None
+    ) -> None:
+        """Durable compact decision row. Fail-soft. Never fabricates fields."""
+        try:
+            import json
+            from stinky_core.memory import MEMORY_INSERT_DECISION
+
+            compact = {
+                "mint": inv.mint,
+                "decision_timestamp": datetime.now(timezone.utc).isoformat(),
+                "protocol": snap.dex_id,
+                "volume_m5_usd": snap.volume_m5_usd,
+                "pipeline_status": inv.pipeline_status,
+                "has_intelligence": bool(inv.has_intelligence),
+                "promote": bool(inv.promote),
+                "stinky_score": inv.score.score if inv.score else None,
+                "alert_ok": bool(alert_ok),
+                "alert_reason": alert_reason,
+                "synthetic_level": inv.synthetic.level if inv.synthetic else None,
+                "rug_level": inv.rug.level if inv.rug else None,
+                "outcome_label": None,
+                "label_version": None,
+                "model_version": getattr(inv, "model_version", None),
+            }
+            params = dict(compact)
+            params["row"] = json.dumps(compact, default=str)
+            mem = getattr(self, "_memory", None)
+            if mem is not None:
+                mem.record_decision(compact)
+            async with self._sessions() as session:
+                await session.execute(text(MEMORY_INSERT_DECISION), params)
+                await session.commit()
+        except Exception as exc:
+            logger.warning(
+                "intelligence_decision.persist_failed",
+                mint=getattr(inv, "mint", None),
+                error=f"{type(exc).__name__}: {exc}"[:200],
+            )
+
     async def _hydrate_memory(self) -> None:
         """Load as-of observations from Postgres. Fail-soft. Never fabricates."""
         if self._memory is None or self._memory_hydrated:
@@ -689,6 +729,7 @@ class VolumeMonitor:
             from stinky_core.memory import (
                 MEMORY_SELECT_CREATOR_OBS,
                 MEMORY_SELECT_CREATOR_OUTCOME,
+                MEMORY_SELECT_DECISION,
                 MEMORY_SELECT_FINGERPRINT,
                 MEMORY_SELECT_FINGERPRINT_OUTCOME,
                 MEMORY_SELECT_WALLET_OBS,
@@ -701,6 +742,10 @@ class VolumeMonitor:
                 cout = (await session.execute(text(MEMORY_SELECT_CREATOR_OUTCOME))).mappings().all()
                 fps = (await session.execute(text(MEMORY_SELECT_FINGERPRINT))).mappings().all()
                 fpout = (await session.execute(text(MEMORY_SELECT_FINGERPRINT_OUTCOME))).mappings().all()
+                try:
+                    decs = (await session.execute(text(MEMORY_SELECT_DECISION))).mappings().all()
+                except Exception:
+                    decs = []
             self._memory.hydrate({
                 "wallet_obs": [dict(r) for r in wobs],
                 "wallet_outcomes": [dict(r) for r in wout],
@@ -708,6 +753,7 @@ class VolumeMonitor:
                 "creator_outcomes": [dict(r) for r in cout],
                 "fingerprints": [dict(r) for r in fps],
                 "fingerprint_outcomes": [dict(r) for r in fpout],
+                "decisions": [dict(r) for r in decs],
             })
             logger.info("memory.hydrated", **self._memory.to_stats())
         except Exception as exc:
@@ -750,6 +796,11 @@ class VolumeMonitor:
                             "role": "early_buyer",
                             "sol_spent": spent_f,
                             "source": "observed",
+                            "side": str(b.get("side") or b.get("type") or "buy"),
+                            "entry_price": b.get("entry_price") if b.get("entry_price") is not None else b.get("price"),
+                            "exit_size": b.get("exit_size"),
+                            "exit_price": b.get("exit_price"),
+                            "ret_pct": b.get("ret_pct") if b.get("ret_pct") is not None else b.get("return_pct"),
                         },
                     )
                 if creator:
@@ -885,6 +936,7 @@ class VolumeMonitor:
         await self._persist_inspection(
             inspection_persist_params(inv, alert_ok=alert_ok, alert_reason=alert_reason)
         )
+        await self._persist_intelligence_decision(inv, snap, alert_ok=alert_ok, alert_reason=alert_reason)
 
         logger.info(
             "investigation.complete",

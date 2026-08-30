@@ -22,7 +22,10 @@ SQL inserts, and UNKNOWN books could theoretically match other empty books.
 4. Wallet/creator stats are as-of, exclude the current mint, and never invent
    returns.
 5. SQLite is the hydration proof when Postgres is not running. Postgres remains
-   the production contract (`006` + `007`).
+   the production contract (`006` + `007`). Restart hydrates wallet/creator/
+   fingerprint/decision rows. Co-buy links are derived at query time from
+   observations (first_seen / last_seen / prior_mint_count / evidence_count).
+   Shared-funding is UNKNOWN unless measured — never invented.
 6. Volume is still not a bullish score. UNKNOWN still does not promote.
 
 ## Consequences

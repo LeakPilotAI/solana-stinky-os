@@ -150,6 +150,7 @@ async def memory_stats(session: Annotated[AsyncSession, Depends(get_session)]) -
         "wallet_relationships",
         "pattern_fingerprints",
         "pattern_outcomes",
+        "intelligence_decisions",
         "market_inspections",
     )
     counts: dict[str, Any] = {}

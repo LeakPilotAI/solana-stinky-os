@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable
+import json
 
 from stinky_core.pools import is_rankable_wallet
 
@@ -129,8 +130,8 @@ MEMORY_ALTERS = (
 MEMORY_INDEXES: tuple[str, ...] = ()
 
 MEMORY_INSERT_WALLET_OBS = """
-INSERT INTO wallet_observations (wallet, mint, observed_at, role, sol_spent, source)
-VALUES (:wallet, :mint, :observed_at, :role, :sol_spent, :source)
+INSERT INTO wallet_observations (wallet, mint, observed_at, role, sol_spent, source, side, entry_price, exit_size, exit_price, ret_pct)
+VALUES (:wallet, :mint, :observed_at, :role, :sol_spent, :source, :side, :entry_price, :exit_size, :exit_price, :ret_pct)
 ON CONFLICT (wallet, mint, role) DO NOTHING
 """
 MEMORY_INSERT_WALLET_OUTCOME = """
@@ -162,13 +163,46 @@ MEMORY_INSERT_RELATIONSHIP = """
 INSERT INTO wallet_relationships (wallet_a, wallet_b, kind, mint, observed_at, confidence, reason, evidence)
 VALUES (:wallet_a, :wallet_b, :kind, :mint, :observed_at, :confidence, :reason, CAST(:evidence AS jsonb))
 """
-MEMORY_SELECT_WALLET_OBS = "SELECT wallet, mint, observed_at, role, sol_spent, source FROM wallet_observations"
+MEMORY_SELECT_WALLET_OBS = "SELECT wallet, mint, observed_at, role, sol_spent, source, side, entry_price, exit_size, exit_price, ret_pct FROM wallet_observations"
 MEMORY_SELECT_WALLET_OUTCOME = "SELECT wallet AS subject, mint, labeled_at, label, label_version FROM wallet_outcome_labels"
 MEMORY_SELECT_CREATOR_OBS = "SELECT creator AS wallet, mint, observed_at, 'creator' AS role, NULL AS sol_spent, source FROM creator_observations"
 MEMORY_SELECT_CREATOR_OUTCOME = "SELECT creator AS subject, mint, labeled_at, label, label_version FROM creator_outcome_labels"
 MEMORY_SELECT_FINGERPRINT = "SELECT fingerprint, mint, observed_at, features FROM pattern_fingerprints"
 MEMORY_SELECT_FINGERPRINT_OUTCOME = "SELECT fingerprint AS subject, mint, labeled_at, label, label_version FROM pattern_outcomes"
 MEMORY_SELECT_RELATIONSHIP = "SELECT wallet_a, wallet_b, kind, mint, observed_at, confidence, reason, evidence FROM wallet_relationships"
+MEMORY_INSERT_DECISION = """
+INSERT INTO intelligence_decisions (
+  mint, decision_timestamp, protocol, volume_m5_usd, pipeline_status,
+  has_intelligence, promote, stinky_score, alert_ok, alert_reason,
+  synthetic_level, rug_level, outcome_label, label_version, model_version, row
+) VALUES (
+  :mint, :decision_timestamp, :protocol, :volume_m5_usd, :pipeline_status,
+  :has_intelligence, :promote, :stinky_score, :alert_ok, :alert_reason,
+  :synthetic_level, :rug_level, :outcome_label, :label_version, :model_version, CAST(:row AS jsonb)
+)
+ON CONFLICT (mint) DO UPDATE SET
+  decision_timestamp = EXCLUDED.decision_timestamp,
+  protocol = EXCLUDED.protocol,
+  volume_m5_usd = EXCLUDED.volume_m5_usd,
+  pipeline_status = EXCLUDED.pipeline_status,
+  has_intelligence = EXCLUDED.has_intelligence,
+  promote = EXCLUDED.promote,
+  stinky_score = EXCLUDED.stinky_score,
+  alert_ok = EXCLUDED.alert_ok,
+  alert_reason = EXCLUDED.alert_reason,
+  synthetic_level = EXCLUDED.synthetic_level,
+  rug_level = EXCLUDED.rug_level,
+  outcome_label = EXCLUDED.outcome_label,
+  label_version = EXCLUDED.label_version,
+  model_version = EXCLUDED.model_version,
+  row = EXCLUDED.row
+"""
+MEMORY_SELECT_DECISION = """
+SELECT mint, decision_timestamp, protocol, volume_m5_usd, pipeline_status,
+       has_intelligence, promote, stinky_score, alert_ok, alert_reason,
+       synthetic_level, rug_level, outcome_label, label_version, model_version, row
+FROM intelligence_decisions
+"""
 
 
 def _parse_ts(v: Any) -> datetime | None:
@@ -273,6 +307,7 @@ class IntelligenceMemory:
         self.relationships: list[RelationshipEdge] = []
         self.fingerprints: list[FingerprintRecord] = []
         self.fingerprint_outcomes: list[OutcomeLabel] = []
+        self.decisions: list[dict[str, Any]] = []
         self.version = MEMORY_VERSION
 
     def record_wallet(
@@ -549,14 +584,22 @@ class IntelligenceMemory:
         cutoff = _parse_ts(as_of)
         exclude = (exclude_mint or "").strip()
         wanted = {(w or "").strip() for w in wallets if w}
-        # shared mints from prior co-observation, not just recorded edges
         mint_wallets: dict[str, set[str]] = {}
+        wallet_mint_first: dict[tuple[str, str], datetime] = {}
+        wallet_mint_last: dict[tuple[str, str], datetime] = {}
         for o in self.wallet_obs:
             if o.mint == exclude or not _before(o.observed_at, cutoff):
                 continue
             if o.role != "early_buyer":
                 continue
             mint_wallets.setdefault(o.mint, set()).add(o.wallet)
+            key = (o.wallet, o.mint)
+            prev_f = wallet_mint_first.get(key)
+            if prev_f is None or o.observed_at < prev_f:
+                wallet_mint_first[key] = o.observed_at
+            prev_l = wallet_mint_last.get(key)
+            if prev_l is None or o.observed_at > prev_l:
+                wallet_mint_last[key] = o.observed_at
         pair_mints: dict[tuple[str, str], set[str]] = {}
         for mint, ws in mint_wallets.items():
             present = sorted(w for w in ws if w in wanted)
@@ -573,15 +616,25 @@ class IntelligenceMemory:
                 conf = 0.70
             if shared >= 8:
                 conf = 0.85
+            times: list[datetime] = []
+            for mint in mints:
+                for w in (a, b):
+                    t0 = wallet_mint_first.get((w, mint))
+                    t1 = wallet_mint_last.get((w, mint))
+                    if t0 is not None:
+                        times.append(t0)
+                    if t1 is not None:
+                        times.append(t1)
             links.append({
                 "wallet_a": a,
                 "wallet_b": b,
                 "kind": "co_buy",
+                "relationship_type": "co_buy",
                 "shared_mints": shared,
                 "prior_mint_count": shared,
                 "evidence_count": shared,
-                "first_seen": None,
-                "last_seen": None,
+                "first_seen": min(times).isoformat() if times else None,
+                "last_seen": max(times).isoformat() if times else None,
                 "confidence": conf,
                 "reason": "co_early_buy" if shared < 8 else "strong_co_early_buy",
                 "evidence": {"mints": sorted(mints)[:12], "sample": shared},
@@ -627,11 +680,22 @@ class IntelligenceMemory:
                 shared = wm & cm
                 if len(shared) < min_shared:
                     continue
+                times: list[datetime] = []
+                for mint in shared:
+                    for subj, src in ((w, self.wallet_obs), (c, self.creator_obs)):
+                        for o in src:
+                            if o.wallet == subj and o.mint == mint and _before(o.observed_at, cutoff):
+                                times.append(o.observed_at)
                 out.append({
                     "wallet_a": min(w, c),
                     "wallet_b": max(w, c),
                     "kind": "deployer_buyer",
+                    "relationship_type": "deployer_buyer",
                     "shared_mints": len(shared),
+                    "prior_mint_count": len(shared),
+                    "evidence_count": len(shared),
+                    "first_seen": min(times).isoformat() if times else None,
+                    "last_seen": max(times).isoformat() if times else None,
                     "confidence": 0.55 if len(shared) < 5 else 0.70,
                     "reason": "repeat_deployer_buyer",
                     "evidence": {"mints": sorted(shared)[:12], "sample": len(shared), "creator": c, "buyer": w},
@@ -743,6 +807,38 @@ class IntelligenceMemory:
         if fingerprint:
             self.record_fingerprint(fingerprint=fingerprint, mint=mint, observed_at=ts, features=features)
 
+    def record_decision(self, row: dict[str, Any] | None) -> bool:
+        """Persist a compact as-of decision snapshot. Not used as future leakage."""
+        if not row:
+            return False
+        mint = str(row.get("mint") or "").strip()
+        if not mint:
+            return False
+        ts = row.get("decision_timestamp") or row.get("observed_at")
+        if isinstance(ts, datetime):
+            ts = ts.isoformat()
+        compact = {
+            "mint": mint,
+            "decision_timestamp": ts,
+            "protocol": row.get("protocol"),
+            "volume_m5_usd": row.get("volume_m5_usd") if row.get("volume_m5_usd") is not None else row.get("volume_usd"),
+            "pipeline_status": row.get("pipeline_status"),
+            "has_intelligence": bool(row.get("has_intelligence")),
+            "promote": bool(row.get("promote")),
+            "stinky_score": row.get("stinky_score") if row.get("stinky_score") is not None else row.get("score"),
+            "alert_ok": row.get("alert_ok"),
+            "alert_reason": row.get("alert_reason"),
+            "synthetic_level": row.get("synthetic_level"),
+            "rug_level": row.get("rug_level"),
+            "outcome_label": row.get("outcome_label") or row.get("future_outcome"),
+            "label_version": row.get("label_version"),
+            "model_version": row.get("model_version") or MEMORY_VERSION,
+        }
+        compact["row"] = {k: v for k, v in compact.items() if k != "row"}
+        self.decisions = [d for d in self.decisions if str(d.get("mint")) != mint]
+        self.decisions.append(compact)
+        return True
+
     def snapshot_rows(self) -> dict[str, list[dict[str, Any]]]:
         """SQL-ready dump. Used to persist and to hydrate a fresh process."""
         def _iso(v: Any) -> Any:
@@ -789,6 +885,7 @@ class IntelligenceMemory:
              "evidence": dict(e.evidence)}
             for e in self.relationships
         ]
+        decisions = [dict(d) for d in self.decisions]
         return {
             "wallet_obs": wallet_obs,
             "wallet_outcomes": wallet_outcomes,
@@ -797,6 +894,7 @@ class IntelligenceMemory:
             "fingerprints": fingerprints,
             "fingerprint_outcomes": fingerprint_outcomes,
             "relationships": relationships,
+            "decisions": decisions,
         }
 
     def load_wallet_obs(self, rows: Iterable[Any]) -> int:
@@ -891,6 +989,22 @@ class IntelligenceMemory:
             n += len(self.fingerprint_outcomes) - before
         return n
 
+    def load_decisions(self, rows: Iterable[Any]) -> int:
+        n = 0
+        for r in rows:
+            d = dict(r)
+            if isinstance(d.get("row"), str):
+                try:
+                    nested = json.loads(d["row"] or "{}")
+                    if isinstance(nested, dict):
+                        for k, v in nested.items():
+                            d.setdefault(k, v)
+                except Exception:
+                    pass
+            if self.record_decision(d):
+                n += 1
+        return n
+
     def hydrate(self, snapshot: dict[str, Any] | None) -> dict[str, int]:
         snap = snapshot or {}
         return {
@@ -900,6 +1014,7 @@ class IntelligenceMemory:
             "creator_outcomes": self.load_creator_outcomes(snap.get("creator_outcomes") or []),
             "fingerprints": self.load_fingerprints(snap.get("fingerprints") or []),
             "fingerprint_outcomes": self.load_fingerprint_outcomes(snap.get("fingerprint_outcomes") or []),
+            "decisions": self.load_decisions(snap.get("decisions") or []),
         }
 
     def to_stats(self) -> dict[str, int]:
@@ -911,6 +1026,7 @@ class IntelligenceMemory:
             "relationships": len(self.relationships),
             "fingerprints": len(self.fingerprints),
             "fingerprint_outcomes": len(self.fingerprint_outcomes),
+            "intelligence_decisions": len(self.decisions),
         }
 
 

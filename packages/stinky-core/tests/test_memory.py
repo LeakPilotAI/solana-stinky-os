@@ -197,6 +197,11 @@ def test_relationship_requires_prior_shared_mints():
     rel = mem.relationships_as_of([W, W2], as_of=T0 + timedelta(days=2), exclude_mint=MINT_C, min_shared=2)
     assert rel["link_count"] == 1
     assert rel["links"][0]["shared_mints"] == 2
+    assert rel["links"][0]["prior_mint_count"] == 2
+    assert rel["links"][0]["evidence_count"] == 2
+    assert rel["links"][0]["first_seen"] is not None
+    assert rel["links"][0]["last_seen"] is not None
+    assert rel["links"][0]["first_seen"] <= rel["links"][0]["last_seen"]
     too_early = mem.relationships_as_of([W, W2], as_of=T0 + timedelta(minutes=1), exclude_mint=MINT_C, min_shared=2)
     assert too_early["link_count"] == 0
 
@@ -285,6 +290,9 @@ def test_deployer_buyer_requires_two_prior_mints():
     assert len(two) == 1
     assert two[0]["kind"] == "deployer_buyer"
     assert two[0]["shared_mints"] == 2
+    assert two[0]["prior_mint_count"] == 2
+    assert two[0]["first_seen"] is not None
+    assert two[0]["last_seen"] is not None
     future = mem.deployer_buyer_as_of([W], as_of=T0 + timedelta(minutes=1), exclude_mint=MINT_C)
     assert future == []
 
@@ -392,6 +400,17 @@ def test_sqlite_restart_hydration_reconstructs_as_of():
         mem.record_outcome(mint=MINT_B, labeled_at=T0 + timedelta(hours=1), label="RUNNER", wallets=[W])
         mem.record_outcome(mint=MINT_C, labeled_at=T0 + timedelta(hours=1), label="RUNNER", wallets=[W])
         mem.record_creator(creator=CREATOR, mint=MINT_A, observed_at=T0)
+        mem.record_decision({
+            "mint": MINT_A,
+            "decision_timestamp": T0.isoformat(),
+            "pipeline_status": "UNKNOWN",
+            "has_intelligence": False,
+            "promote": False,
+            "stinky_score": None,
+            "alert_ok": False,
+            "volume_m5_usd": 180_000,
+            "protocol": "pumpswap",
+        })
         before = store.counts()
         store.persist(mem)
         after = store.counts()
@@ -402,6 +421,10 @@ def test_sqlite_restart_hydration_reconstructs_as_of():
         perf = mem2.wallet_performance_as_of([W], as_of=T0 + timedelta(days=1), exclude_mint=MINT_D)
         assert perf[W]["sample_resolved"] == 3
         assert perf[W]["hit_rate"] == 1.0
+        assert after["intelligence_decisions"] == 1
+        assert len(mem2.decisions) == 1
+        assert mem2.decisions[0]["mint"] == MINT_A
+        assert mem2.decisions[0]["promote"] is False
         inv = investigate(
             {
                 "mint": MINT_D,
