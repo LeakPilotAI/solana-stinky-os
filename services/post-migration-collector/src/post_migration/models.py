@@ -3,19 +3,19 @@
 from __future__ import annotations
 
 from datetime import datetime
-from enum import StrEnum
+from enum import Enum
 from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 
 
-class TradeSide(StrEnum):
+class TradeSide(str, Enum):
     BUY = "buy"
     SELL = "sell"
 
 
-class TradeClass(StrEnum):
+class TradeClass(str, Enum):
     """Deterministic transaction classification (collect once, derive many)."""
 
     UNKNOWN = "unknown"
@@ -30,7 +30,7 @@ class TradeClass(StrEnum):
     FEE = "fee"
 
 
-class TrackStatus(StrEnum):
+class TrackStatus(str, Enum):
     ACTIVE = "active"
     COMPLETED = "completed"
     FAILED = "failed"

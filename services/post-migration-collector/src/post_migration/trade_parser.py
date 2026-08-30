@@ -63,19 +63,47 @@ def _sol_from_amount(amt: float | None) -> float | None:
     return amt
 
 
+def classify_side(raw: Any) -> TradeSide | None:
+    """Map a provider side string to BUY/SELL. Unknown → None (never guess)."""
+    s = str(raw or "").strip().lower()
+    if s in ("buy", "buy_exact_in", "buy_exact_out"):
+        return TradeSide.BUY
+    if s in ("sell", "sell_exact_in", "sell_exact_out"):
+        return TradeSide.SELL
+    return None
+
+
+def trade_identity(t: ObservedTrade) -> tuple[str, str, str]:
+    return (t.signature, t.wallet, t.side.value)
+
+
+def dedupe_trades(trades: list[ObservedTrade]) -> list[ObservedTrade]:
+    """Deduplicate by signature + wallet + side. Keep chronological order."""
+    seen: set[tuple[str, str, str]] = set()
+    unique: list[ObservedTrade] = []
+    for t in trades:
+        key = trade_identity(t)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(t)
+    unique.sort(key=lambda x: (x.traded_at, x.signature))
+    return unique
+
+
 def parse_normalized_trade(raw: dict[str, Any], *, mint: str) -> ObservedTrade | None:
     """Parse a already-normalized trade dict (fixtures / internal)."""
     wallet = raw.get("wallet") or raw.get("address")
-    side_raw = (raw.get("side") or "").lower()
+    side = classify_side(raw.get("side") or raw.get("type"))
     sig = raw.get("signature") or raw.get("tx")
-    if not wallet or side_raw not in ("buy", "sell") or not sig:
+    if not wallet or side is None or not sig:
         return None
     if raw.get("mint") and raw["mint"] != mint:
         return None
     return ObservedTrade(
         mint=mint,
         wallet=str(wallet),
-        side=TradeSide.BUY if side_raw == "buy" else TradeSide.SELL,
+        side=side,
         signature=str(sig),
         traded_at=_ts(raw.get("traded_at") or raw.get("timestamp") or raw.get("blockTime")),
         slot=_int(raw.get("slot")),
@@ -337,15 +365,14 @@ def rank_early_buyers(
 def parse_pump_v2_trade(raw: dict[str, Any], *, mint: str) -> ObservedTrade | None:
     """Parse one row from swap-api.pump.fun /v2/coins/:mint/trades (free, no key)."""
     wallet = raw.get("userAddress") or raw.get("user") or raw.get("wallet")
-    side_raw = str(raw.get("type") or raw.get("side") or "").lower()
+    side = classify_side(raw.get("type") or raw.get("side"))
     sig = raw.get("tx") or raw.get("signature") or raw.get("txHash")
-    if not wallet or side_raw not in ("buy", "sell") or not sig:
+    if not wallet or side is None or not sig:
         return None
     if raw.get("mint") and str(raw["mint"]) != mint:
         return None
     if not _is_user_wallet(str(wallet)):
         return None
-    side = TradeSide.BUY if side_raw == "buy" else TradeSide.SELL
     tclass = TradeClass.BUY if side == TradeSide.BUY else TradeClass.SELL
     slot = None
     slot_raw = raw.get("slotIndexId") or raw.get("slot")
@@ -437,6 +464,8 @@ def parse_rpc_json_parsed(tx: dict[str, Any], *, mint: str) -> list[ObservedTrad
         delta = post.get(owner, 0.0) - pre.get(owner, 0.0)
         if abs(delta) < 1e-12:
             continue
+        # Token-balance delta is the only accepted direction signal.
+        # Do not infer a SELL merely because SOL moved.
         side = TradeSide.BUY if delta > 0 else TradeSide.SELL
         tclass = TradeClass.BUY if side == TradeSide.BUY else TradeClass.SELL
         sol_amount = None
@@ -447,9 +476,9 @@ def parse_rpc_json_parsed(tx: dict[str, Any], *, mint: str) -> list[ObservedTrad
                 sol_amount = abs(sol_delta)
             except (TypeError, ValueError):
                 sol_amount = None
+        if not _is_user_wallet(owner):
+            continue
         wallet = owner
-        if fee_payer and _is_user_wallet(fee_payer):
-            wallet = fee_payer
         out.append(
             ObservedTrade(
                 mint=mint,

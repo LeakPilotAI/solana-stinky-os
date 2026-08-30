@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from stinky_core.events.base import Event, EventType
-from stinky_core.quality.validator import EventValidator
+from stinky_core.quality.validator import EventValidator, validate_market_row
 
 
 @pytest.fixture
@@ -66,3 +66,40 @@ def test_validate_or_raise(validator: EventValidator):
     event = Event(event_type=EventType.TOKEN_LAUNCH, payload={})
     with pytest.raises(ValueError, match="validation failed"):
         validator.validate_or_raise(event)
+
+
+def test_market_row_negative_rejected():
+    r = validate_market_row(
+        {
+            "mint": "AbCdEf1234567890AbCdEf1234567890pump",
+            "liquidity_usd": -1,
+        }
+    )
+    assert r.is_valid is False
+    assert any("negative" in e for e in r.errors)
+
+
+def test_market_row_bad_address_rejected():
+    r = validate_market_row({"mint": "not a mint", "volume_usd": 1})
+    assert r.is_valid is False
+
+
+def test_market_row_score_range():
+    r = validate_market_row(
+        {
+            "mint": "AbCdEf1234567890AbCdEf1234567890pump",
+            "stinky_score": 150,
+        }
+    )
+    assert r.is_valid is False
+    assert any("score" in e for e in r.errors)
+
+
+def test_market_row_confidence_range():
+    r = validate_market_row(
+        {
+            "mint": "AbCdEf1234567890AbCdEf1234567890pump",
+            "confidence": 1.5,
+        }
+    )
+    assert r.is_valid is False

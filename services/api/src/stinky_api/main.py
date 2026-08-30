@@ -43,6 +43,33 @@ app.add_middleware(
 )
 
 
+@app.post("/v1/filter/evaluate")
+async def filter_evaluate(payload: dict) -> dict:
+    """Evaluate a market dict through the canonical engine. No scoring."""
+    from stinky_core.admission import FILTER_VERSION, evaluate_market, filter_stats
+
+    decision = evaluate_market(payload)
+    return {
+        "eligible": decision.eligible,
+        "accepted": decision.accepted,
+        "rejection_reason": decision.rejection_reason,
+        "reason_codes": decision.reason_codes,
+        "failed_filters": decision.failed_filters,
+        "passed_filters": decision.passed_filters,
+        "normalized_metrics": decision.normalized_metrics,
+        "source_metadata": decision.source_metadata,
+        "filter_version": decision.filter_version or FILTER_VERSION,
+        "stats": filter_stats.snapshot(),
+    }
+
+
+@app.get("/v1/system/filter-stats")
+async def filter_stats_endpoint() -> dict:
+    from stinky_core.admission import FILTER_VERSION, filter_stats
+
+    return {"filter_version": FILTER_VERSION, "stats": filter_stats.snapshot()}
+
+
 @app.get("/health")
 async def health(session: Annotated[AsyncSession, Depends(get_session)]) -> dict:
     from sqlalchemy import text
@@ -78,7 +105,7 @@ async def health(session: Annotated[AsyncSession, Depends(get_session)]) -> dict
 async def _trending_m5(
     *,
     min_volume_usd: float = 100_000.0,
-    min_fees_sol: float = 5.0,
+    min_fees_sol: float = 1.0,
     limit: int = 30,
 ) -> list[dict]:
     """Pump-only trending: measured 5m volume >= threshold AND mint ends with pump.
@@ -333,7 +360,7 @@ async def command_center() -> dict:
                 )
             ).mappings().all()
             out = []
-            min_fees = 5.0
+            min_fees = 1.0
             for r in rows:
                 d = dict(r)
                 fees = d.get("global_fees_paid_sol")
@@ -343,24 +370,26 @@ async def command_center() -> dict:
                     ff = float(fees) if fees is not None else None
                 except (TypeError, ValueError):
                     ff = None
-                if d.get("global_fees_verified") is False:
-                    continue
-                if ff is None or ff != ff or ff < 0:
-                    continue
-                if ff + 1e-9 < min_fees:
-                    continue
-                # HARD volume floor $50k 5m for CC runners list
-                try:
-                    vol = float(d.get("volume_m5_usd")) if d.get("volume_m5_usd") is not None else None
-                except (TypeError, ValueError):
-                    vol = None
-                if vol is None or vol != vol or vol + 1e-9 < 50_000.0:
+                gated = queries.apply_canonical_gate(
+                    {
+                        **d,
+                        "fees_sol": ff,
+                        "global_fees_sol": ff,
+                        "global_fees_verified": d.get("global_fees_verified"),
+                        "protocol": "pumpfun",
+                    },
+                    min_fees_sol=min_fees,
+                )
+                if not gated.get("eligible"):
                     continue
                 if d.get("migration_at") is not None and hasattr(d["migration_at"], "isoformat"):
                     d["migration_at"] = d["migration_at"].isoformat()
                 d["fees_sol"] = ff
                 d["global_fees_paid_sol"] = ff
                 d["status"] = "alerted"
+                d["eligible"] = True
+                d["rejection_reason"] = None
+                d["reason_codes"] = gated.get("reason_codes") or []
                 out.append(d)
             out.sort(key=lambda x: x.get("migration_at") or "", reverse=True)
             return out[:20]
@@ -490,7 +519,7 @@ async def command_center() -> dict:
         _safe("wallets", _wallets, [], 6.0),
         _safe("pipeline", _pipeline, {"available": False, "tables": {}}, 6.0),
         _safe("alert_precision", _precision, {"available": False, "counts": {}}, 6.0),
-        _safe("trending", lambda: _trending_m5(min_volume_usd=100_000.0, min_fees_sol=5.0, limit=25), [], 8.0),
+        _safe("trending", lambda: _trending_m5(min_volume_usd=100_000.0, min_fees_sol=1.0, limit=25), [], 8.0),
     )
 
     opportunity = []
@@ -545,7 +574,7 @@ async def command_center() -> dict:
 @app.get("/v1/trending")
 async def trending(
     min_volume_usd: float = Query(100_000.0, ge=0.0),
-    min_fees_sol: float = Query(5.0, ge=0.0),
+    min_fees_sol: float = Query(1.0, ge=0.0),
     limit: int = Query(30, ge=1, le=100),
 ) -> dict:
     """Trending by measured 5m volume ? age independent."""
@@ -567,12 +596,12 @@ async def trending(
 async def runners(
     session: Annotated[AsyncSession, Depends(get_session)],
     limit: int = Query(50, ge=1, le=200),
-    min_fees_sol: float = Query(5.0, ge=0.0),
-    min_volume_m5_usd: float = Query(50_000.0, ge=0.0),
+    min_fees_sol: float = Query(1.0, ge=0.0),
+    min_volume_m5_usd: float = Query(100_000.0, ge=0.0),
     enrich_fees: bool = Query(False),
     pump_only: bool = Query(True),
 ) -> dict:
-    """Live runners: fees >= min AND 5m volume >= min (defaults 5 SOL / $50k)."""
+    """Live runners: canonical eligibility first (fees >= 1 SOL, vol >= $100k)."""
     items = await queries.recent_migrations(
         session,
         limit=limit,

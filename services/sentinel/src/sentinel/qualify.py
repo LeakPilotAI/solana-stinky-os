@@ -1,18 +1,7 @@
-"""Canonical hard qualification for the fresh Pump migration universe.
+"""Early qualification for the fresh Pump migration universe.
 
-A market enters the *migration observation* universe ONLY if:
-  - pump mint suffix (when required)
-  - allowed DEX (pump family)
-  - global fees known + verified
-  - global_fees_paid_sol >= MIN_GLOBAL_FEES_PAID_SOL (default 5.0 — hard ops floor)
-
-Fail-closed. Unknown / unverified / low fees → REJECT.
-Score, volume, smart money, liquidity MUST NOT override this gate.
-
-For full opportunity admission (liquidity + volume + mcap + social + protocol),
-use sentinel.filter_engine.StinkyFilterEngine / evaluate_admission().
-This module remains the thin, early gate used at ALERT_CANDIDATE emit time
-when only fees + dex are known.
+Thin wrapper around the canonical StinkyFilterEngine (early-gate config).
+Do not reimplement fee / protocol logic here.
 """
 
 from __future__ import annotations
@@ -20,9 +9,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-# Authoritative constant — keep in sync with STINKY_MIN_FEES_SOL / FilterConfig
-# Hard ops floor. Override via STINKY_MIN_FEES_SOL.
-MIN_GLOBAL_FEES_PAID_SOL = 5.0
+from sentinel.filter_engine import (
+    DEFAULT_MIN_GLOBAL_FEES_SOL,
+    EARLY_GATE_CONFIG,
+    FilterConfig,
+    ReasonCode,
+    evaluate_market,
+)
+
+MIN_GLOBAL_FEES_PAID_SOL = DEFAULT_MIN_GLOBAL_FEES_SOL
 
 
 @dataclass(frozen=True)
@@ -31,18 +26,6 @@ class QualifyResult:
     reason: str
     global_fees_paid_sol: float | None = None
     required: float = MIN_GLOBAL_FEES_PAID_SOL
-
-
-def _safe_float(v: Any) -> float | None:
-    if v is None:
-        return None
-    try:
-        f = float(v)
-    except (TypeError, ValueError):
-        return None
-    if f != f or f < 0:  # NaN or negative
-        return None
-    return f
 
 
 def qualify_fresh_pump_migration(
@@ -56,72 +39,59 @@ def qualify_fresh_pump_migration(
     allowed_dex_ids: set[str] | None = None,
     denied_dex_ids: set[str] | None = None,
 ) -> QualifyResult:
-    """Single authoritative *early* qualification function (fees + pump dex).
+    """Early gate: mint + DEX + verified global fees. Fail closed.
 
-    Downstream systems (alerts, Discord, opportunity, dashboard qualified lists)
-    MUST respect this result. Do not re-implement parallel gates.
-
-    CRITICAL: If global_fees_paid_sol is unavailable or cannot be authoritatively
-    verified, REJECT. Never treat missing fee data as passing.
+    Downstream systems MUST respect this result. Intelligence cannot override it.
     """
     required = float(min_fees_sol) if min_fees_sol is not None else MIN_GLOBAL_FEES_PAID_SOL
     mint_s = (mint or "").strip()
     if not mint_s:
-        return QualifyResult(False, "INVALID_MIGRATION", required=required)
+        return QualifyResult(False, ReasonCode.INVALID_MINT, required=required)
 
     if require_pump_mint_suffix and not mint_s.lower().endswith("pump"):
-        return QualifyResult(False, "NOT_PUMP_MINT", required=required)
+        return QualifyResult(False, ReasonCode.INVALID_MARKET_DATA, required=required)
 
-    denied = denied_dex_ids or {
-        "meteora",
-        "raydium",
-        "orca",
-        "phoenix",
-        "lifinity",
-        "saber",
-        "aldrin",
-        "fluxbeam",
-        "pumpamm",
-    }
-    allowed = allowed_dex_ids or {"pumpswap", "pumpfun", "pump"}
-    dex = (dex_id or "").strip().lower()
-    if dex:
-        if dex in denied or any(d in dex for d in denied):
-            return QualifyResult(False, f"DEX_BLOCKED:{dex}", required=required)
-        if allowed and not (dex in allowed or any(a in dex for a in allowed)):
-            return QualifyResult(False, f"DEX_NOT_ALLOWED:{dex}", required=required)
-
-    # Fail closed on verification
-    if global_fees_verified is False:
-        return QualifyResult(
-            False, "GLOBAL_FEES_UNVERIFIED", global_fees_paid_sol=None, required=required
+    cfg = FilterConfig(
+        min_global_fees_sol=required,
+        require_liquidity=False,
+        require_volume=False,
+        require_market_cap=False,
+        require_at_least_one_social=False,
+        require_migrated=False,
+        record_stats=EARLY_GATE_CONFIG.record_stats,
+    )
+    if allowed_dex_ids:
+        cfg.allowed_protocols = frozenset(
+            a.strip().lower().replace(" ", "").replace("_", "").replace("-", "")
+            for a in allowed_dex_ids
         )
+        cfg.reject_unknown_protocol = True
+    if denied_dex_ids:
+        cfg.denied_protocols = frozenset(
+            a.strip().lower().replace(" ", "").replace("_", "").replace("-", "")
+            for a in denied_dex_ids
+        ) | cfg.denied_protocols
 
-    fees = _safe_float(global_fees_paid_sol)
-    if fees is None:
-        return QualifyResult(False, "GLOBAL_FEES_UNKNOWN", required=required)
-
-    # Require explicit verified=True when a number is present
-    if global_fees_verified is not True:
-        return QualifyResult(
-            False,
-            "GLOBAL_FEES_UNVERIFIED",
-            global_fees_paid_sol=fees,
-            required=required,
-        )
-
-    # Strict floor with float epsilon
-    if fees + 1e-9 < required:
-        return QualifyResult(
-            False,
-            "LOW_GLOBAL_FEES",
-            global_fees_paid_sol=fees,
-            required=required,
-        )
-
+    decision = evaluate_market(
+        {
+            "mint": mint_s,
+            "protocol": dex_id,
+            "dex_id": dex_id,
+            "global_fees_sol": global_fees_paid_sol,
+            "global_fees_verified": global_fees_verified,
+            "migrated": True,
+        },
+        config=cfg,
+    )
+    reason = "ok" if decision.eligible else (decision.rejection_reason or ReasonCode.NOT_ELIGIBLE)
+    fees = decision.normalized_metrics.get("global_fees_sol")
+    try:
+        fees_f = float(fees) if fees is not None else None
+    except (TypeError, ValueError):
+        fees_f = None
     return QualifyResult(
-        True,
-        "ok",
-        global_fees_paid_sol=fees,
+        accepted=decision.eligible,
+        reason=reason,
+        global_fees_paid_sol=fees_f,
         required=required,
     )

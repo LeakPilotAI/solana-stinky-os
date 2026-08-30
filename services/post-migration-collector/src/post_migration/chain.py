@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -21,6 +22,7 @@ import structlog
 from post_migration.config import settings
 from post_migration.models import MarketSnapshot, ObservedTrade
 from post_migration.trade_parser import (
+    dedupe_trades,
     parse_helius_swap,
     parse_pump_v2_trade,
     parse_rpc_json_parsed,
@@ -82,17 +84,24 @@ def _mark_helius_throttled(
     )
 
 
-def _dedupe(trades: list[ObservedTrade]) -> list[ObservedTrade]:
-    seen: set[tuple[str, str, str]] = set()
-    unique: list[ObservedTrade] = []
-    for t in trades:
-        key = (t.signature, t.wallet, t.side.value)
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(t)
-    unique.sort(key=lambda x: (x.traded_at, x.signature))
-    return unique
+@dataclass
+class TradeSourceStatus:
+    trade_source: str = "none"
+    trade_source_status: str = "idle"
+    trade_source_latency_ms: float | None = None
+    trade_source_error: str | None = None
+    trade_source_coverage: float | None = None
+    pages: int = 0
+    raw_rows: int = 0
+    parsed: int = 0
+
+
+_last_source_status = TradeSourceStatus()
+
+
+def last_trade_source_status() -> TradeSourceStatus:
+    return _last_source_status
+
 
 
 class ChainClient:
@@ -114,23 +123,46 @@ class ChainClient:
         *,
         pool: str | None = None,
     ) -> list[ObservedTrade]:
+        global _last_source_status
+        t0 = time.monotonic()
+        error: str | None = None
         trades = await self._fetch_pump_v2(mint)
         source = "pump.v2"
+        status = "ok" if trades else "empty"
         if not trades:
             trades = await self._fetch_public_rpc(mint, pool=pool)
             source = "rpc"
+            status = "ok" if trades else "empty"
         if not trades and helius_enabled() and not helius_throttled():
             trades = await self._fetch_helius(mint, pool=pool)
             source = "helius"
+            status = "ok" if trades else "empty"
+        if not trades:
+            error = "no_trades"
+            status = "empty"
 
-        unique = _dedupe(trades)
+        unique = dedupe_trades(trades)
+        latency = (time.monotonic() - t0) * 1000.0
         n_buy = sum(1 for t in unique if t.side.value == "buy")
         n_sell = sum(1 for t in unique if t.side.value == "sell")
+        coverage = None
+        if unique:
+            coverage = 1.0
+        _last_source_status = TradeSourceStatus(
+            trade_source=source,
+            trade_source_status=status,
+            trade_source_latency_ms=round(latency, 1),
+            trade_source_error=error,
+            trade_source_coverage=coverage,
+            parsed=len(unique),
+        )
         logger.info(
             "chain.trades_parsed",
             mint=mint[:12],
             pool=(pool or "")[:12],
             source=source,
+            status=status,
+            latency_ms=round(latency, 1),
             trades=len(unique),
             buys=n_buy,
             sells=n_sell,

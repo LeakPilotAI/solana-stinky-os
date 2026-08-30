@@ -8,14 +8,23 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
+from pathlib import Path
 from typing import Any
 
 import discord
 import redis.asyncio as redis
 import structlog
 
+_CORE = Path(__file__).resolve().parents[4] / "packages" / "stinky-core" / "src"
+if _CORE.exists() and str(_CORE) not in sys.path:
+    sys.path.insert(0, str(_CORE))
+
 from discord_bot.config import settings
 from discord_bot.store import Store
+from stinky_core.admission import FilterConfig, can_alert, evaluate_admission
+from stinky_core.identity import alert_candidate_key, canonical_mint
+
 
 logger = structlog.get_logger(__name__)
 
@@ -113,137 +122,71 @@ class AlertDispatcher:
                 pass
 
     def _passes_quality_gate(self, payload: dict[str, Any]) -> bool:
-        """High-potential only: pump + fees + score + meaningful early buyers.
+        """Market-quality gate FIRST (canonical engine), then intelligence gate.
 
-        Volume ≥ threshold is already enforced by Sentinel before ALERT_CANDIDATE.
+        Intelligence (score / meaningful buyers) cannot rescue a failed hard gate.
         """
-        mint = str(payload.get("mint") or "?")
-        score = payload.get("stinky_score")
-        min_score = float(settings.alert_min_score)
-        min_mb = int(settings.alert_min_meaningful_buyers)
-        mb_raw = payload.get("meaningful_buyer_count")
-        mb = int(mb_raw) if mb_raw is not None else None
-
-        if getattr(settings, "require_pump_mint_suffix", True):
-            if not mint.lower().endswith("pump"):
-                logger.info("alerter.gate_blocked", mint=mint, reason="mint_not_pump_suffix")
-                return False
-
-        dex = str(payload.get("dex_id") or "").lower()
-        denied = {x.strip().lower() for x in str(getattr(settings, "denied_dex_ids", "")).split(",") if x.strip()}
-        allowed = {x.strip().lower() for x in str(getattr(settings, "allowed_dex_ids", "")).split(",") if x.strip()}
-        if dex and dex in denied:
-            logger.info("alerter.gate_blocked", mint=mint, reason="dex_denied", dex_id=dex)
-            return False
-        if allowed and dex and dex not in allowed:
-            logger.info("alerter.gate_blocked", mint=mint, reason="dex_not_allowed", dex_id=dex)
-            return False
-
-        # HARD GATE: verified global fees paid (SOL). Fail-closed.
-        # Missing / None / NaN / negative / malformed / < min → REJECT.
-        # Do NOT default missing fees to 0 and accept.
-        min_fees = float(getattr(settings, "min_fees_sol", 5.0) or 5.0)
-        if min_fees > 0:
+        mint = canonical_mint(payload.get("mint")) or str(payload.get("mint") or "?")
+        cfg = FilterConfig(
+            min_global_fees_sol=float(getattr(settings, "min_fees_sol", 1.0) or 1.0),
+        )
+        fees_raw = payload.get("global_fees_sol")
+        if fees_raw is None:
             fees_raw = payload.get("fees_sol")
-            if fees_raw is None:
-                fees_raw = payload.get("total_fees_sol")
-            fees_verified = payload.get("global_fees_verified")
-            if fees_verified is False:
-                logger.info(
-                    "alerter.gate_blocked",
-                    mint=mint,
-                    reason="GLOBAL_FEES_UNVERIFIED",
-                    fees=fees_raw,
-                    min_fees=min_fees,
-                )
-                return False
-            if fees_raw is None:
-                logger.info(
-                    "alerter.gate_blocked",
-                    mint=mint,
-                    reason="GLOBAL_FEES_UNKNOWN",
-                    min_fees=min_fees,
-                )
-                return False
-            try:
-                fees_f = float(fees_raw)
-            except (TypeError, ValueError):
-                logger.info(
-                    "alerter.gate_blocked",
-                    mint=mint,
-                    reason="GLOBAL_FEES_INVALID",
-                    fees=fees_raw,
-                    min_fees=min_fees,
-                )
-                return False
-            if fees_f != fees_f or fees_f < 0:  # NaN or negative
-                logger.info(
-                    "alerter.gate_blocked",
-                    mint=mint,
-                    reason="GLOBAL_FEES_INVALID",
-                    fees=fees_f,
-                    min_fees=min_fees,
-                )
-                return False
-            # Safe compare: reject strictly below threshold (use epsilon for float)
-            if fees_f + 1e-9 < min_fees:
-                logger.info(
-                    "alerter.gate_blocked",
-                    mint=mint,
-                    reason="LOW_GLOBAL_FEES",
-                    fees=fees_f,
-                    min_fees=min_fees,
-                    global_fees_paid_sol=fees_f,
-                    required=min_fees,
-                )
-                return False
+        if fees_raw is None:
+            fees_raw = payload.get("total_fees_sol")
 
-        if score is None:
+        decision = evaluate_admission(
+            mint=mint,
+            protocol=payload.get("protocol") or payload.get("dex_id"),
+            dex_id=payload.get("dex_id"),
+            global_fees_sol=fees_raw,
+            global_fees_verified=payload.get("global_fees_verified"),
+            global_fees_source=payload.get("global_fees_source"),
+            liquidity_usd=payload.get("liquidity_usd"),
+            volume_usd=payload.get("volume_usd")
+            or payload.get("volume_m5_usd")
+            or payload.get("volume_5m_usd"),
+            market_cap_usd=payload.get("market_cap_usd") or payload.get("mcap_usd"),
+            twitter=payload.get("twitter"),
+            website=payload.get("website"),
+            telegram=payload.get("telegram"),
+            tiktok=payload.get("tiktok"),
+            socials=payload.get("socials") if isinstance(payload.get("socials"), dict) else None,
+            migrated=True,
+            tab="migrated",
+            config=cfg,
+        )
+        if not decision.accepted:
             logger.info(
                 "alerter.gate_blocked",
                 mint=mint,
-                reason="missing_score",
-                min_score=min_score,
+                reason=decision.rejection_reason,
+                filter_version=decision.filter_version,
+                failed=decision.failed_filters,
             )
             return False
 
-        score_f = float(score)
-        if score_f < min_score:
-            logger.info(
-                "alerter.gate_blocked",
-                mint=mint,
-                reason="score_below_min",
-                score=score_f,
-                min_score=min_score,
-                meaningful_buyers=mb,
-                entity_launches=payload.get("entity_launch_count"),
-                smart_wallets=payload.get("smart_wallet_count"),
-            )
-            return False
-
-        if mb is None or mb < min_mb:
-            logger.info(
-                "alerter.gate_blocked",
-                mint=mint,
-                reason="meaningful_buyers_below_min",
-                score=score_f,
-                meaningful_buyers=mb,
-                min_meaningful=min_mb,
-                early_buyers=payload.get("early_buyer_count"),
-            )
+        ok, intel_reason = can_alert(
+            decision,
+            score=payload.get("stinky_score"),
+            meaningful_buyers=payload.get("meaningful_buyer_count"),
+            min_score=float(settings.alert_min_score),
+            min_meaningful_buyers=int(settings.alert_min_meaningful_buyers),
+        )
+        if not ok:
+            logger.info("alerter.gate_blocked", mint=mint, reason=intel_reason)
             return False
 
         logger.info(
             "alerter.gate_pass",
             mint=mint,
-            score=score_f,
-            min_score=min_score,
-            meaningful_buyers=mb,
-            min_meaningful=min_mb,
-            entity_launches=payload.get("entity_launch_count"),
-            smart_wallets=payload.get("smart_wallet_count"),
+            score=payload.get("stinky_score"),
+            meaningful_buyers=payload.get("meaningful_buyer_count"),
+            fees=decision.metrics.get("global_fees_sol"),
         )
         return True
+
 
     def _copy_block(self, payload: dict[str, Any]) -> str:
         """Plain-text block optimized for mobile copy → Axiom."""
@@ -518,7 +461,7 @@ class AlertDispatcher:
             return True
         assert self._redis is not None
         try:
-            key = f"stinky:alerted:{mint}"
+            key = alert_candidate_key(mint) or f"alert_candidate:{mint}"
             if await self._redis.exists(key):
                 self._alerted_mints.add(mint)
                 return True
@@ -538,7 +481,7 @@ class AlertDispatcher:
         self._alerted_mints.add(mint)
         assert self._redis is not None
         try:
-            key = f"stinky:alerted:{mint}"
+            key = alert_candidate_key(mint) or f"alert_candidate:{mint}"
             await self._redis.set(key, "1", ex=48 * 3600)
         except Exception as exc:
             logger.debug("alerter.mark_redis_failed", error=str(exc), mint=mint)

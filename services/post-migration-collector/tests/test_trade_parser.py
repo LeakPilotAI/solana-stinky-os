@@ -7,6 +7,8 @@ from pathlib import Path
 
 from post_migration.models import TradeSide
 from post_migration.trade_parser import (
+    classify_side,
+    dedupe_trades,
     parse_helius_swap,
     parse_normalized_trade,
     parse_pump_v2_trade,
@@ -39,27 +41,29 @@ def test_rank_early_buyers_skips_dust_and_dedupes():
 
 
 def test_parse_helius_token_transfers():
+    buyer = "BuyerAAA111111111111111111111111111111111"
+    pool = "PoolXYZ1111111111111111111111111111111111"
     tx = {
         "signature": "HeliusSig1",
         "timestamp": 1690000000,
         "slot": 42,
-        "feePayer": "BuyerAAA",
+        "feePayer": buyer,
         "tokenTransfers": [
             {
                 "mint": MINT,
-                "fromUserAccount": "PoolXYZ",
-                "toUserAccount": "BuyerAAA",
+                "fromUserAccount": pool,
+                "toUserAccount": buyer,
                 "tokenAmount": 12345,
             }
         ],
         "nativeTransfers": [
-            {"fromUserAccount": "BuyerAAA", "toUserAccount": "PoolXYZ", "amount": 1_500_000_000}
+            {"fromUserAccount": buyer, "toUserAccount": pool, "amount": 1_500_000_000}
         ],
     }
     trades = parse_helius_swap(tx, mint=MINT)
     assert len(trades) == 1
     assert trades[0].side == TradeSide.BUY
-    assert trades[0].wallet == "BuyerAAA"
+    assert trades[0].wallet == buyer
     assert trades[0].sol_amount == 1.5
 
 
@@ -114,3 +118,67 @@ def test_parse_pump_v2_rejects_program_accounts():
         mint=MINT,
     )
     assert t is None
+
+
+def test_unknown_side_not_guessed():
+    assert classify_side(None) is None
+    assert classify_side("swap") is None
+    assert classify_side("unknown") is None
+    assert classify_side("") is None
+    t = parse_pump_v2_trade(
+        {
+            "tx": "SigAmbiguous",
+            "timestamp": "2026-08-17T08:00:00.000Z",
+            "userAddress": "BuyerWallet1111111111111111111111111111111",
+            "type": "swap",
+            "amountSol": "1.0",
+        },
+        mint=MINT,
+    )
+    assert t is None
+    t2 = parse_normalized_trade(
+        {"wallet": "BuyerWallet1111111111111111111111111111111", "side": "maybe", "signature": "s1"},
+        mint=MINT,
+    )
+    assert t2 is None
+
+
+def test_duplicate_signature_one_trade():
+    raw = {
+        "tx": "SigDup",
+        "timestamp": "2026-08-17T08:00:00.000Z",
+        "userAddress": "BuyerWallet1111111111111111111111111111111",
+        "type": "buy",
+        "amountSol": "1.0",
+    }
+    a = parse_pump_v2_trade(raw, mint=MINT)
+    b = parse_pump_v2_trade(raw, mint=MINT)
+    assert a is not None and b is not None
+    unique = dedupe_trades([a, b])
+    assert len(unique) == 1
+
+
+def test_pool_and_program_wallets_excluded():
+    pool = parse_pump_v2_trade(
+        {
+            "tx": "SigPool",
+            "timestamp": "2026-08-17T08:00:00.000Z",
+            "userAddress": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+            "type": "buy",
+            "amountSol": "5.0",
+        },
+        mint=MINT,
+    )
+    prog = parse_pump_v2_trade(
+        {
+            "tx": "SigProg2",
+            "timestamp": "2026-08-17T08:00:00.000Z",
+            "userAddress": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "type": "buy",
+            "amountSol": "5.0",
+        },
+        mint=MINT,
+    )
+    assert pool is None
+    assert prog is None
+

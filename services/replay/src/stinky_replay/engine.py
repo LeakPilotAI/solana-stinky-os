@@ -10,6 +10,46 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from stinky_replay.config import settings
 
 
+def _canonical_gate(row: dict[str, Any]) -> tuple[bool, str | None]:
+    """Same filter as live. Fail closed if core is unavailable."""
+    try:
+        import sys
+        from pathlib import Path
+
+        core = Path(__file__).resolve().parents[4] / "packages" / "stinky-core" / "src"
+        if str(core) not in sys.path:
+            sys.path.insert(0, str(core))
+        from stinky_core.admission import can_alert, evaluate_market
+    except Exception:
+        return False, "FILTER_UNAVAILABLE"
+    decision = evaluate_market(
+        {
+            "mint": row.get("mint"),
+            "protocol": row.get("protocol") or row.get("dex_id") or "pumpfun",
+            "global_fees_sol": row.get("global_fees_sol") or row.get("fees_sol"),
+            "global_fees_verified": row.get("global_fees_verified"),
+            "liquidity_usd": row.get("liquidity_usd"),
+            "volume_usd": row.get("volume_m5_usd") or row.get("volume_usd"),
+            "market_cap_usd": row.get("market_cap_usd"),
+            "twitter": row.get("twitter"),
+            "website": row.get("website"),
+            "telegram": row.get("telegram"),
+            "migrated": True,
+            "tab": "migrated",
+        }
+    )
+    if not decision.eligible:
+        return False, decision.rejection_reason
+    ok, reason = can_alert(
+        decision,
+        score=row.get("score") or row.get("stinky_score"),
+        meaningful_buyers=row.get("meaningful_buyer_count"),
+        min_score=float(settings.alert_min_score),
+    )
+    return ok, reason
+
+
+
 def _engine():
     return create_async_engine(settings.database_url, pool_pre_ping=True)
 
@@ -116,7 +156,21 @@ class ReplayEngine:
                 if mint in seen_mints:
                     continue
                 seen_mints.add(mint)
-                gate_pass = float(score) >= min_score
+                payload = {
+                    "mint": mint,
+                    "protocol": "pumpfun",
+                    "global_fees_sol": r.get("global_fees_sol") or r.get("fees_sol"),
+                    "global_fees_verified": r.get("global_fees_verified"),
+                    "liquidity_usd": r.get("liquidity_usd"),
+                    "volume_m5_usd": r.get("volume_m5_usd"),
+                    "market_cap_usd": r.get("market_cap_usd"),
+                    "twitter": r.get("twitter"),
+                    "stinky_score": score,
+                    "score": score,
+                    "meaningful_buyer_count": r.get("meaningful_buyer_count"),
+                    "migrated": True,
+                }
+                gate_pass, _reason = _canonical_gate(payload)
                 if gate_pass:
                     passed += 1
 

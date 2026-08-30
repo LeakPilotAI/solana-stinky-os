@@ -1,6 +1,6 @@
 """Read-only SQL against Stinky OS Postgres tables.
 
-No business logic invention ? only surfaces derived state that already exists.
+No business logic invention — only surfaces derived state that already exists.
 """
 
 from __future__ import annotations
@@ -10,6 +10,62 @@ import httpx
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+try:
+    from stinky_core.admission import FilterConfig, evaluate_market
+except ImportError:  # pragma: no cover
+    evaluate_market = None  # type: ignore[assignment]
+    FilterConfig = None  # type: ignore[assignment]
+
+
+def apply_canonical_gate(row: dict[str, Any], *, min_fees_sol: float = 1.0) -> dict[str, Any]:
+    """Stamp eligibility from the single canonical engine. Fail closed."""
+    out = dict(row)
+    if evaluate_market is None:
+        out["eligible"] = False
+        out["rejection_reason"] = "FEES_UNKNOWN"
+        out["reason_codes"] = ["FEES_UNKNOWN"]
+        return out
+    fees = out.get("global_fees_sol")
+    if fees is None:
+        fees = out.get("fees_sol")
+    if fees is None:
+        fees = out.get("global_fees_paid_sol")
+    verified = out.get("global_fees_verified")
+    if verified is None and fees is not None:
+        verified = True
+    decision = evaluate_market(
+        {
+            "mint": out.get("mint"),
+            "protocol": out.get("protocol") or out.get("dex_id") or "pumpfun",
+            "dex_id": out.get("dex_id"),
+            "global_fees_sol": fees,
+            "global_fees_verified": verified,
+            "global_fees_source": out.get("global_fees_source") or "pump.fun",
+            "liquidity_usd": out.get("liquidity_usd"),
+            "volume_usd": out.get("volume_m5_usd") or out.get("volume_usd"),
+            "market_cap_usd": out.get("market_cap_usd") or out.get("fdv_usd"),
+            "twitter": out.get("twitter"),
+            "website": out.get("website"),
+            "telegram": out.get("telegram"),
+            "tiktok": out.get("tiktok"),
+            "migrated": True,
+            "tab": "migrated",
+        },
+        config=FilterConfig(min_global_fees_sol=float(min_fees_sol)),
+    )
+    out["eligible"] = decision.eligible
+    out["rejection_reason"] = decision.rejection_reason
+    out["reason_codes"] = decision.reason_codes
+    out["failed_filters"] = decision.failed_filters
+    out["passed_filters"] = decision.passed_filters
+    out["filter_version"] = decision.filter_version
+    out["normalized_metrics"] = decision.normalized_metrics
+    if fees is not None:
+        out["fees_sol"] = fees
+        out["global_fees_sol"] = fees
+    return out
+
 
 LEADERBOARD_DENYLIST = (
     "11111111111111111111111111111111",
@@ -118,17 +174,14 @@ async def recent_migrations(
     session: AsyncSession,
     limit: int = 25,
     *,
-    min_fees_sol: float = 5.0,
-    min_volume_m5_usd: float = 50_000.0,
+    min_fees_sol: float = 0.0,
     pump_only: bool = True,
     enrich_fees: bool = False,
 ) -> list[dict]:
-    """Live runners from migration_tracks + latest snapshots.
+    """Live runners from migration_tracks + latest snapshots (fast, realtime-friendly).
 
-    HARD GATES (defaults):
-      - min_fees_sol=5.0: fail-closed on missing/unverified/low global fees
-      - min_volume_m5_usd=50000: require measured 5m volume; missing/low volume DROPPED
-      - Score / mcap cannot override fees or volume floors
+    Fee enrichment is optional and off by default so the UI never hangs.
+    Pump filter keeps mint suffix ...pump when pump_only=True.
     """
     pump_clause = "WHERE lower(mt.mint) LIKE '%pump'" if pump_only else ""
     rows = (
@@ -188,25 +241,11 @@ async def recent_migrations(
                 if any(x in dex for x in ("raydium", "meteora", "orca")):
                     continue
         out.append(d)
-        if len(out) >= limit * 3:
+        if len(out) >= limit:
             break
 
-    # HARD VOLUME GATE: measured 5m volume required (default $50k)
-    if min_volume_m5_usd > 0:
-        vol_ok = []
-        for d in out:
-            try:
-                v = float(d["volume_m5_usd"]) if d.get("volume_m5_usd") is not None else None
-            except (TypeError, ValueError):
-                v = None
-            if v is None or v != v or v + 1e-9 < min_volume_m5_usd:
-                continue
-            vol_ok.append(d)
-        out = vol_ok
-
-    # HARD FEE GATE: if min_fees_sol > 0, always filter fail-closed (enrich as needed).
-    # Missing fee data from pump.fun MUST drop the token ? never show as opportunity.
-    if min_fees_sol > 0 and out:
+    # Fee enrich + HARD filter when min_fees_sol > 0 (fail-closed: unknown drops).
+    if enrich_fees and min_fees_sol > 0 and out:
         import asyncio
 
         async def _one(d: dict) -> dict:
@@ -219,7 +258,7 @@ async def recent_migrations(
                 try:
                     fees_f = await asyncio.wait_for(
                         _fetch_pump_fees_sol(str(d.get("mint") or "")),
-                        timeout=1.5,
+                        timeout=2.5,
                     )
                 except Exception:
                     fees_f = None
@@ -235,7 +274,7 @@ async def recent_migrations(
                 ff = float(d["fees_sol"]) if d.get("fees_sol") is not None else None
             except (TypeError, ValueError):
                 ff = None
-            # HARD GATE: unknown / invalid / below min ? reject from qualified list
+            # HARD GATE: unknown / invalid / below min → reject from qualified list
             if ff is None or ff != ff or ff < 0:
                 continue
             if ff + 1e-9 < min_fees_sol:
@@ -661,7 +700,7 @@ async def mint_detail(session: AsyncSession, mint: str) -> dict[str, Any] | None
 
 
 def explain_wallet(row: dict[str, Any]) -> dict[str, Any]:
-    """Deterministic 'why watch' from measured fields only ? no invented patterns."""
+    """Deterministic 'why watch' from measured fields only — no invented patterns."""
     early = int(row.get("early_buy_count") or 0)
     tokens = int(row.get("tokens_purchased") or 0)
     sells = int(row.get("total_sells") or 0)
@@ -686,14 +725,14 @@ def explain_wallet(row: dict[str, Any]) -> dict[str, Any]:
         reasons.append(f"{early} early entries (building sample)")
         score += early * 4.0
     elif early == 1:
-        reasons.append("Single early entry ? low sample")
+        reasons.append("Single early entry — low sample")
         score += 2.0
 
     if tokens >= 3:
         reasons.append(f"Active across {tokens} tokens")
         score += min(15.0, tokens * 2.0)
 
-    # Measured success on labeled outcomes (token_outcomes ? wallet_early_success)
+    # Measured success on labeled outcomes (token_outcomes → wallet_early_success)
     if es_rate is not None and es_sample >= 2:
         sr = float(es_rate)
         if sr > 1.0:
@@ -706,7 +745,7 @@ def explain_wallet(row: dict[str, Any]) -> dict[str, Any]:
         if on_runner >= 2:
             score += min(15.0, on_runner * 3.0)
         if on_fade >= 3 and sr < 0.35:
-            reasons.append(f"{on_fade} early fades ? caution")
+            reasons.append(f"{on_fade} early fades — caution")
             score -= min(10.0, on_fade * 1.5)
 
     hit_f = float(hit) if hit is not None else None
@@ -716,7 +755,7 @@ def explain_wallet(row: dict[str, Any]) -> dict[str, Any]:
         reasons.append(f"Hit rate {h*100:.0f}% on {sells} sells")
         score += h * 35.0
     elif sells == 0 and early > 0:
-        reasons.append("No closed sells yet ? entry timing only")
+        reasons.append("No closed sells yet — entry timing only")
         score += 5.0
 
     if avg_ret is not None and sells >= 2:
@@ -969,13 +1008,13 @@ async def entity_detail(session: AsyncSession, entity_id: str) -> dict[str, Any]
 
 
 async def discover_patterns(session: AsyncSession, limit: int = 25) -> dict[str, Any]:
-    """Deterministic pattern discovery from measured store ? no ML, no invention.
+    """Deterministic pattern discovery from measured store — no ML, no invention.
 
     Each pattern is a concrete query result with evidence counts.
     """
     patterns: list[dict[str, Any]] = []
 
-    # 1) Repeat early buyers (same wallet early on ?2 distinct mints)
+    # 1) Repeat early buyers (same wallet early on ≥2 distinct mints)
     try:
         rows = (
             await session.execute(
@@ -1054,7 +1093,7 @@ async def discover_patterns(session: AsyncSession, limit: int = 25) -> dict[str,
     except Exception:
         pass
 
-    # 3) High sample smart money (sells ?3 and hit_rate available)
+    # 3) High sample smart money (sells ≥3 and hit_rate available)
     try:
         rows = (
             await session.execute(
@@ -1084,7 +1123,7 @@ async def discover_patterns(session: AsyncSession, limit: int = 25) -> dict[str,
                     "kind": "measured_edge",
                     "title": "Measured edge (closed trades)",
                     "summary": (
-                        f"Hit rate {hr_f*100:.0f}% on {d.get('total_sells')} sells ? "
+                        f"Hit rate {hr_f*100:.0f}% on {d.get('total_sells')} sells · "
                         f"early={d.get('early_buy_count') or 0}"
                     ),
                     "confidence": min(0.9, 0.25 + 0.1 * int(d.get("total_sells") or 0)),
@@ -1095,7 +1134,7 @@ async def discover_patterns(session: AsyncSession, limit: int = 25) -> dict[str,
     except Exception:
         pass
 
-    # 4) Co-buy pairs (wallets that share ?2 mints as early buyers)
+    # 4) Co-buy pairs (wallets that share ≥2 mints as early buyers)
     try:
         rows = (
             await session.execute(
@@ -1381,7 +1420,7 @@ async def graph_overview(
                 {
                     "id": w,
                     "type": "wallet",
-                    "label": w[:6] + "?" + w[-4:] if len(w) > 12 else w,
+                    "label": w[:6] + "…" + w[-4:] if len(w) > 12 else w,
                     "degree": degree,
                     "early_mints": early_counts.get(w, 0),
                     "early_buy_count": p.get("early_buy_count"),
@@ -1414,7 +1453,7 @@ async def graph_overview(
                     {
                         "id": w,
                         "type": "wallet",
-                        "label": w[:6] + "?" + w[-4:],
+                        "label": w[:6] + "…" + w[-4:],
                         "degree": 0,
                         "early_mints": int(r["mints"]),
                     }
@@ -1541,7 +1580,7 @@ async def time_machine_wallet(
     *,
     days: int = 90,
 ) -> dict[str, Any] | None:
-    """Replay measured activity for a wallet over time ? no invented scores.
+    """Replay measured activity for a wallet over time — no invented scores.
 
     Points come from events (launches as deployer), migration_buyers (early entries),
     and wallet_trades (buys/sells) bucketed by day with running totals.
@@ -1770,7 +1809,7 @@ async def time_machine_wallet(
             "last_at": events_out[-1].get("at") if events_out else None,
         },
         "series": points,
-        "events": events_out[-200:],  # newest tail kept after sort ? re-sort desc for UI
+        "events": events_out[-200:],  # newest tail kept after sort — re-sort desc for UI
     }
 
 
@@ -1928,7 +1967,7 @@ async def research_query(
     preset: str | None = None,
     limit: int = 25,
 ) -> dict[str, Any]:
-    """Deterministic research over measured store ? no LLM narratives.
+    """Deterministic research over measured store — no LLM narratives.
 
     Presets and simple keyword routing map to the same SQL used by Patterns / Graph / Wallets.
     """
@@ -2052,7 +2091,7 @@ async def research_query(
                         "type": "token",
                         "title": "CA not in store yet",
                         "mint": mint,
-                        "summary": "Open token page / Axiom ? collector has not tracked this mint",
+                        "summary": "Open token page / Axiom — collector has not tracked this mint",
                         "links": {"mint": mint},
                     }
                 )
@@ -2081,7 +2120,7 @@ async def research_query(
         }
 
     if kind == "repeat_early":
-        explanation = "Wallets that appear as early buyers on ?2 distinct migrations"
+        explanation = "Wallets that appear as early buyers on ≥2 distinct migrations"
         try:
             rows = (
                 await session.execute(
@@ -2108,7 +2147,7 @@ async def research_query(
                     {
                         "type": "wallet",
                         "title": "Repeat early buyer",
-                        "summary": f"{d.get('mints')} migrations ? {d.get('entries')} entries",
+                        "summary": f"{d.get('mints')} migrations · {d.get('entries')} entries",
                         "wallet": d.get("wallet"),
                         "metrics": d,
                     }
@@ -2140,7 +2179,7 @@ async def research_query(
                     {
                         "type": "entity",
                         "title": d.get("display_label") or "Serial deployer",
-                        "summary": f"{d.get('launch_count')} launches ? {d.get('wallet_count') or 1} wallet(s)",
+                        "summary": f"{d.get('launch_count')} launches · {d.get('wallet_count') or 1} wallet(s)",
                         "wallet": d.get("primary_wallet"),
                         "entity_id": d.get("entity_id"),
                         "metrics": d,
@@ -2150,7 +2189,7 @@ async def research_query(
             explanation += f" (query error: {exc})"
 
     elif kind == "co_buy":
-        explanation = "Wallet pairs that were early on the same migrations (?2 shared)"
+        explanation = "Wallet pairs that were early on the same migrations (≥2 shared)"
         try:
             rows = (
                 await session.execute(
@@ -2186,7 +2225,7 @@ async def research_query(
             explanation += f" (query error: {exc})"
 
     elif kind == "measured_edge":
-        explanation = "Wallets with ?3 closed sells and a stored hit rate"
+        explanation = "Wallets with ≥3 closed sells and a stored hit rate"
         try:
             rows = (
                 await session.execute(
@@ -2214,7 +2253,7 @@ async def research_query(
                         "type": "wallet",
                         "title": "Measured edge",
                         "summary": (
-                            f"Hit {hr_f*100:.0f}% ? {d.get('total_sells')} sells ? "
+                            f"Hit {hr_f*100:.0f}% · {d.get('total_sells')} sells · "
                             f"early={d.get('early_buy_count') or 0}"
                         ),
                         "wallet": d.get("wallet"),
@@ -2252,7 +2291,7 @@ async def research_query(
                         "type": "mint",
                         "title": "Dense early book",
                         "summary": (
-                            f"{d.get('buyers_captured')} early ? "
+                            f"{d.get('buyers_captured')} early · "
                             f"{d.get('meaningful_buyers')} meaningful"
                         ),
                         "mint": d.get("mint"),
@@ -2290,7 +2329,7 @@ async def research_query(
                         "type": "wallet",
                         "title": "Worth watching",
                         "summary": (
-                            f"early={d.get('early_buy_count') or 0} ? "
+                            f"early={d.get('early_buy_count') or 0} · "
                             f"sells={d.get('total_sells') or 0}"
                         ),
                         "wallet": d.get("wallet"),
@@ -2310,8 +2349,8 @@ async def research_query(
                     "type": "alert",
                     "title": it.get("label") or "alert",
                     "summary": (
-                        f"score={it.get('score')} ? vol5m={it.get('volume_m5_usd')} ? "
-                        f"mult={it.get('volume_multiple')} ? {it.get('notes') or ''}"
+                        f"score={it.get('score')} · vol5m={it.get('volume_m5_usd')} · "
+                        f"mult={it.get('volume_multiple')} · {it.get('notes') or ''}"
                     ),
                     "mint": it.get("mint"),
                     "wallet": it.get("deployer"),
@@ -2319,10 +2358,10 @@ async def research_query(
                 }
             )
         if out.get("runner_rate") is not None:
-            explanation += f" ? runner_rate={out['runner_rate']:.0%}"
+            explanation += f" · runner_rate={out['runner_rate']:.0%}"
 
     else:  # overview
-        explanation = "Store snapshot ? use a preset or keywords for a focused query"
+        explanation = "Store snapshot — use a preset or keywords for a focused query"
         try:
             stats = {}
             for label, sql in [
@@ -2439,7 +2478,7 @@ async def seed_alert_log_from_events(
 ) -> int:
     """Insert alert.candidate events into alert_log (one row per event_id).
 
-    Measured only ? does not invent alerts.
+    Measured only — does not invent alerts.
     """
     await ensure_alert_outcomes_schema(session)
     try:
