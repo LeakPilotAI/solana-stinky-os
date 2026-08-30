@@ -424,6 +424,11 @@ class VolumeMonitor:
         self._sessions = async_sessionmaker(
             self._engine, class_=AsyncSession, expire_on_commit=False
         )
+        try:
+            from stinky_core.memory import IntelligenceMemory
+            self._memory = IntelligenceMemory()
+        except Exception:
+            self._memory = None
 
     async def close(self) -> None:
         await self._client.close()
@@ -746,13 +751,27 @@ class VolumeMonitor:
             "txns_m5_sells": snap.txns_m5_sells,
             "buyers": buyers_rows or None,
             "wallet_performance": perf_map or None,
+            "wallets_as_of_decision": True,
             "creator_profile": creator_profile,
             "creator": migration.creator,
             "fee_status": fee_status,
             "global_fees_sol": fees_sol,
             "volume_gate": self._gate1_volume(),
+            "decision_timestamp": datetime.now(timezone.utc).isoformat(),
         }
-        inv = investigate(bundle)
+        inv = investigate(bundle, memory=getattr(self, "_memory", None))
+        mem = getattr(self, "_memory", None)
+        if mem is not None:
+            try:
+                mem.ingest_decision(
+                    mint=mint,
+                    observed_at=bundle.get("decision_timestamp"),
+                    buyers=buyers_rows,
+                    creator=migration.creator,
+                    fingerprint=inv.fingerprint,
+                )
+            except Exception:
+                pass
         alert_ok, alert_reason = can_alert_investigation(True, inv)
         if alert_ok:
             inv.pipeline_status = "ALERT"

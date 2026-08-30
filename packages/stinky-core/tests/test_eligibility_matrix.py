@@ -191,7 +191,7 @@ def test_backtest_pipeline_counts():
     assert result["unique_candidates"] == 2
     assert result["gate1_passed"] == 1
     assert result["deep_inspected"] == 1
-    assert result["engine"].startswith("stinky-backtest-v1.1.0")
+    assert result["engine"].startswith("stinky-backtest-v1.")
 
 
 def test_outcome_labels():

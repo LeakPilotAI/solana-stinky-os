@@ -3,7 +3,7 @@
 Never invents wallets, volume, or evidence. Missing inputs stay UNKNOWN.
 LOW is not the default: insufficient coverage cannot collapse into 'safe'.
 A single weak/clean indicator is not enough to claim LOW.
-HIGH/CRITICAL findings may stand on partial data (fail-closed on risk).
+HIGH/CRITICAL requires ≥2 independent risk families — one heuristic is not synthetic.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from typing import Any, Mapping
 
 from stinky_core.pools import is_rankable_wallet
 
-INSPECT_VERSION = "inspect-v1.1.0-harden"
+INSPECT_VERSION = "inspect-v1.2.0-independent"
 
 LEVELS = ("UNKNOWN", "LOW", "MEDIUM", "HIGH", "CRITICAL")
 
@@ -27,9 +27,33 @@ _SYNTHETIC_SIGNALS = (
     "bot_like_frequency",
     "creator_linked_flow",
     "buy_sell_structure",
+    "temporal_clustering",
 )
 _LOW_MIN_OBSERVED = 3
 _LOW_REQUIRES_ANY = ("wallet_concentration", "wallet_diversity")
+_HIGH_MIN_FAMILIES = 2
+
+_SIGNAL_FAMILY = {
+    "wallet_concentration": "concentration",
+    "low_wallet_diversity": "diversity",
+    "wallet_diversity": "diversity",
+    "repetitive_trade_sizes": "repetition",
+    "trade_size_distribution": "repetition",
+    "circular_activity": "circular",
+    "bot_like_frequency": "bot",
+    "creator_linked_activity": "creator",
+    "creator_linked_flow": "creator",
+    "abnormal_imbalance": "imbalance",
+    "buy_sell_structure": "imbalance",
+    "temporal_clustering": "timing",
+    "repeated_intervals": "timing",
+    "thin_liquidity": "liquidity",
+    "serial_deployer": "serial",
+    "poor_creator_outcomes": "creator_outcomes",
+    "holder_concentration": "concentration",
+    "synthetic_overlap": "synthetic",
+    "unknown_creator": "creator_history",
+}
 
 
 def _f(v: Any) -> float | None:
@@ -85,6 +109,21 @@ def _level_fail_closed(score: float | None, evidence: list[Evidence]) -> str:
     return _level_from_score(score)
 
 
+def _independent_families(evidence: list[Evidence]) -> set[str]:
+    fams: set[str] = set()
+    for e in evidence:
+        if e.severity in ("medium", "high", "critical"):
+            fams.add(_SIGNAL_FAMILY.get(e.signal, e.signal))
+    return fams
+
+
+def _cap_unconfirmed_high(level: str, families: set[str]) -> str:
+    """One heuristic is not HIGH/CRITICAL synthetic or rug."""
+    if level in ("HIGH", "CRITICAL") and len(families) < _HIGH_MIN_FAMILIES:
+        return "MEDIUM"
+    return level
+
+
 @dataclass
 class Evidence:
     signal: str
@@ -105,6 +144,7 @@ class RiskResult:
     confidence: float | None = None
     coverage: dict[str, bool] = field(default_factory=dict)
     source: str = "observed"
+    independent_families: list[str] = field(default_factory=list)
     model_version: str = INSPECT_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -117,6 +157,7 @@ class RiskResult:
             "missing": list(self.missing),
             "coverage": dict(self.coverage),
             "source": self.source,
+            "independent_families": list(self.independent_families),
             "data_coverage": round(
                 (sum(1 for v in self.coverage.values() if v) / len(self.coverage)) if self.coverage else 0.0,
                 2,
@@ -147,6 +188,9 @@ class MarketActivity:
     max_wallet_trades: int | None = None
     duplicate_trades_dropped: int = 0
     pool_wallets_dropped: int = 0
+    repeated_interval_share: float | None = None
+    temporal_burst: float | None = None
+    volume_liquidity_ratio: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -167,10 +211,15 @@ def market_activity_from_mapping(raw: Mapping[str, Any] | None) -> MarketActivit
             uniq = max(ub, us)
         elif ub is not None:
             uniq = ub
+    vol = _f(m.get("volume_m5_usd") if m.get("volume_m5_usd") is not None else m.get("volume_usd"))
+    liq = _f(m.get("liquidity_usd"))
+    ratio = None
+    if vol is not None and liq is not None and liq > 0:
+        ratio = vol / liq
     return MarketActivity(
         mint=(str(m["mint"]).strip() if m.get("mint") else None),
-        volume_m5_usd=_f(m.get("volume_m5_usd") if m.get("volume_m5_usd") is not None else m.get("volume_usd")),
-        liquidity_usd=_f(m.get("liquidity_usd")),
+        volume_m5_usd=vol,
+        liquidity_usd=liq,
         market_cap_usd=_f(m.get("market_cap_usd") if m.get("market_cap_usd") is not None else m.get("mcap_usd")),
         txns_m5_buys=buys,
         txns_m5_sells=sells,
@@ -186,6 +235,9 @@ def market_activity_from_mapping(raw: Mapping[str, Any] | None) -> MarketActivit
         trade_count=_i(m.get("trade_count")),
         median_trade_sol=_f(m.get("median_trade_sol")),
         max_wallet_trades=_i(m.get("max_wallet_trades")),
+        repeated_interval_share=_f(m.get("repeated_interval_share")),
+        temporal_burst=_f(m.get("temporal_burst")),
+        volume_liquidity_ratio=_f(m.get("volume_liquidity_ratio")) if m.get("volume_liquidity_ratio") is not None else ratio,
     )
 
 
@@ -228,10 +280,14 @@ def activity_from_trades(
     counts: dict[str, int] = {}
     creator_vol = 0.0
     total_vol = 0.0
+    times: list[float] = []
     for t in rows:
         w = str(t.get("userAddress") or t.get("wallet") or "").strip()
         side = str(t.get("type") or t.get("side") or "").lower()
         amt = _f(t.get("amountSol") if t.get("amountSol") is not None else t.get("sol"))
+        ts = _f(t.get("timestamp") if t.get("timestamp") is not None else t.get("blockTime") if t.get("blockTime") is not None else t.get("block_time") if t.get("block_time") is not None else t.get("time"))
+        if ts is not None:
+            times.append(ts)
         if w:
             counts[w] = counts.get(w, 0) + 1
             if side in ("buy", "bought"):
@@ -261,6 +317,20 @@ def activity_from_trades(
     elif buyers or sellers:
         tot = len(buyers) + len(sellers)
         imb = (len(buyers) / tot) if tot else None
+    both = buyers & sellers
+    circ_n = len(both) if rows else None
+    interval_share = None
+    burst = None
+    if len(times) >= 8:
+        times.sort()
+        deltas = [round(times[i + 1] - times[i], 2) for i in range(len(times) - 1)]
+        if deltas:
+            interval_share = max(Counter(deltas).values()) / len(deltas)
+            window = times[-1] - times[0]
+            burst = (len(times) / window) if window > 0 else None
+    ratio = None
+    if volume_m5_usd is not None and liquidity_usd is not None and liquidity_usd > 0:
+        ratio = volume_m5_usd / liquidity_usd
     return MarketActivity(
         mint=mint,
         volume_m5_usd=volume_m5_usd,
@@ -275,13 +345,16 @@ def activity_from_trades(
         top4_wallet_volume_share=top4,
         repeated_size_share=rep,
         creator_linked_share=(creator_vol / total_vol) if creator and total_vol > 0 else None,
-        circular_pairs=len(buyers & sellers) if rows else None,
+        circular_pairs=circ_n,
         buy_sell_imbalance=imb,
         trade_count=len(rows) if rows else None,
         median_trade_sol=(sorted(sizes)[len(sizes) // 2] if sizes else None),
         max_wallet_trades=max(counts.values()) if counts else None,
         duplicate_trades_dropped=dupes,
         pool_wallets_dropped=pools,
+        repeated_interval_share=interval_share,
+        temporal_burst=burst,
+        volume_liquidity_ratio=ratio,
     )
 
 
@@ -289,7 +362,8 @@ def assess_synthetic(activity: MarketActivity) -> RiskResult:
     """Deterministic synthetic-activity risk.
 
     UNKNOWN if no flow evidence, or if the only readings are clean/weak and
-    coverage is too thin to support LOW. HIGH/CRITICAL may fire on partial data.
+    coverage is too thin to support LOW. HIGH/CRITICAL needs ≥2 independent
+    risk families. A single concentrated holder is not automatically synthetic.
     """
     ev: list[Evidence] = []
     missing: list[str] = []
@@ -383,19 +457,31 @@ def assess_synthetic(activity: MarketActivity) -> RiskResult:
         else:
             add(0, "buy_sell_structure", "low", round(imb, 4), f"Buy share {imb:.0%}")
 
+    interval = activity.repeated_interval_share
+    if interval is None:
+        missing.append("temporal_clustering")
+    else:
+        coverage["temporal_clustering"] = True
+        if interval >= 0.55:
+            add(18, "repeated_intervals", "high", round(interval, 4), f"{interval:.0%} of observed trades share the same interval")
+        elif interval >= 0.35:
+            add(10, "repeated_intervals", "medium", round(interval, 4), f"{interval:.0%} of observed trades share the same interval")
+        else:
+            add(0, "temporal_clustering", "low", round(interval, 4), f"Repeated-interval share {interval:.0%}")
+
     observed_n = sum(1 for v in coverage.values() if v)
     conf = round(min(0.9, 0.15 * observed_n), 2) if observed_n else None
     risk_hits = [e for e in ev if e.severity in ("medium", "high", "critical")]
+    families = _independent_families(ev)
 
     if observed_n == 0:
         return RiskResult(
             score=None, level="UNKNOWN", evidence=ev, missing=missing,
-            confidence=None, coverage=coverage,
+            confidence=None, coverage=coverage, independent_families=sorted(families),
         )
 
-    # Risk findings may stand on partial data (fail-closed).
     if risk_hits:
-        lvl = _level_fail_closed(min(100.0, score), ev)
+        lvl = _cap_unconfirmed_high(_level_fail_closed(min(100.0, score), ev), families)
         return RiskResult(
             score=round(min(100.0, score), 1),
             level=lvl,
@@ -403,9 +489,9 @@ def assess_synthetic(activity: MarketActivity) -> RiskResult:
             missing=missing,
             confidence=conf,
             coverage=coverage,
+            independent_families=sorted(families),
         )
 
-    # Claiming LOW ('not synthetic') requires real coverage, not one clean print.
     core_ok = any(coverage.get(k) for k in _LOW_REQUIRES_ANY)
     if observed_n < _LOW_MIN_OBSERVED or not core_ok:
         return RiskResult(
@@ -415,6 +501,7 @@ def assess_synthetic(activity: MarketActivity) -> RiskResult:
             missing=missing,
             confidence=None,
             coverage=coverage,
+            independent_families=sorted(families),
         )
     return RiskResult(
         score=round(min(100.0, score), 1),
@@ -423,6 +510,7 @@ def assess_synthetic(activity: MarketActivity) -> RiskResult:
         missing=missing,
         confidence=conf,
         coverage=coverage,
+        independent_families=sorted(families),
     )
 
 
@@ -464,7 +552,6 @@ def assess_rug(
         coverage["creator_history"] = True
     else:
         missing.append("creator_history")
-        # Unknown creator is missing data, not a rug finding by itself.
 
     if creator_launches is not None:
         coverage["creator_history"] = True
@@ -497,12 +584,14 @@ def assess_rug(
     observed_n = sum(1 for v in coverage.values() if v)
     conf = round(min(0.85, 0.2 * observed_n), 2) if observed_n else None
     risk_hits = [e for e in ev if e.severity in ("medium", "high", "critical")]
+    families = _independent_families(ev)
     if not risk_hits:
         return RiskResult(
             score=None, level="UNKNOWN", evidence=ev, missing=missing,
             confidence=None, coverage=coverage, source="observed",
+            independent_families=sorted(families),
         )
-    lvl = _level_fail_closed(min(100.0, score), ev)
+    lvl = _cap_unconfirmed_high(_level_fail_closed(min(100.0, score), ev), families)
     return RiskResult(
         score=round(min(100.0, score), 1),
         level=lvl,
@@ -510,4 +599,5 @@ def assess_rug(
         missing=missing,
         confidence=conf,
         coverage=coverage,
+        independent_families=sorted(families),
     )

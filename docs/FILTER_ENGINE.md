@@ -67,7 +67,13 @@ QUALIFIED is “has stored intelligence, not high-risk.” It is not “safe” 
 - meaningful intelligence (stored smart-money sample ≥ 3 **or** known creator)
 - score ≥ 55
 
-Volume alone cannot alert. Unique-wallet counts are not intelligence.
+Volume alone cannot alert. UNKNOWN / insufficient evidence never promotes
+(`promote=false`). A score without stored wallet or creator history is
+diagnostic only — it is not a reason to like the CA.
+
+Pattern resemblance and co-buy links are as-of-decision (ADR-012). Sample
+floors: smart money ≥ 3 resolved tokens; creator KNOWN ≥ 3 launches;
+fingerprint resemblance ≥ 5 prior prints. Below that: UNKNOWN. Unique-wallet counts are not intelligence.
 
 ## Authoritative fee metric (optional)
 

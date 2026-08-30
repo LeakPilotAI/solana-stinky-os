@@ -20,8 +20,11 @@ from stinky_core.inspect import (
     market_activity_from_mapping,
 )
 from stinky_core.pools import is_rankable_wallet
+from stinky_core.evidence import EvidenceBundle, item as eitem
+from stinky_core.fingerprint import book_fingerprint
+from stinky_core.memory import IntelligenceMemory
 
-INTEL_VERSION = "intel-v1.1.0-harden"
+INTEL_VERSION = "intel-v1.2.0-memory"
 SCORE_VERSION = "score-v1.0.0-volume-first"
 RUNNER_VERSION = "runner-potential-v1.0.0"
 
@@ -101,7 +104,7 @@ def _i(v: Any) -> int | None:
 
 @dataclass
 class CreatorProfile:
-    status: str  # KNOWN | UNKNOWN
+    status: str  # KNOWN | OBSERVED | UNKNOWN
     launches: int | None = None
     migrated: int | None = None
     historical_runners: int | None = None
@@ -111,6 +114,7 @@ class CreatorProfile:
     linked_wallets: int | None = None
     serial_risk: str | None = None
     entity_id: str | None = None
+    confidence: float | None = None
     missing: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -127,6 +131,8 @@ class WalletIntel:
     avg_hit_rate: float | None = None
     avg_return_pct: float | None = None
     unknown_wallet_count: int | None = None
+    winner_count: int | None = None
+    loser_count: int | None = None
     evidence: list[dict[str, Any]] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
 
@@ -182,6 +188,7 @@ class ScoreBreakdown:
     missing: list[str]
     components: dict[str, float] = field(default_factory=dict)
     model_version: str = SCORE_VERSION
+    promotable: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -193,6 +200,7 @@ class ScoreBreakdown:
             "components": dict(self.components),
             "model_version": self.model_version,
             "calibrated_probability": False,
+            "promotable": self.promotable,
         }
 
 
@@ -213,6 +221,13 @@ class Investigation:
     global_fees_sol: float | None
     has_intelligence: bool
     missing_data: list[str]
+    promote: bool = False
+    insufficient_evidence: bool = True
+    would_change: list[str] = field(default_factory=list)
+    entities: dict[str, Any] = field(default_factory=dict)
+    fingerprint: str | None = None
+    decision_timestamp: str | None = None
+    evidence: dict[str, Any] = field(default_factory=dict)
     model_version: str = INTEL_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -232,6 +247,13 @@ class Investigation:
             "global_fees_sol": self.global_fees_sol,
             "has_intelligence": self.has_intelligence,
             "missing_data": list(self.missing_data),
+            "promote": self.promote,
+            "insufficient_evidence": self.insufficient_evidence,
+            "would_change_conclusion": list(self.would_change),
+            "entities": dict(self.entities),
+            "fingerprint": self.fingerprint,
+            "decision_timestamp": self.decision_timestamp,
+            "evidence": dict(self.evidence),
             "model_version": self.model_version,
             "inspect_version": INSPECT_VERSION,
         }
@@ -251,8 +273,15 @@ def build_creator_profile(raw: Mapping[str, Any] | None) -> CreatorProfile:
     missing = []
     if runners is None:
         missing.append("historical_runners")
+    if launches is None or launches < 3:
+        status = "OBSERVED"
+        missing.append("creator_sample")
+        conf = 0.2
+    else:
+        status = "KNOWN"
+        conf = round(min(0.8, 0.3 + 0.04 * launches), 2)
     return CreatorProfile(
-        status="KNOWN",
+        status=status,
         launches=launches,
         migrated=_i(raw.get("migrated") if raw.get("migrated") is not None else raw.get("migration_count")),
         historical_runners=runners,
@@ -262,6 +291,7 @@ def build_creator_profile(raw: Mapping[str, Any] | None) -> CreatorProfile:
         linked_wallets=_i(raw.get("wallet_count") if raw.get("wallet_count") is not None else raw.get("linked_wallets")),
         serial_risk=serial,
         entity_id=str(raw["entity_id"]) if raw.get("entity_id") else None,
+        confidence=conf,
         missing=missing,
     )
 
@@ -276,6 +306,8 @@ def analyze_wallets(
     meaningful = 0
     smart = 0
     unknown = 0
+    winners = 0
+    losers = 0
     hit: list[float] = []
     ret: list[float] = []
     wallets = []
@@ -297,13 +329,31 @@ def analyze_wallets(
             continue
         early = _i(p.get("early_buy_count")) or 0
         tokens = _i(p.get("tokens_purchased")) or 0
-        sample = early if early else tokens
-        # Insufficient history is not smart money.
+        # Insufficient history is not smart money. Observations without
+        # resolved outcomes are not measured edge.
+        resolved = _i(p.get("sample_resolved"))
+        hr = _f(p.get("hit_rate"))
         if early >= 3 and tokens >= 3:
+            if resolved is not None and resolved < 3:
+                unknown += 1
+                continue
+            if resolved is None and hr is None and _i(p.get("runners")) is None:
+                unknown += 1
+                continue
             smart += 1
-            hr = _f(p.get("hit_rate"))
             if hr is not None:
                 hit.append(hr)
+                if hr + 1e-9 >= 0.5:
+                    winners += 1
+                else:
+                    losers += 1
+            else:
+                rn = _i(p.get("runners")) or 0
+                fd = _i(p.get("fades")) or 0
+                if rn > fd:
+                    winners += 1
+                elif fd > rn:
+                    losers += 1
             ar = _f(p.get("avg_return_pct"))
             if ar is not None:
                 ret.append(ar)
@@ -335,6 +385,8 @@ def analyze_wallets(
         avg_hit_rate=(sum(hit) / len(hit)) if hit else None,
         avg_return_pct=(sum(ret) / len(ret)) if ret else None,
         unknown_wallet_count=unknown,
+        winner_count=winners,
+        loser_count=losers,
         evidence=evidence,
         missing=missing,
     )
@@ -369,14 +421,23 @@ def match_patterns(
 
     hist = historical or {}
     resemble = _i(hist.get("similar_runner_count"))
+    sample = _i(hist.get("sample_count"))
     if resemble is None:
         missing.append("historical_similarity")
-        hist_conf = "UNKNOWN"
         hist_val = None
+    elif sample is not None and sample < 5:
+        missing.append("historical_similarity_sample")
+        hist_val = None
+        evidence.append({
+            "kind": "historical_resemblance_insufficient",
+            "value": sample,
+            "explanation": f"Fingerprint seen {sample} times as-of; need ≥5 to claim resemblance",
+        })
     else:
-        hist_conf = str(min(1.0, 0.15 + 0.04 * resemble))
         hist_val = min(1.0, 0.15 + 0.04 * resemble)
-        evidence.append({"kind": "historical_resemblance", "value": resemble, "explanation": f"Resembles {resemble} stored runner-like tokens"})
+        evidence.append({"kind": "historical_resemblance", "value": resemble, "explanation": f"Resembles {resemble} stored runner-like tokens (as-of, sample {sample})"})
+        if resemble >= 1:
+            matches.append({"kind": "historical_resemblance", "confidence": hist_val})
 
     if wallets.status == "UNKNOWN" and creator.status == "UNKNOWN":
         missing.append("pattern_inputs")
@@ -507,6 +568,7 @@ def compose_stinky_score(
     fee_status: str,
     global_fees_sol: float | None,
     volume_gate: float = 150_000.0,
+    entity_link_count: int = 0,
 ) -> ScoreBreakdown:
     """Volume is the entry, not the score. Weights unchanged; components labeled."""
     pos: list[dict[str, Any]] = []
@@ -526,6 +588,7 @@ def compose_stinky_score(
         "liquidity_component": 0.0,
         "fee_component": 0.0,
         "runner_adjustment": 0.0,
+        "data_quality_component": 0.0,
     }
 
     def plus(d: float, reason: str, component: str) -> None:
@@ -573,11 +636,13 @@ def compose_stinky_score(
 
     if creator.status == "UNKNOWN":
         missing.append("creator")
-    elif (creator.historical_runners or 0) >= 3:
-        plus(12, "proven creator (stored runners)", "creator_component")
+    elif (creator.historical_runners or 0) >= 3 and (creator.launches or 0) >= 5:
+        plus(12, "proven creator (stored runners, sample ≥ 5 launches)", "creator_component")
         conf += 0.08
     elif creator.serial_risk == "HIGH":
         minus(-8, "serial deployer", "creator_component")
+    elif creator.status == "OBSERVED":
+        missing.append("creator_sample")
 
     pos_matches = [m for m in patterns.matches if m.get("kind") != "serial_deployer"]
     if pos_matches:
@@ -608,6 +673,10 @@ def compose_stinky_score(
     elif liq >= 40_000:
         plus(4, "solid liquidity", "liquidity_component")
 
+    if entity_link_count >= 1:
+        plus(4, f"{entity_link_count} prior co-buy relationship(s) as-of", "entity_component")
+        conf += 0.03
+
     if fee_status == "VERIFIED" and global_fees_sol is not None:
         if global_fees_sol + 1e-9 >= 1.0:
             plus(4, "verified global fees ≥ 1 SOL (optional evidence)", "fee_component")
@@ -623,6 +692,7 @@ def compose_stinky_score(
     conf = max(0.1, min(0.95, conf - 0.04 * len(missing)))
     components["final_score"] = round(score, 1)
     components["confidence_adjustment"] = round(conf, 2)
+    components["data_quality_component"] = 0.0  # missingness lives in missing_data, not a hidden boost
     return ScoreBreakdown(
         score=round(score, 1),
         confidence=round(conf, 2),
@@ -630,14 +700,15 @@ def compose_stinky_score(
         negative=neg,
         missing=missing,
         components=components,
+        promotable=False,  # set by investigate() after intelligence check
     )
 
 
 def _has_intelligence(wallets: WalletIntel, creator: CreatorProfile, activity: MarketActivity) -> bool:
-    """Volume, unique-wallet counts, and trade counts are not intelligence."""
+    """Volume is not intelligence. Tiny creator samples are not intelligence."""
     if wallets.status == "KNOWN" and (wallets.smart_wallet_count or 0) >= 1:
         return True
-    if creator.status == "KNOWN" and (creator.launches or 0) >= 1:
+    if creator.status == "KNOWN" and (creator.launches or 0) >= 3:
         return True
     return False
 
@@ -662,9 +733,64 @@ def pipeline_status(
     return STATUS_QUALIFIED
 
 
-def investigate(bundle: Mapping[str, Any]) -> Investigation:
-    """Run the full desk. Input keys are optional; missing stays UNKNOWN."""
+def _would_change(wallets: WalletIntel, creator: CreatorProfile, patterns: PatternResult, synthetic: RiskResult, rug: RiskResult) -> list[str]:
+    out: list[str] = []
+    if wallets.status != "KNOWN":
+        out.append("stored early-wallet track records with sample ≥ 3 (would enable wallet intelligence)")
+    if creator.status != "KNOWN":
+        out.append("creator launch history with ≥ 3 prior mints as-of (would enable creator intelligence)")
+    if patterns.pattern_confidence == "UNKNOWN" or "historical_similarity" in patterns.missing or "historical_similarity_sample" in patterns.missing:
+        out.append("≥5 as-of fingerprint matches (would allow historical resemblance)")
+    if synthetic.level == "UNKNOWN":
+        out.append("flow coverage (concentration + diversity + size/timing) so synthetic can be LOW or a confirmed risk")
+    if rug.level == "UNKNOWN":
+        out.append("liquidity + creator history so rug is not UNKNOWN")
+    return out
+
+
+def _build_evidence(
+    *,
+    activity: MarketActivity,
+    synthetic: RiskResult,
+    rug: RiskResult,
+    wallets: WalletIntel,
+    creator: CreatorProfile,
+    patterns: PatternResult,
+    entities: Mapping[str, Any],
+    fee_status: str,
+    promote: bool,
+    insufficient: bool,
+    would_change: list[str],
+) -> EvidenceBundle:
+    b = EvidenceBundle(promote=promote, insufficient_evidence=insufficient, would_change_conclusion=list(would_change))
+    vol_st = "OBSERVED" if activity.volume_m5_usd is not None else "MISSING"
+    b.add(eitem("MARKET", "volume_5m", activity.volume_m5_usd, status=vol_st, source="market", explanation="5-minute volume (Gate 1 input, not a bullish score)"))
+    b.add(eitem("MARKET", "liquidity", activity.liquidity_usd, status="OBSERVED" if activity.liquidity_usd is not None else "MISSING", source="market", explanation="Liquidity USD"))
+    b.add(eitem("MARKET", "volume_liquidity_ratio", activity.volume_liquidity_ratio, status="OBSERVED" if activity.volume_liquidity_ratio is not None else "MISSING", source="derived", explanation="Volume / liquidity"))
+    b.add(eitem("FLOW", "unique_wallets", activity.unique_wallets, status="OBSERVED" if activity.unique_wallets is not None else "MISSING", source="book", explanation="Unique wallets on observed book"))
+    b.add(eitem("FLOW", "wallet_concentration", activity.top4_wallet_volume_share, status="OBSERVED" if activity.top4_wallet_volume_share is not None else "MISSING", source="book", explanation="Top-4 volume share"))
+    b.add(eitem("FLOW", "synthetic_level", synthetic.level, status="UNKNOWN" if synthetic.level == "UNKNOWN" else "OBSERVED", source=synthetic.model_version, explanation="Synthetic conclusion; HIGH needs ≥2 families", confidence=synthetic.confidence))
+    b.add(eitem("CREATOR", "status", creator.status, status=creator.status if creator.status != "KNOWN" else "KNOWN", source="creator_store", explanation="Creator history as-of", confidence=creator.confidence))
+    b.add(eitem("WALLETS", "status", wallets.status, status=wallets.status if wallets.status != "KNOWN" else "KNOWN", source="wallet_memory", explanation="Early-wallet intelligence as-of"))
+    b.add(eitem("WALLETS", "smart_wallet_count", wallets.smart_wallet_count, status="KNOWN" if wallets.smart_wallet_count else "UNKNOWN", source="wallet_memory", explanation="Wallets with sample ≥ 3"))
+    b.add(eitem("WALLETS", "winners", wallets.winner_count, status="OBSERVED" if wallets.winner_count is not None else "MISSING", source="wallet_memory", explanation="Prior-edge wallets with hit_rate ≥ 0.5"))
+    b.add(eitem("WALLETS", "losers", wallets.loser_count, status="OBSERVED" if wallets.loser_count is not None else "MISSING", source="wallet_memory", explanation="Prior-edge wallets with hit_rate < 0.5"))
+    b.add(eitem("ENTITY", "link_count", entities.get("link_count"), status=str(entities.get("status") or "UNKNOWN"), source="relationship_memory", explanation="Prior co-buy links as-of"))
+    b.add(eitem("PATTERN", "confidence", patterns.pattern_confidence, status="UNKNOWN" if patterns.pattern_confidence == "UNKNOWN" else "OBSERVED", source="pattern_memory", explanation="Structural/as-of pattern match"))
+    b.add(eitem("DATA_QUALITY", "fee_status", fee_status, status="UNKNOWN" if fee_status != "VERIFIED" else "KNOWN", source="fee_resolver", explanation="Global fees are optional evidence, never admission"))
+    b.add(eitem("DATA_QUALITY", "promote", promote, status="OBSERVED", source="intel", explanation="UNKNOWN/insufficient never promotes"))
+    return b
+
+
+def investigate(
+    bundle: Mapping[str, Any],
+    *,
+    memory: IntelligenceMemory | None = None,
+) -> Investigation:
+    """Run the full desk. Missing stays UNKNOWN. Memory queries are as-of."""
     mint = str(bundle.get("mint") or "").strip() or None
+    creator_addr = str(bundle["creator"]).strip() if bundle.get("creator") else None
+    as_of = bundle.get("decision_timestamp") or bundle.get("as_of")
     trades = bundle.get("trades")
     if isinstance(trades, list) and trades:
         activity = activity_from_trades(
@@ -675,17 +801,52 @@ def investigate(bundle: Mapping[str, Any]) -> Investigation:
             market_cap_usd=_f(bundle.get("market_cap_usd")),
             txns_m5_buys=_i(bundle.get("txns_m5_buys")),
             txns_m5_sells=_i(bundle.get("txns_m5_sells")),
-            creator=str(bundle["creator"]) if bundle.get("creator") else None,
+            creator=creator_addr,
         )
     else:
         activity = market_activity_from_mapping(bundle)
 
     synthetic = assess_synthetic(activity)
-    creator = build_creator_profile(bundle.get("creator_profile") if isinstance(bundle.get("creator_profile"), Mapping) else None)
     buyers = bundle.get("buyers") if isinstance(bundle.get("buyers"), list) else None
     perf = bundle.get("wallet_performance") if isinstance(bundle.get("wallet_performance"), Mapping) else None
-    wallets = analyze_wallets(buyers, perf)
+    creator_raw = bundle.get("creator_profile") if isinstance(bundle.get("creator_profile"), Mapping) else None
     hist = bundle.get("historical_patterns") if isinstance(bundle.get("historical_patterns"), Mapping) else None
+    entities: dict[str, Any] = {"status": "UNKNOWN", "links": [], "link_count": 0, "missing": ["prior_co_buy"]}
+
+    if memory is not None:
+        wallet_ids = []
+        for b in buyers or []:
+            w = str(b.get("wallet") or b.get("userAddress") or "").strip()
+            if w:
+                wallet_ids.append(w)
+        # Memory as-of is the source of truth. Bundle wallet_performance is ignored
+        # unless explicitly marked as-of, in which case it may fill gaps.
+        mem_perf = memory.wallet_performance_as_of(wallet_ids, as_of=as_of, exclude_mint=mint) if wallet_ids else {}
+        if bundle.get("wallets_as_of_decision") and perf:
+            merged = dict(mem_perf)
+            for k, v in perf.items():
+                merged.setdefault(k, v)
+            perf = merged
+        else:
+            perf = mem_perf or None
+        mem_creator = memory.creator_profile_as_of(creator_addr, as_of=as_of, exclude_mint=mint) if creator_addr else None
+        if mem_creator:
+            creator_raw = mem_creator
+        if wallet_ids:
+            entities = memory.relationships_as_of(wallet_ids, as_of=as_of, exclude_mint=mint)
+
+    creator = build_creator_profile(creator_raw)
+    wallets = analyze_wallets(buyers, perf)
+    fp = book_fingerprint(
+        top4_wallet_volume_share=activity.top4_wallet_volume_share,
+        unique_wallets=activity.unique_wallets if activity.unique_wallets is not None else wallets.unique_wallets,
+        volume_m5_usd=activity.volume_m5_usd,
+        smart_wallet_count=wallets.smart_wallet_count,
+        creator_launches=creator.launches,
+        repeated_size_share=activity.repeated_size_share,
+    )
+    if memory is not None and hist is None:
+        hist = memory.pattern_match_as_of(fp, as_of=as_of, exclude_mint=mint)
     patterns = match_patterns(wallets=wallets, creator=creator, activity=activity, historical=hist)
     rug = assess_rug(
         activity,
@@ -726,11 +887,13 @@ def investigate(bundle: Mapping[str, Any]) -> Investigation:
         fee_status=fee_status,
         global_fees_sol=fees,
         volume_gate=volume_gate,
+        entity_link_count=int(entities.get("link_count") or 0),
     )
     intel = _has_intelligence(wallets, creator, activity)
     missing = sorted(
         set(synthetic.missing + rug.missing + creator.missing + wallets.missing + patterns.missing + runner.missing + score.missing)
     )
+    would = _would_change(wallets, creator, patterns, synthetic, rug)
     inv = Investigation(
         mint=mint,
         complete=True,
@@ -747,8 +910,22 @@ def investigate(bundle: Mapping[str, Any]) -> Investigation:
         global_fees_sol=fees,
         has_intelligence=intel,
         missing_data=missing,
+        promote=False,
+        insufficient_evidence=not intel,
+        would_change=would,
+        entities=entities,
+        fingerprint=fp,
+        decision_timestamp=str(as_of) if as_of is not None else None,
     )
     inv.pipeline_status = pipeline_status(gate1_passed=True, investigation=inv)
+    inv.promote = inv.pipeline_status == STATUS_QUALIFIED and intel
+    inv.insufficient_evidence = not intel
+    inv.score.promotable = inv.promote
+    inv.evidence = _build_evidence(
+        activity=activity, synthetic=synthetic, rug=rug, wallets=wallets, creator=creator,
+        patterns=patterns, entities=entities, fee_status=fee_status,
+        promote=inv.promote, insufficient=inv.insufficient_evidence, would_change=would,
+    ).to_dict()
     return inv
 
 
@@ -768,7 +945,9 @@ def can_alert_investigation(
         return False, "RISK_CRITICAL"
     if investigation.score.score + 1e-9 < float(min_score):
         return False, "SCORE_BELOW_MIN"
-    if not investigation.has_intelligence:
+    if not investigation.has_intelligence or investigation.insufficient_evidence:
+        return False, "INTELLIGENCE_INSUFFICIENT"
+    if investigation.pipeline_status == STATUS_UNKNOWN:
         return False, "INTELLIGENCE_INSUFFICIENT"
     return True, None
 

@@ -63,6 +63,48 @@ async def filter_evaluate(payload: dict) -> dict:
     }
 
 
+@app.post("/v1/investigate")
+async def investigate_endpoint(payload: dict) -> dict:
+    """Gate 1 then investigation. Does not fabricate wallets, fees, or history."""
+    from stinky_core.admission import FILTER_VERSION, evaluate_gate1
+    from stinky_core.intelligence import can_alert_investigation, investigate
+
+    decision = evaluate_gate1(payload)
+    if not decision.eligible:
+        return {
+            "gate1_passed": False,
+            "eligible": False,
+            "pipeline_status": "REJECTED",
+            "promote": False,
+            "insufficient_evidence": True,
+            "rejection_reason": decision.rejection_reason,
+            "reason_codes": decision.reason_codes,
+            "filter_version": decision.filter_version or FILTER_VERSION,
+            "investigation": None,
+            "alert_ok": False,
+            "alert_reason": decision.rejection_reason,
+        }
+    inv = investigate(payload)
+    alert_ok, alert_reason = can_alert_investigation(True, inv)
+    return {
+        "gate1_passed": True,
+        "eligible": True,
+        "pipeline_status": inv.pipeline_status,
+        "promote": inv.promote,
+        "insufficient_evidence": inv.insufficient_evidence,
+        "has_intelligence": inv.has_intelligence,
+        "stinky_score": inv.score.score,
+        "calibrated_probability": False,
+        "would_change_conclusion": inv.would_change,
+        "missing_data": inv.missing_data,
+        "fingerprint": inv.fingerprint,
+        "filter_version": decision.filter_version or FILTER_VERSION,
+        "investigation": inv.to_dict(),
+        "alert_ok": alert_ok,
+        "alert_reason": alert_reason,
+    }
+
+
 @app.get("/v1/system/filter-stats")
 async def filter_stats_endpoint() -> dict:
     from stinky_core.admission import FILTER_VERSION, filter_stats
