@@ -9,6 +9,7 @@ from post_migration.models import TradeSide
 from post_migration.trade_parser import (
     parse_helius_swap,
     parse_normalized_trade,
+    parse_pump_v2_trade,
     rank_early_buyers,
 )
 
@@ -60,3 +61,56 @@ def test_parse_helius_token_transfers():
     assert trades[0].side == TradeSide.BUY
     assert trades[0].wallet == "BuyerAAA"
     assert trades[0].sol_amount == 1.5
+
+
+def test_parse_pump_v2_buy_and_sell():
+    buy = parse_pump_v2_trade(
+        {
+            "tx": "SigBuy111",
+            "timestamp": "2026-08-17T08:00:00.000Z",
+            "userAddress": "BuyerWallet1111111111111111111111111111111",
+            "type": "buy",
+            "program": "pump_amm",
+            "amountSol": "0.9",
+            "amountUsd": "95.2",
+            "baseAmount": "14492.3",
+            "quoteAmount": "0.9",
+            "priceUsd": "0.000006",
+        },
+        mint=MINT,
+    )
+    assert buy is not None
+    assert buy.side == TradeSide.BUY
+    assert buy.wallet.startswith("BuyerWallet111")
+    assert buy.sol_amount == 0.9
+    assert buy.meta.get("source") == "pump.v2"
+
+    sell = parse_pump_v2_trade(
+        {
+            "tx": "SigSell111",
+            "timestamp": "2026-08-17T08:01:00.000Z",
+            "userAddress": "SellerWallet111111111111111111111111111111",
+            "type": "sell",
+            "program": "pump_amm",
+            "amountSol": "0.4",
+            "baseAmount": "8000",
+        },
+        mint=MINT,
+    )
+    assert sell is not None
+    assert sell.side == TradeSide.SELL
+    assert sell.sol_amount == 0.4
+
+
+def test_parse_pump_v2_rejects_program_accounts():
+    t = parse_pump_v2_trade(
+        {
+            "tx": "SigProg",
+            "timestamp": "2026-08-17T08:00:00.000Z",
+            "userAddress": "11111111111111111111111111111111",
+            "type": "buy",
+            "amountSol": "1.0",
+        },
+        mint=MINT,
+    )
+    assert t is None

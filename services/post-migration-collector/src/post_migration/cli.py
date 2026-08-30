@@ -128,6 +128,8 @@ def main() -> None:
         cmd=cmd,
         max_early_buyers=settings.max_early_buyers,
         redis=settings.redis_url,
+        enable_helius=bool(getattr(settings, "enable_helius", False)),
+        trade_source="pump.v2",
         service=settings.service_name if hasattr(settings, "service_name") else "post-migration-collector",
         track_max_duration_sec=getattr(settings, "track_max_duration_sec", 3600),
     )

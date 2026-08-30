@@ -332,3 +332,146 @@ def rank_early_buyers(
         if len(ranked) >= max_buyers:
             break
     return ranked
+
+
+def parse_pump_v2_trade(raw: dict[str, Any], *, mint: str) -> ObservedTrade | None:
+    """Parse one row from swap-api.pump.fun /v2/coins/:mint/trades (free, no key)."""
+    wallet = raw.get("userAddress") or raw.get("user") or raw.get("wallet")
+    side_raw = str(raw.get("type") or raw.get("side") or "").lower()
+    sig = raw.get("tx") or raw.get("signature") or raw.get("txHash")
+    if not wallet or side_raw not in ("buy", "sell") or not sig:
+        return None
+    if raw.get("mint") and str(raw["mint"]) != mint:
+        return None
+    if not _is_user_wallet(str(wallet)):
+        return None
+    side = TradeSide.BUY if side_raw == "buy" else TradeSide.SELL
+    tclass = TradeClass.BUY if side == TradeSide.BUY else TradeClass.SELL
+    slot = None
+    slot_raw = raw.get("slotIndexId") or raw.get("slot")
+    if isinstance(slot_raw, int):
+        slot = slot_raw
+    elif isinstance(slot_raw, str) and slot_raw.isdigit():
+        # slotIndexId looks like 0004427886080001150000 -> slot is first 12 digits
+        try:
+            slot = int(slot_raw[:12])
+        except ValueError:
+            slot = None
+    return ObservedTrade(
+        mint=mint,
+        wallet=str(wallet),
+        side=side,
+        signature=str(sig),
+        traded_at=_ts(raw.get("timestamp") or raw.get("blockTime")),
+        slot=slot,
+        token_amount=_f(raw.get("baseAmount") or raw.get("token_amount")),
+        sol_amount=_f(raw.get("amountSol") or raw.get("quoteAmount") or raw.get("sol_amount")),
+        usd_amount=_f(raw.get("amountUsd") or raw.get("usd_amount")),
+        price_usd=_f(raw.get("priceUsd") or raw.get("fillPriceUsd")),
+        trade_class=tclass,
+        meta={
+            "source": "pump.v2",
+            "program": raw.get("program"),
+            "trade_class": tclass.value,
+        },
+    )
+
+
+def parse_rpc_json_parsed(tx: dict[str, Any], *, mint: str) -> list[ObservedTrade]:
+    """Extract buy/sell from a public-RPC getTransaction (jsonParsed) result."""
+    out: list[ObservedTrade] = []
+    if not isinstance(tx, dict):
+        return out
+    meta = tx.get("meta") or {}
+    if meta.get("err"):
+        return out
+    inner = tx.get("transaction") if isinstance(tx.get("transaction"), dict) else tx
+    message = (inner.get("message") if isinstance(inner, dict) else None) or {}
+    account_keys = message.get("accountKeys") or []
+    keys: list[str] = []
+    for k in account_keys:
+        if isinstance(k, str):
+            keys.append(k)
+        elif isinstance(k, dict):
+            pk = k.get("pubkey") or k.get("pubkey")
+            if pk:
+                keys.append(str(pk))
+    fee_payer = keys[0] if keys else None
+    signature = ""
+    sigs = inner.get("signatures") if isinstance(inner, dict) else None
+    if isinstance(sigs, list) and sigs:
+        signature = str(sigs[0])
+    if not signature:
+        signature = str(tx.get("signature") or tx.get("transaction", {}).get("signatures", [""])[0] or "")
+    if not signature:
+        return out
+    traded_at = _ts(tx.get("blockTime") or tx.get("timestamp"))
+    slot = _int(tx.get("slot"))
+
+    def _ui(b: dict[str, Any]) -> float:
+        amt = (b.get("uiTokenAmount") or {}) if isinstance(b, dict) else {}
+        return float(amt.get("uiAmount") or 0.0)
+
+    pre: dict[str, float] = {}
+    post: dict[str, float] = {}
+    for b in meta.get("preTokenBalances") or []:
+        if not isinstance(b, dict) or b.get("mint") != mint:
+            continue
+        owner = b.get("owner")
+        if owner:
+            pre[str(owner)] = _ui(b)
+    for b in meta.get("postTokenBalances") or []:
+        if not isinstance(b, dict) or b.get("mint") != mint:
+            continue
+        owner = b.get("owner")
+        if owner:
+            post[str(owner)] = _ui(b)
+    owners = set(pre) | set(post)
+    pre_sol = meta.get("preBalances") or []
+    post_sol = meta.get("postBalances") or []
+    key_index = {addr: i for i, addr in enumerate(keys)}
+
+    for owner in owners:
+        if not _is_user_wallet(owner):
+            continue
+        delta = post.get(owner, 0.0) - pre.get(owner, 0.0)
+        if abs(delta) < 1e-12:
+            continue
+        side = TradeSide.BUY if delta > 0 else TradeSide.SELL
+        tclass = TradeClass.BUY if side == TradeSide.BUY else TradeClass.SELL
+        sol_amount = None
+        idx = key_index.get(owner)
+        if idx is not None and idx < len(pre_sol) and idx < len(post_sol):
+            try:
+                sol_delta = (int(post_sol[idx]) - int(pre_sol[idx])) / 1e9
+                sol_amount = abs(sol_delta)
+            except (TypeError, ValueError):
+                sol_amount = None
+        wallet = owner
+        if fee_payer and _is_user_wallet(fee_payer):
+            wallet = fee_payer
+        out.append(
+            ObservedTrade(
+                mint=mint,
+                wallet=wallet,
+                side=side,
+                signature=signature,
+                traded_at=traded_at,
+                slot=slot,
+                token_amount=abs(delta),
+                sol_amount=sol_amount,
+                usd_amount=None,
+                price_usd=None,
+                trade_class=tclass,
+                meta={"source": "rpc.jsonParsed", "owner": owner, "fee_payer": fee_payer},
+            )
+        )
+    seen: set[tuple[str, str]] = set()
+    deduped: list[ObservedTrade] = []
+    for t in out:
+        key = (t.wallet, t.side.value)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(t)
+    return deduped

@@ -1,9 +1,10 @@
-﻿"""Orchestrates Redis consumption of token.migrated â†’ MintTracker sessions."""
+"""Orchestrates Redis consumption of token.migrated -> MintTracker sessions."""
 
 from __future__ import annotations
 
 import asyncio
 import json
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -54,6 +55,8 @@ class CollectorService:
             stream=settings.event_stream,
             group=settings.collector_consumer_group,
             max_early_buyers=settings.max_early_buyers,
+            enable_helius=bool(settings.enable_helius),
+            trade_source="pump.v2",
         )
 
     async def stop(self) -> None:
@@ -71,6 +74,12 @@ class CollectorService:
         await self.start()
         assert self._redis is not None
         consumer = f"collector-{id(self)}"
+        last_backfill = 0.0
+        try:
+            n0 = await self.backfill_from_events(limit=12)
+            logger.info("collector.startup_backfill", tracks=n0)
+        except Exception as exc:
+            logger.warning("collector.startup_backfill_failed", error=str(exc)[:200])
         try:
             while self._running:
                 try:
@@ -81,11 +90,22 @@ class CollectorService:
                         count=20,
                         block=5000,
                     )
-                    if not rows:
-                        continue
-                    for _stream, messages in rows:
-                        for msg_id, fields in messages:
-                            await self._handle_message(msg_id, fields)
+                    if rows:
+                        for _stream, messages in rows:
+                            for msg_id, fields in messages:
+                                await self._handle_message(msg_id, fields)
+                    now = time.monotonic()
+                    if now - last_backfill >= 90.0:
+                        last_backfill = now
+                        try:
+                            n = await self.backfill_from_events(limit=12)
+                            if n:
+                                logger.info("collector.periodic_backfill", tracks=n)
+                        except Exception as bexc:
+                            logger.warning(
+                                "collector.periodic_backfill_failed",
+                                error=str(bexc)[:200],
+                            )
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
