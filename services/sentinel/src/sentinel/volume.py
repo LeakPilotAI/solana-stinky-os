@@ -854,6 +854,20 @@ class VolumeMonitor:
     ) -> bool:
         """Deep inspect after Gate 1. Returns True if an ALERT_CANDIDATE was emitted."""
         mint = migration.mint
+        try:
+            from stinky_core.metrics import ENGINE_LOG
+
+            cid = ENGINE_LOG.new_correlation_id(mint)
+            ENGINE_LOG.emit(
+                "GATE_PASSED",
+                mint=mint,
+                correlation_id=cid,
+                decision="GATE1",
+                reason="volume_m5",
+                extra={"volume_m5_usd": snap.volume_m5_usd},
+            )
+        except Exception:
+            cid = None
         await self._hydrate_memory()
         obs = await resolve_global_fees(
             mint, protocol=snap.dex_id, pool=snap.pair_address
@@ -980,8 +994,23 @@ class VolumeMonitor:
             fee_status=inv.fee_status,
             alert_ok=alert_ok,
             alert_reason=alert_reason,
+            correlation_id=getattr(inv, "correlation_id", None) or cid,
+            findings=len(getattr(inv, "findings", None) or []),
             model=INTEL_VERSION,
         )
+        try:
+            from stinky_core.metrics import ENGINE_LOG
+
+            ENGINE_LOG.emit(
+                "PROMOTION_DECISION" if not alert_ok else "ALERT",
+                mint=mint,
+                correlation_id=getattr(inv, "correlation_id", None) or cid,
+                decision="ALERT" if alert_ok else inv.pipeline_status,
+                reason=alert_reason,
+                evidence_counts={"findings": len(getattr(inv, "findings", None) or [])},
+            )
+        except Exception:
+            pass
 
         try:
             from stinky_core.events.base import Event, EventType

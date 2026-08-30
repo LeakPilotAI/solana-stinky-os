@@ -11,7 +11,7 @@ from stinky_core.admission import FILTER_VERSION
 from stinky_core.intelligence import INTEL_VERSION, Investigation
 from stinky_core.outcomes import LABEL_VERSION, Outcome
 
-DATASET_VERSION = "dataset-v1.3.0"
+DATASET_VERSION = "dataset-v1.4.0"
 
 
 def decision_row(
@@ -78,6 +78,10 @@ def decision_row(
         "wallet_reputation": (inv.wallets.reputation if inv else None),
         "creator_reputation": (inv.creator.reputation if inv else None),
         "report_status": (inv.report or {}).get("status") if inv else None,
+        "stages": dict(inv.stages) if inv else None,
+        "findings": list(inv.findings) if inv else None,
+        "finding_count": len(inv.findings) if inv else 0,
+        "correlation_id": inv.correlation_id if inv else None,
         "alert_ok": bool(alert_ok),
         "alert_reason": alert_reason,
         "future_outcome": (oc or {}).get("label"),

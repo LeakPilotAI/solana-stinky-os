@@ -107,6 +107,10 @@ async def investigate_endpoint(payload: dict) -> dict:
         "information_advantage": inv.information_advantage,
         "similarity": inv.similarity,
         "report": inv.report,
+        "stages": inv.stages,
+        "findings": inv.findings,
+        "band_ledger": inv.band_ledger,
+        "correlation_id": inv.correlation_id,
         "filter_version": decision.filter_version or FILTER_VERSION,
         "investigation": inv.to_dict(),
         "alert_ok": alert_ok,
@@ -277,8 +281,44 @@ async def book_report(payload: dict) -> dict:
         "gate1_passed": True,
         "report": inv.report,
         "similarity": inv.similarity,
+        "stages": inv.stages,
+        "findings": inv.findings,
+        "would_change_conclusion": inv.would_change,
         "calibrated_probability": False,
     }
+
+
+@app.post("/v1/book/health")
+async def book_health(payload: dict | None = None) -> dict:
+    """Dataset health. Empty book is empty. Never invented."""
+    from stinky_core.book import dataset_health, desk_snapshot
+    from stinky_core.memory import IntelligenceMemory
+
+    body = payload or {}
+    mem = IntelligenceMemory()
+    snap = body.get("snapshot") if isinstance(body.get("snapshot"), dict) else None
+    loaded = mem.hydrate(snap) if snap else {}
+    as_of = body.get("as_of")
+    return {
+        "hydrated": loaded,
+        "health": dataset_health(mem, as_of=as_of),
+        "desk": desk_snapshot(mem, as_of=as_of),
+        "calibrated_probability": False,
+    }
+
+
+@app.post("/v1/book/desk")
+async def book_desk(payload: dict | None = None) -> dict:
+    """UNKNOWN queue + radars. Empty is empty."""
+    from stinky_core.book import desk_snapshot
+    from stinky_core.memory import IntelligenceMemory
+
+    body = payload or {}
+    mem = IntelligenceMemory()
+    snap = body.get("snapshot") if isinstance(body.get("snapshot"), dict) else None
+    if snap:
+        mem.hydrate(snap)
+    return desk_snapshot(mem, as_of=body.get("as_of"))
 
 
 @app.get("/v1/metrics")
@@ -287,6 +327,9 @@ async def metrics_endpoint() -> dict:
 
     snap = ENGINE_METRICS.snapshot()
     snap["production_p95"] = "NOT MEASURED"
+    from stinky_core.metrics import ENGINE_LOG
+
+    snap["investigation_log"] = ENGINE_LOG.snapshot()
     return snap
 
 

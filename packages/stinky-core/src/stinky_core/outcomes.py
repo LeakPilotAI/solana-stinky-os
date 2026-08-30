@@ -1,11 +1,13 @@
 """Deterministic outcome labeling.
 
 Do not casually label every pump a runner. Unknown remains unknown.
+Store the exact evidence used to produce the label. Future path never
+belongs on the original decision.
 """
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 LABEL_VERSION = "outcome-v1.0.0"
@@ -35,9 +37,12 @@ class Outcome:
     entry_price: float | None = None
     decision_timestamp: str | None = None
     peak_after_alert: float | None = None
+    evidence: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        d.setdefault("evidence", {})
+        return d
 
 
 def _f(v: Any) -> float | None:
@@ -87,6 +92,23 @@ def label_outcome(
     entry_px = _f(entry_price)
     decision_ts = str(decision_timestamp) if decision_timestamp else None
 
+    evidence = {
+        "peak_volume": peak_vol,
+        "entry_volume": entry_vol,
+        "entry_price": entry_px,
+        "peak_multiple": multiple,
+        "peak_alert_multiple": multiple,
+        "time_to_peak": ttp,
+        "drawdown": dd,
+        "time_to_drawdown": ttd,
+        "observation_window": window,
+        "observation_complete": bool(observation_complete),
+        "runner_peak_multiple_threshold": float(runner_peak_multiple),
+        "held_drawdown_max": float(held_drawdown_max),
+        "decision_timestamp": decision_ts,
+        "note": "Outcome evidence is post-decision. It must not leak into Gate 1 or the original score.",
+    }
+
     common = dict(
         label_version=LABEL_VERSION,
         observation_window=window,
@@ -99,6 +121,7 @@ def label_outcome(
         entry_price=entry_px,
         decision_timestamp=decision_ts,
         peak_after_alert=peak_vol,
+        evidence=evidence,
     )
 
     if not observation_complete or (multiple is None and peak_vol is None):

@@ -90,14 +90,17 @@ export default function TokenPage() {
           <div className="text-right">
             <div className="text-2xs uppercase text-terminal-muted">Stinky Score</div>
             <div className="text-3xl font-semibold tabular">
-              {score != null ? Number(score).toFixed(0) : "—"}
+              {alert.has_intelligence && score != null ? Number(score).toFixed(0) : "UNK"}
               <span className="text-base text-terminal-muted">/100</span>
             </div>
             <div className="text-xs text-terminal-dim">
-              Confidence{" "}
-              {conf != null
-                ? `${(Number(conf) <= 1 ? Number(conf) * 100 : Number(conf)).toFixed(0)}%`
-                : "—"}
+              {alert.has_intelligence
+                ? `Confidence ${
+                    conf != null
+                      ? `${(Number(conf) <= 1 ? Number(conf) * 100 : Number(conf)).toFixed(0)}%`
+                      : "—"
+                  }`
+                : "INSUFFICIENT EVIDENCE — not a grade"}
             </div>
           </div>
         </div>

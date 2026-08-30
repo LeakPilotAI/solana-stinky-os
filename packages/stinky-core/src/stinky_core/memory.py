@@ -17,7 +17,7 @@ import json
 from stinky_core.pools import is_rankable_wallet
 from stinky_core.reputation import creator_reputation, wallet_reputation
 
-MEMORY_VERSION = "memory-v1.4.0-recognition"
+MEMORY_VERSION = "memory-v1.5.0-evidence"
 
 MEMORY_DDL = """
 CREATE TABLE IF NOT EXISTS wallet_observations (

@@ -2,6 +2,8 @@
 
 A fingerprint is a bucketed decision-time key plus a feature dict.
 Exact key match is resemblance. Missing inputs stay U. Never guessed.
+The 10-band KEY is frozen. Extra dimensions (availability, confidence, timestamps)
+live in the band ledger / features, never in the key.
 """
 
 from __future__ import annotations
@@ -181,6 +183,33 @@ def matching_informative_bands(a: str | None, b: str | None) -> list[str]:
     return out
 
 
+def band_ledger(
+    fingerprint: str | None,
+    *,
+    observed_at: str | None = None,
+    as_of: str | None = None,
+) -> list[dict[str, Any]]:
+    """Per-band availability. Empty band is UNKNOWN, never zero.
+
+    Does not change the 10-band key. Extra fields live here, not in the key.
+    """
+    parts = str(fingerprint or "").split("|")
+    rows: list[dict[str, Any]] = []
+    for i, name in enumerate(BAND_NAMES):
+        raw = parts[i] if i < len(parts) else ""
+        unknown = (not raw) or raw.endswith("U")
+        rows.append({
+            "band": name,
+            "value": None if unknown else raw,
+            "evidence": None if unknown else raw,
+            "timestamp": observed_at,
+            "as_of": as_of,
+            "availability": "UNKNOWN" if unknown else "OBSERVED",
+            "confidence": "UNKNOWN" if unknown else "OBSERVED",
+        })
+    return rows
+
+
 def fingerprint_features(
     *,
     top4_wallet_volume_share: float | None = None,
@@ -195,11 +224,25 @@ def fingerprint_features(
     entity_link_count: int | None = None,
     synthetic_level: str | None = None,
     meaningful_buyer_count: int | None = None,
+    observed_at: str | None = None,
+    as_of: str | None = None,
 ) -> dict[str, Any]:
     """Decision-time feature dict stored with the key. None stays None."""
     ratio = None
     if volume_m5_usd is not None and liquidity_usd is not None and liquidity_usd > 0:
         ratio = volume_m5_usd / liquidity_usd
+    key = book_fingerprint(
+        top4_wallet_volume_share=top4_wallet_volume_share,
+        unique_wallets=unique_wallets,
+        volume_m5_usd=volume_m5_usd,
+        smart_wallet_count=smart_wallet_count,
+        creator_launches=creator_launches,
+        repeated_size_share=repeated_size_share,
+        liquidity_usd=liquidity_usd,
+        buy_sell_imbalance=buy_sell_imbalance,
+        entity_link_count=entity_link_count,
+        synthetic_level=synthetic_level,
+    )
     return {
         "version": FINGERPRINT_VERSION,
         "market": {
@@ -225,22 +268,12 @@ def fingerprint_features(
             "level": synthetic_level,
             "repeated_size_share": repeated_size_share,
         },
+        "bands": band_ledger(key, observed_at=observed_at, as_of=as_of),
         "extra": {
             "market_cap_usd": market_cap_usd,
-            "note": "Extra dimensions live in features, not the 10-band key. Missing stays None.",
+            "note": "Extra dimensions live in features, not the 10-band key. Missing stays None. Empty band is UNKNOWN, not zero.",
         },
-        "key": book_fingerprint(
-            top4_wallet_volume_share=top4_wallet_volume_share,
-            unique_wallets=unique_wallets,
-            volume_m5_usd=volume_m5_usd,
-            smart_wallet_count=smart_wallet_count,
-            creator_launches=creator_launches,
-            repeated_size_share=repeated_size_share,
-            liquidity_usd=liquidity_usd,
-            buy_sell_imbalance=buy_sell_imbalance,
-            entity_link_count=entity_link_count,
-            synthetic_level=synthetic_level,
-        ),
+        "key": key,
     }
 
 

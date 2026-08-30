@@ -17,9 +17,11 @@ from stinky_core.intelligence import (
 )
 from stinky_core.memory import IntelligenceMemory, _before, _parse_ts
 from stinky_core.outcomes import DEFAULT_OBSERVATION_WINDOW_SEC, LABEL_VERSION, label_outcome
+from stinky_core.reputation import CREATOR_TIERS, WALLET_TIERS
+from stinky_core.stages import STAGES_VERSION, slice_stage
 
-BOOK_VERSION = "book-v1.1.0-recognition"
-LIFE_SLICES_SEC = (0, 30, 60, 120, 180, 300, 600)
+BOOK_VERSION = "book-v1.2.0-evidence"
+LIFE_SLICES_SEC = (0, 30, 60, 90, 120, 180, 300, 600, 1200, 1800)
 
 
 def wallet_book(memory: IntelligenceMemory, *, as_of: Any = None) -> list[dict[str, Any]]:
@@ -280,9 +282,11 @@ def life_slices(
             "volume_acceleration": accel,
             "source": chosen.source if chosen else None,
             "missing": [] if chosen else ["market_tick"],
+            "stage": slice_stage(offset),
         })
     return {
         "book_version": BOOK_VERSION,
+        "stages_version": STAGES_VERSION,
         "mint": mint,
         "t0": start.isoformat(),
         "as_of": cutoff.isoformat() if cutoff else None,
@@ -290,5 +294,175 @@ def life_slices(
         "slices": slices,
         "wallet_quality": "T+0 as-of only — later buyers do not leak backward",
         "calibrated_probability": False,
-        "note": "Wallet/creator/pattern intelligence is the T+0 snapshot. T+ slices are market ticks only.",
+        "note": "Wallet/creator/pattern intelligence is the T+0 snapshot. T+ slices are market ticks only. Stages are labels, not a second engine.",
+    }
+
+
+def dataset_health(memory: IntelligenceMemory, *, as_of: Any = None, exclude_mint: str | None = None) -> dict[str, Any]:
+    """Coverage of the accumulating book. Empty is empty. Never invented."""
+    stats = book_stats(memory, as_of=as_of, exclude_mint=exclude_mint)
+    wallets = wallet_book(memory, as_of=as_of)
+    creators = creator_book(memory, as_of=as_of)
+    patterns = pattern_book(memory, as_of=as_of, min_sample=1)
+    w_tiers = {t: 0 for t in WALLET_TIERS}
+    for w in wallets:
+        tier = str((w.get("reputation") or {}).get("tier") or w.get("reputation_tier") or "OBSERVED")
+        w_tiers[tier] = w_tiers.get(tier, 0) + 1
+    c_tiers = {t: 0 for t in CREATOR_TIERS}
+    for c in creators:
+        tier = str((c.get("reputation") or {}).get("tier") or "UNKNOWN")
+        c_tiers[tier] = c_tiers.get(tier, 0) + 1
+    known_fp = [p for p in patterns if (p.get("occurrences") or 0) >= 1]
+    historical = [p for p in patterns if (p.get("occurrences") or 0) >= 5]
+    runner_ex = sum(int(p.get("runners") or 0) for p in patterns)
+    fade_ex = sum(int(p.get("fades") or 0) for p in patterns)
+    held_ex = sum(int(p.get("held") or 0) for p in patterns)
+    unique = max(1, int(stats.get("unique_mints") or 0)) if stats.get("unique_mints") else 0
+    denom = unique if unique else 0
+
+    def pct(n: int) -> float | None:
+        if not denom:
+            return None
+        return round(100.0 * n / denom, 1)
+
+    wallet_cov_n = int(stats.get("unique_wallets") or 0)
+    creator_cov_n = int(stats.get("unique_creators") or 0)
+    outcome_n = int(stats.get("resolved_outcomes") or 0)
+    fp_n = int(stats.get("unique_fingerprints") or 0)
+    decisions = [
+        d for d in memory.decisions
+        if (not exclude_mint or d.get("mint") != exclude_mint)
+    ]
+    labeled = [d for d in decisions if (d.get("outcome_label") or "UNKNOWN") in ("RUNNER", "HELD", "FADE")]
+    return {
+        "book_version": BOOK_VERSION,
+        "as_of": stats.get("as_of"),
+        "investigated_tokens": int(stats.get("unique_mints") or 0),
+        "resolved_outcomes": outcome_n,
+        "unlabeled_outcomes": max(0, int(stats.get("unique_mints") or 0) - outcome_n),
+        "wallets": dict(w_tiers),
+        "wallet_count": len(wallets),
+        "creators": dict(c_tiers),
+        "creator_count": len(creators),
+        "patterns": {
+            "known_fingerprints": len(known_fp),
+            "historical_matches": len(historical),
+            "runner_examples": runner_ex,
+            "fade_examples": fade_ex,
+            "held_examples": held_ex,
+        },
+        "data_coverage": {
+            "wallet_coverage": pct(wallet_cov_n) if denom else None,
+            "creator_coverage": pct(creator_cov_n) if denom else None,
+            "outcome_coverage": pct(len(labeled) if labeled else outcome_n) if denom else None,
+            "fingerprint_coverage": pct(fp_n) if denom else None,
+            "note": "Coverage is share of unique investigated mints with that layer. None = no mints yet.",
+        },
+        "labeled_vs_unlabeled": {
+            "labeled": len(labeled) if labeled else outcome_n,
+            "unlabeled": max(0, len(decisions) - (len(labeled) if labeled else 0)),
+        },
+        "calibrated_probability": False,
+        "note": "This tells us whether Stinky is actually learning. Empty book is not a live sample.",
+    }
+
+
+def unknown_queue(memory: IntelligenceMemory, *, as_of: Any = None) -> list[dict[str, Any]]:
+    """Gate 1 passed but evidence is insufficient. Research queue, not a disappear."""
+    cutoff = _parse_ts(as_of)
+    rows: list[dict[str, Any]] = []
+    for d in memory.decisions:
+        ts = _parse_ts(d.get("decision_timestamp"))
+        if cutoff is not None and ts is not None and not _before(ts, cutoff) and ts != cutoff:
+            continue
+        status = str(d.get("pipeline_status") or "UNKNOWN")
+        intel = bool(d.get("has_intelligence"))
+        if status == "REJECTED":
+            continue
+        if intel and status in ("QUALIFIED", "ALERT", "HIGH_RISK"):
+            continue
+        rows.append({
+            "mint": d.get("mint"),
+            "decision_timestamp": d.get("decision_timestamp"),
+            "volume_m5_usd": d.get("volume_m5_usd"),
+            "pipeline_status": status,
+            "has_intelligence": intel,
+            "promote": bool(d.get("promote")),
+            "reason": "INSUFFICIENT_EVIDENCE",
+            "note": "UNKNOWN is a research queue, not a buy and not a hide.",
+        })
+    rows.sort(key=lambda r: str(r.get("decision_timestamp") or ""), reverse=True)
+    return rows
+
+
+def wallet_radar(memory: IntelligenceMemory, *, as_of: Any = None, min_tier: str = "DEVELOPING") -> list[dict[str, Any]]:
+    """Wallets in the book with meaningful historical reputation. Empty is empty."""
+    order = {"OBSERVED": 0, "DEVELOPING": 1, "MEASURED": 2, "STRONG": 3}
+    floor = order.get(min_tier, 1)
+    rows = []
+    for w in wallet_book(memory, as_of=as_of):
+        tier = str((w.get("reputation") or {}).get("tier") or w.get("reputation_tier") or "OBSERVED")
+        if order.get(tier, 0) < floor:
+            continue
+        rows.append({
+            "wallet": w.get("wallet"),
+            "reputation": tier,
+            "sample_resolved": w.get("sample_resolved"),
+            "runners": w.get("runners"),
+            "fades": w.get("fades"),
+            "held": w.get("held"),
+            "hit_rate": w.get("hit_rate"),
+            "calibrated_probability": False,
+        })
+    return rows[:40]
+
+
+def creator_radar(memory: IntelligenceMemory, *, as_of: Any = None) -> list[dict[str, Any]]:
+    rows = []
+    for c in creator_book(memory, as_of=as_of):
+        launches = int(c.get("launch_count") or c.get("launches") or 0)
+        if launches < 2:
+            continue
+        rows.append({
+            "creator": c.get("creator"),
+            "reputation": (c.get("reputation") or {}).get("tier") or "OBSERVED",
+            "launches": launches,
+            "runners": c.get("runners") or c.get("historical_runners"),
+            "fades": c.get("fades") or c.get("historical_fades"),
+            "serial_risk": "HIGH" if launches >= 15 else "LOW",
+            "calibrated_probability": False,
+        })
+    return rows[:40]
+
+
+def pattern_radar(memory: IntelligenceMemory, *, as_of: Any = None) -> list[dict[str, Any]]:
+    rows = []
+    for p in pattern_book(memory, as_of=as_of, min_sample=1):
+        if (p.get("occurrences") or 0) < 2:
+            continue
+        rows.append({
+            "fingerprint": p.get("fingerprint"),
+            "occurrences": p.get("occurrences"),
+            "runners": p.get("runners"),
+            "fades": p.get("fades"),
+            "held": p.get("held"),
+            "confidence": p.get("confidence"),
+            "runner_pattern": p.get("runner_pattern"),
+            "fade_pattern": p.get("fade_pattern"),
+            "calibrated_probability": False,
+        })
+    return rows[:40]
+
+
+def desk_snapshot(memory: IntelligenceMemory, *, as_of: Any = None) -> dict[str, Any]:
+    """Command Center payload from the book. Empty radars stay empty."""
+    return {
+        "book_version": BOOK_VERSION,
+        "stats": book_stats(memory, as_of=as_of),
+        "dataset_health": dataset_health(memory, as_of=as_of),
+        "unknown_queue": unknown_queue(memory, as_of=as_of),
+        "wallet_radar": wallet_radar(memory, as_of=as_of),
+        "creator_radar": creator_radar(memory, as_of=as_of),
+        "pattern_radar": pattern_radar(memory, as_of=as_of),
+        "calibrated_probability": False,
     }

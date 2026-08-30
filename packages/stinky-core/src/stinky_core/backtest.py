@@ -265,7 +265,7 @@ def backtest_candidates(
     recall = (runners / outcome_runner_all) if outcome_runner_all else None
     unknown_rate = (outcome_unknown_all / total) if total else None
     return {
-        "engine": "stinky-backtest-v1.6.0-recognition",
+        "engine": "stinky-backtest-v1.7.0-evidence",
         "filter_version": FILTER_VERSION,
         "memory_version": mem.version,
         "input": len(unique) + dropped_dupes,
@@ -311,8 +311,78 @@ def backtest_candidates(
         "by_wallet_status": _group_counts(dataset, "wallet_status"),
         "by_creator_status": _group_counts(dataset, "creator_status"),
         "by_protocol": _group_counts([{"protocol": r.get("protocol")} for r in dataset], "protocol"),
+        "holdout": _holdout_report(evaluated),
         "items": evaluated,
         "dataset": dataset,
+    }
+
+
+def _holdout_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    n = len(rows)
+    gate1 = sum(1 for r in rows if r.get("gate1_passed") or r.get("eligible"))
+    investigated = sum(1 for r in rows if r.get("pipeline_status") not in (None, "REJECTED"))
+    qualified = sum(1 for r in rows if r.get("pipeline_status") == "QUALIFIED")
+    alerts = sum(1 for r in rows if r.get("alert_ok"))
+    unknown_p = sum(1 for r in rows if r.get("pipeline_status") == "UNKNOWN")
+    labels = [(r.get("outcome") or {}).get("label") if isinstance(r.get("outcome"), dict) else None for r in rows]
+    runners = sum(1 for lab, r in zip(labels, rows) if r.get("alert_ok") and lab == "RUNNER")
+    fades = sum(1 for lab, r in zip(labels, rows) if r.get("alert_ok") and lab == "FADE")
+    held = sum(1 for lab, r in zip(labels, rows) if r.get("alert_ok") and lab == "HELD")
+    unknown = sum(1 for lab, r in zip(labels, rows) if r.get("alert_ok") and lab == "UNKNOWN")
+    resolved = runners + held + fades
+    labeled = sum(1 for lab in labels if lab in ("RUNNER", "HELD", "FADE"))
+    too_small = n < 20
+    return {
+        "unique_mints": n,
+        "gate1_candidates": gate1,
+        "investigations": investigated,
+        "qualified": qualified,
+        "alerts": alerts,
+        "unknown_pipeline": unknown_p,
+        "runners": runners,
+        "fades": fades,
+        "held": held,
+        "unknown": unknown,
+        "precision": (runners / alerts) if alerts else None,
+        "false_positive_rate": (fades / resolved) if resolved else None,
+        "coverage": (investigated / n) if n else None,
+        "unknown_rate": (sum(1 for lab in labels if lab == "UNKNOWN") / n) if n else None,
+        "outcome_coverage": (labeled / n) if n else None,
+        "sample_size": n,
+        "sample_size_too_small": too_small,
+        "note": "SAMPLE SIZE TOO SMALL" if too_small else "Reported only. Thresholds were not tuned on this split.",
+        "calibrated_probability": False,
+    }
+
+
+def _holdout_report(evaluated: list[dict[str, Any]]) -> dict[str, Any]:
+    """Chronological 70/15/15 split. Never used to retune Gate 1, score, or reputation."""
+    ordered = list(evaluated)
+    n = len(ordered)
+    if n < 10:
+        return {
+            "development": _holdout_metrics(ordered),
+            "validation": _holdout_metrics([]),
+            "holdout": _holdout_metrics([]),
+            "split": "none",
+            "note": "SAMPLE SIZE TOO SMALL — no holdout split. Do not retune.",
+            "calibrated_probability": False,
+        }
+    n_dev = max(1, int(n * 0.70))
+    n_val = int(n * 0.15)
+    dev = ordered[:n_dev]
+    val = ordered[n_dev : n_dev + n_val]
+    hold = ordered[n_dev + n_val :]
+    return {
+        "split": "chronological_70_15_15",
+        "development": _holdout_metrics(dev),
+        "validation": _holdout_metrics(val),
+        "holdout": _holdout_metrics(hold),
+        "note": (
+            "Development = engineering. Validation = reserved for future tuning. "
+            "Holdout is never used for tuning. Do not change $150k / score / reputation floors on this sample."
+        ),
+        "calibrated_probability": False,
     }
 
 

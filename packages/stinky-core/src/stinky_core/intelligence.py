@@ -21,14 +21,15 @@ from stinky_core.inspect import (
     market_activity_from_mapping,
 )
 from stinky_core.pools import is_rankable_wallet
-from stinky_core.evidence import EvidenceBundle, item as eitem
-from stinky_core.fingerprint import book_fingerprint, fingerprint_features
+from stinky_core.evidence import EvidenceBundle, findings_ledger, item as eitem
+from stinky_core.fingerprint import band_ledger, book_fingerprint, fingerprint_features
 from stinky_core.memory import IntelligenceMemory
-from stinky_core.metrics import ENGINE_METRICS
+from stinky_core.metrics import ENGINE_LOG, ENGINE_METRICS
 from stinky_core.reputation import creator_reputation, wallet_reputation
 from stinky_core.similarity import historical_similarity
+from stinky_core.stages import investigation_stages
 
-INTEL_VERSION = "intel-v1.6.0-recognition"
+INTEL_VERSION = "intel-v1.7.0-evidence"
 SCORE_VERSION = "score-v1.1.0-intel-not-volume"
 RUNNER_VERSION = "runner-potential-v1.1.0-intel-not-volume"
 
@@ -251,6 +252,10 @@ class Investigation:
     information_advantage: dict[str, Any] = field(default_factory=dict)
     similarity: dict[str, Any] = field(default_factory=dict)
     report: dict[str, Any] = field(default_factory=dict)
+    stages: dict[str, Any] = field(default_factory=dict)
+    findings: list[dict[str, Any]] = field(default_factory=list)
+    band_ledger: list[dict[str, Any]] = field(default_factory=list)
+    correlation_id: str | None = None
     model_version: str = INTEL_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -283,6 +288,10 @@ class Investigation:
             "information_advantage": dict(self.information_advantage),
             "similarity": dict(self.similarity),
             "report": dict(self.report),
+            "stages": dict(self.stages),
+            "findings": list(self.findings),
+            "band_ledger": list(self.band_ledger),
+            "correlation_id": self.correlation_id,
             "model_version": self.model_version,
             "inspect_version": INSPECT_VERSION,
             "score_interpretation": self.score.interpretation,
@@ -1059,6 +1068,22 @@ def _build_evidence(
     b.add(eitem("PATTERN", "confidence", patterns.pattern_confidence, status="UNKNOWN" if patterns.pattern_confidence == "UNKNOWN" else "OBSERVED", source="pattern_memory", explanation="Structural/as-of pattern match"))
     b.add(eitem("DATA_QUALITY", "fee_status", fee_status, status="UNKNOWN" if fee_status != "VERIFIED" else "KNOWN", source="fee_resolver", explanation="Global fees are optional evidence, never admission"))
     b.add(eitem("DATA_QUALITY", "promote", promote, status="OBSERVED", source="intel", explanation="UNKNOWN/insufficient never promotes"))
+    b.findings = findings_ledger(
+        volume_m5_usd=activity.volume_m5_usd,
+        wallet_status=wallets.status,
+        smart_wallet_count=wallets.smart_wallet_count,
+        wallet_reputation_tier=(wallets.reputation or {}).get("tier"),
+        wallet_sample_resolved=(wallets.reputation or {}).get("sample_resolved"),
+        creator_status=creator.status,
+        creator_launches=creator.launches,
+        creator_reputation_tier=(creator.reputation or {}).get("tier"),
+        pattern_kinds=[m.get("kind") for m in patterns.matches if m.get("kind")],
+        similarity_sample=None,
+        entity_link_count=entities.get("link_count") if isinstance(entities, Mapping) else None,
+        synthetic_level=synthetic.level,
+        rug_level=rug.level,
+        top4_share=activity.top4_wallet_volume_share,
+    )
     return b
 
 
@@ -1124,6 +1149,9 @@ def investigation_report(inv: Investigation) -> dict[str, Any]:
             "rug": inv.rug.level,
             "concentration": inv.activity.top4_wallet_volume_share,
         },
+        "stages": inv.stages or {},
+        "findings": list(inv.findings or []),
+        "what_would_change": list(inv.would_change or []),
         "verdict": {
             "pipeline_status": inv.pipeline_status,
             "has_intelligence": inv.has_intelligence,
@@ -1150,6 +1178,14 @@ def investigate(
     mint = str(bundle.get("mint") or "").strip() or None
     creator_addr = str(bundle["creator"]).strip() if bundle.get("creator") else None
     as_of = bundle.get("decision_timestamp") or bundle.get("as_of")
+    cid = ENGINE_LOG.new_correlation_id(mint)
+    ENGINE_LOG.emit(
+        "INVESTIGATION_STARTED",
+        mint=mint,
+        correlation_id=cid,
+        decision="INVESTIGATING",
+        reason="gate1_passed",
+    )
     trades = bundle.get("trades")
     if isinstance(trades, list) and trades:
         activity = activity_from_trades(
@@ -1221,6 +1257,8 @@ def investigate(
         entity_link_count=int(entities.get("link_count") or 0) if entities.get("status") == "KNOWN" else None,
         synthetic_level=synthetic.level,
         meaningful_buyer_count=wallets.meaningful_buyer_count,
+        observed_at=str(as_of) if as_of is not None else None,
+        as_of=str(as_of) if as_of is not None else None,
     )
     if memory is not None and hist is None:
         hist = memory.pattern_match_as_of(fp, as_of=as_of, exclude_mint=mint)
@@ -1325,12 +1363,73 @@ def investigate(
     inv.similarity = historical_similarity(
         memory, fp, as_of=as_of, exclude_mint=mint, query_features=feats,
     ) if memory is not None else historical_similarity(None, fp)
+    findings = findings_ledger(
+        volume_m5_usd=activity.volume_m5_usd,
+        wallet_status=wallets.status,
+        smart_wallet_count=wallets.smart_wallet_count,
+        wallet_reputation_tier=(wallets.reputation or {}).get("tier"),
+        wallet_sample_resolved=(wallets.reputation or {}).get("sample_resolved"),
+        creator_status=creator.status,
+        creator_launches=creator.launches,
+        creator_reputation_tier=(creator.reputation or {}).get("tier"),
+        pattern_kinds=[m.get("kind") for m in patterns.matches if m.get("kind")],
+        similarity_sample=inv.similarity.get("sample_count"),
+        similarity_runners=inv.similarity.get("runner_matches"),
+        similarity_fades=inv.similarity.get("fade_matches"),
+        entity_link_count=int(entities.get("link_count") or 0) if entities else None,
+        synthetic_level=synthetic.level,
+        rug_level=rug.level,
+        top4_share=activity.top4_wallet_volume_share,
+        as_of=str(as_of) if as_of is not None else None,
+        observed_at=str(as_of) if as_of is not None else None,
+    )
+    if isinstance(inv.evidence, dict):
+        inv.evidence["findings"] = [f.to_dict() for f in findings]
+        inv.evidence["finding_count"] = len(findings)
+    inv.findings = [f.to_dict() for f in findings]
+    inv.band_ledger = band_ledger(fp, observed_at=str(as_of) if as_of else None, as_of=str(as_of) if as_of else None)
+    inv.stages = investigation_stages(
+        volume_m5_usd=activity.volume_m5_usd,
+        gate1_passed=True,
+        investigation_complete=True,
+        has_intelligence=intel,
+        similarity_sample=inv.similarity.get("sample_count"),
+        similarity_confidence=inv.similarity.get("similarity_confidence"),
+        outcome_label=None,
+        as_of=str(as_of) if as_of is not None else None,
+    )
+    inv.correlation_id = cid
     inv.why = why_this_ca(inv)
     inv.information_advantage = information_advantage(inv)
     inv.report = investigation_report(inv)
-    ENGINE_METRICS.record("investigation", (perf_counter() - t0) * 1000.0)
+    elapsed = (perf_counter() - t0) * 1000.0
+    ENGINE_METRICS.record("investigation", elapsed)
     ENGINE_METRICS.inc("investigations")
     ENGINE_METRICS.inc(f"pipeline_{inv.pipeline_status.lower()}")
+    counts = {
+        "findings": len(inv.findings),
+        "informative_bands": sum(1 for b in inv.band_ledger if b.get("availability") == "OBSERVED"),
+        "similarity_sample": inv.similarity.get("sample_count") or 0,
+        "smart_wallets": wallets.smart_wallet_count or 0,
+        "creator_launches": creator.launches or 0,
+    }
+    ENGINE_LOG.emit("WALLET_DATA", mint=mint, correlation_id=cid, decision=wallets.status, evidence_counts={"smart": wallets.smart_wallet_count, "early": wallets.early_buyer_count})
+    ENGINE_LOG.emit("CREATOR_DATA", mint=mint, correlation_id=cid, decision=creator.status, evidence_counts={"launches": creator.launches})
+    ENGINE_LOG.emit("PATTERN_DATA", mint=mint, correlation_id=cid, decision=patterns.pattern_confidence, evidence_counts={"matches": len(patterns.matches)})
+    ENGINE_LOG.emit("HISTORICAL_MATCH", mint=mint, correlation_id=cid, decision=str(inv.similarity.get("similarity_confidence") or "UNKNOWN"), evidence_counts={"sample": inv.similarity.get("sample_count")})
+    ENGINE_LOG.emit("RISK_ASSESSMENT", mint=mint, correlation_id=cid, decision=f"syn={synthetic.level},rug={rug.level}")
+    ENGINE_LOG.emit("SCORE", mint=mint, correlation_id=cid, decision=inv.score.interpretation, reason=None, latency_ms=elapsed)
+    ENGINE_LOG.emit(
+        "PROMOTION_DECISION",
+        mint=mint,
+        correlation_id=cid,
+        decision="PROMOTE" if inv.promote else "HOLD",
+        reason="insufficient_evidence" if inv.insufficient_evidence else inv.pipeline_status,
+        latency_ms=elapsed,
+        evidence_counts=counts,
+    )
+    if inv.pipeline_status == STATUS_ALERT:
+        ENGINE_LOG.emit("ALERT", mint=mint, correlation_id=cid, decision="ALERT", evidence_counts=counts)
     return inv
 
 

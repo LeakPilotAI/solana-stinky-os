@@ -1,4 +1,4 @@
-# Overlay intel-v1.6.0-recognition onto D:\Work\Project-Genesis
+# Overlay intel-v1.7.0-evidence onto D:\Work\Project-Genesis
 # Usage (from the extracted overlay folder):
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\APPLY-intel.ps1
 
@@ -22,11 +22,14 @@ $paths = @(
   "packages\stinky-core\src\stinky_core\reputation.py",
   "packages\stinky-core\src\stinky_core\similarity.py",
   "packages\stinky-core\src\stinky_core\metrics.py",
+  "packages\stinky-core\src\stinky_core\evidence.py",
+  "packages\stinky-core\src\stinky_core\stages.py",
   "packages\stinky-core\tests\test_identity.py",
   "packages\stinky-core\tests\test_memory.py",
   "packages\stinky-core\tests\test_intelligence.py",
   "packages\stinky-core\tests\test_book.py",
   "packages\stinky-core\tests\test_recognition.py",
+  "packages\stinky-core\tests\test_evidence_engine.py",
   "packages\stinky-core\tests\test_hardening.py",
   "packages\stinky-core\tests\test_eligibility_matrix.py",
   "services\sentinel\src\sentinel\durable.py",
@@ -37,7 +40,8 @@ $paths = @(
   "services\api\src\stinky_api\main.py",
   "docs\adr\ADR-014-remember.md",
   "docs\adr\ADR-015-intelligence-book.md",
-  "docs\adr\ADR-016-recognition.md"
+  "docs\adr\ADR-016-recognition.md",
+  "docs\adr\ADR-017-evidence.md"
 )
 
 foreach ($rel in $paths) {
@@ -51,7 +55,8 @@ foreach ($rel in $paths) {
 }
 
 Write-Host ""
-Write-Host "Applied intel-v1.6.0-recognition. Restart:"
+Write-Host "Applied intel-v1.7.0-evidence. Restart:"
 Write-Host "  powershell -File D:\Work\Project-Genesis\stop-stinky.ps1"
 Write-Host "  powershell -File D:\Work\Project-Genesis\start-stinky.ps1"
 Write-Host "Verify: Gate 1 unchanged at `$150k. UNKNOWN does not promote. 2/2 is not STRONG."
+Write-Host "Dataset health: POST /v1/book/health  Desk: POST /v1/book/desk"
