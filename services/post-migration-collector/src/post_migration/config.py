@@ -1,4 +1,4 @@
-﻿"""Post-migration collector configuration."""
+"""Post-migration collector configuration."""
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -24,6 +24,8 @@ class Settings(BaseSettings):
 
     solana_rpc_url: str = "https://api.mainnet-beta.solana.com"
     helius_api_key: str | None = None
+    # Helius is OPTIONAL. Default off so a maxed key cannot stall the OS.
+    enable_helius: bool = False
     commitment: str = "confirmed"
 
     max_early_buyers: int = 20
@@ -35,9 +37,13 @@ class Settings(BaseSettings):
     max_concurrent_tracks: int = 50
     buyer_exclude_addresses: str = ""
 
+    # Free pump.fun swap-api v2 pages per poll (100 trades/page).
+    pump_trade_pages: int = 2
+    pump_trade_limit: int = 100
+    rpc_sig_limit: int = 30
+
     milestone_multiples: str = "2,5,10,50,100"
     health_port: int = 9102
 
 
 settings = Settings()
-
