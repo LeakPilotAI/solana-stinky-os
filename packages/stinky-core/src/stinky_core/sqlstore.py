@@ -136,6 +136,15 @@ CREATE TABLE IF NOT EXISTS intelligence_investigations (
     correlation_id TEXT,
     row TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS quality_state_transitions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mint TEXT NOT NULL,
+    as_of TEXT NOT NULL,
+    state TEXT NOT NULL,
+    previous_state TEXT,
+    severity TEXT,
+    row TEXT NOT NULL
+);
 """
 
 
@@ -176,6 +185,7 @@ class SqliteMemoryStore:
             "intelligence_decisions",
             "market_observations",
             "intelligence_investigations",
+            "quality_state_transitions",
         ):
             out[table] = int(self.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
         return out
@@ -297,6 +307,21 @@ class SqliteMemoryStore:
                     json.dumps(nested, default=str),
                 ),
             )
+        for r in snap.get("quality_states") or []:
+            nested = dict(r)
+            self.conn.execute(
+                """INSERT INTO quality_state_transitions
+                   (mint, as_of, state, previous_state, severity, row)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    r.get("mint"),
+                    r.get("as_of") or "",
+                    r.get("state"),
+                    r.get("previous_state"),
+                    r.get("severity"),
+                    json.dumps(nested, default=str),
+                ),
+            )
         self.conn.commit()
         after = self.counts()
         return {"before": before, "after": after}  # type: ignore[return-value]
@@ -342,6 +367,17 @@ class SqliteMemoryStore:
                     except json.JSONDecodeError:
                         r["row"] = {}
             mem.load_investigations(invs)
+        except sqlite3.OperationalError:
+            pass
+        try:
+            qs = rows("SELECT mint, as_of, state, previous_state, severity, row FROM quality_state_transitions")
+            for r in qs:
+                if isinstance(r.get("row"), str):
+                    try:
+                        r["row"] = json.loads(r["row"] or "{}")
+                    except json.JSONDecodeError:
+                        r["row"] = {}
+            mem.load_quality_states(qs)
         except sqlite3.OperationalError:
             pass
         return mem

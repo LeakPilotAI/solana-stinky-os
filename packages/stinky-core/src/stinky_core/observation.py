@@ -13,8 +13,8 @@ from stinky_core.memory import IntelligenceMemory, MarketTick, _maybe_float, _pa
 from stinky_core.outcomes import LABEL_VERSION, label_outcome
 from stinky_core.stages import STAGES_VERSION, slice_stage
 
-OBSERVATION_VERSION = "observation-v1.0.0"
-OBSERVATION_SLICES_SEC = (0, 15, 30, 60, 90, 120, 180, 300, 600, 1200, 1800)
+OBSERVATION_VERSION = "observation-v1.1.0"
+OBSERVATION_SLICES_SEC = (0, 15, 30, 60, 90, 120, 180, 300, 600, 900, 1200, 1800)
 
 
 def _iso(v: Any) -> str | None:
@@ -324,3 +324,86 @@ def observation_book(memory: IntelligenceMemory, *, as_of: Any = None) -> list[d
         })
     rows.sort(key=lambda r: str(r.get("gate1_at") or ""), reverse=True)
     return rows
+
+
+def slice_analogues(
+    memory: IntelligenceMemory,
+    *,
+    mint: str,
+    offset_sec: int,
+    t0: Any,
+    as_of: Any = None,
+) -> dict[str, Any]:
+    """Compare this mint's slice at T+offset to other mints at the SAME offset.
+
+    Age-aware. T+15 only compares with T+15. Empty fingerprint / missing slice stays UNKNOWN.
+    Not a probability. Sample under 5 stays UNKNOWN.
+    """
+    from stinky_core.stages import slice_stage
+
+    offset = int(offset_sec)
+    path = observation_slices(memory, mint=mint, t0=t0, as_of=as_of)
+    by = {s["offset_sec"]: s for s in path.get("slices") or []}
+    cur = by.get(offset)
+    if not cur or cur.get("volume_5m") is None:
+        return {
+            "version": OBSERVATION_VERSION,
+            "mint": mint,
+            "offset_sec": offset,
+            "stage": slice_stage(offset),
+            "analogue_count": 0,
+            "sample_sufficient": False,
+            "outcome_distribution": {"RUNNER": 0, "HELD": 0, "FADE": 0, "RUG": 0, "UNKNOWN": 0},
+            "calibrated_probability": False,
+            "note": "Current slice volume UNKNOWN — cannot compare.",
+        }
+    cur_vol = cur.get("volume_5m")
+    matches: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    source = list(getattr(memory, "investigations", []) or []) or list(memory.decisions)
+    cutoff = _parse_ts(as_of)
+    for rec in source:
+        other = str(rec.get("mint") or "").strip()
+        if not other or other == mint or other in seen:
+            continue
+        ots = rec.get("gate1_at") or rec.get("decision_timestamp")
+        parsed = _parse_ts(ots)
+        if cutoff is not None and parsed is not None and parsed >= cutoff:
+            continue
+        seen.add(other)
+        opath = observation_slices(memory, mint=other, t0=ots, as_of=as_of)
+        oby = {s["offset_sec"]: s for s in opath.get("slices") or []}
+        oslice = oby.get(offset)
+        if not oslice or oslice.get("volume_5m") is None:
+            continue
+        ov = oslice.get("volume_5m")
+        if ov is None or cur_vol is None or cur_vol <= 0:
+            continue
+        rel = abs(ov - cur_vol) / cur_vol
+        if rel > 0.35:
+            continue
+        lab = str(rec.get("outcome_label") or "UNKNOWN").upper()
+        if lab not in ("RUNNER", "HELD", "FADE", "RUG", "UNKNOWN"):
+            lab = "UNKNOWN"
+        matches.append({"mint": other, "offset_sec": offset, "volume_5m": ov, "outcome": lab, "rel_volume_delta": round(rel, 4)})
+    dist = {"RUNNER": 0, "HELD": 0, "FADE": 0, "RUG": 0, "UNKNOWN": 0}
+    for m in matches:
+        dist[m["outcome"]] = dist.get(m["outcome"], 0) + 1
+    n = len(matches)
+    return {
+        "version": OBSERVATION_VERSION,
+        "mint": mint,
+        "offset_sec": offset,
+        "stage": slice_stage(offset),
+        "methodology": "same-offset 5m volume within 35% of current slice; stored ticks only",
+        "analogue_count": n,
+        "sample_sufficient": n >= 5,
+        "outcome_distribution": dist,
+        "matches": matches[:24],
+        "calibrated_probability": False,
+        "note": (
+            f"{n} same-offset analogues. Not a chance of running."
+            if n
+            else "No same-offset analogues as-of."
+        ),
+    }

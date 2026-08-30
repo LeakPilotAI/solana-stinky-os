@@ -37,7 +37,7 @@ stinky-sentinel
 | `STINKY_SOLANA_RPC_URL` | public mainnet | Prefer Helius/QuickNode |
 | `STINKY_SOLANA_WS_URL` | public mainnet WS | |
 | `STINKY_HELIUS_API_KEY` | unset | When set, uses Helius HTTP+WS |
-| `STINKY_REDIS_URL` | `redis://localhost:6380/0` | Non-Atlas port |
+| `STINKY_REDIS_URL` | `redis://localhost:6380/0` | Host port 6380 |
 | `STINKY_EVENT_LOG_URL` | `http://localhost:8001` | Optional HTTP ingest |
 
 ## Quality Gate

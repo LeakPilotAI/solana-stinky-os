@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ if _CORE.exists() and str(_CORE) not in sys.path:
 
 from discord_bot.config import settings
 from discord_bot.store import Store
+from discord_bot.policy import should_alert
 from stinky_core.admission import can_alert, evaluate_gate1
 from stinky_core.identity import alert_candidate_key, canonical_mint
 
@@ -36,6 +38,7 @@ class AlertDispatcher:
         self._redis: redis.Redis | None = None
         self._running = False
         self._alerted_mints: set[str] = set()
+        self._quality_last: dict[str, tuple[float, str]] = {}
 
     async def start(self) -> None:
         self._redis = redis.from_url(
@@ -95,6 +98,10 @@ class AlertDispatcher:
 
             event = json.loads(raw)
             event_type = event.get("event_type") or event.get("type")
+            if event_type == "quality.state_changed":
+                await self._handle_quality(event)
+                await self._redis.xack(settings.event_stream, settings.discord_consumer_group, msg_id)
+                return
             if event_type != "alert.candidate":
                 await self._redis.xack(settings.event_stream, settings.discord_consumer_group, msg_id)
                 return
@@ -120,6 +127,53 @@ class AlertDispatcher:
                 await self._redis.xack(settings.event_stream, settings.discord_consumer_group, msg_id)
             except Exception:
                 pass
+
+    async def _handle_quality(self, event: dict[str, Any]) -> None:
+        """State-change Discord. Same state is silent. Not a buy."""
+        payload = event.get("payload") or event
+        mint = str(payload.get("mint") or "").strip()
+        now = datetime.now(timezone.utc).timestamp()
+        last_at, last_cat = self._quality_last.get(mint, (None, None))  # type: ignore[misc]
+        spec = should_alert(
+            mint=mint,
+            previous_state=payload.get("previous_state"),
+            current_state=str(payload.get("current_state") or payload.get("state") or "UNKNOWN"),
+            last_alert_at=last_at,
+            last_category=last_cat,
+            now=now,
+            event_id=payload.get("event_id") or payload.get("correlation_id"),
+        )
+        if not spec:
+            logger.info("alerter.quality_skip", mint=mint, reason="no_state_change_or_cooldown")
+            return
+        self._quality_last[mint] = (now, str(spec["category"]))
+        text = (
+            f"**STINKY {spec['category']}**\n"
+            f"CA: `{mint}`\n"
+            f"{spec['previous_state']} → {spec['current_state']}\n"
+            f"Not a buy. Quality is setup deterioration, not a trade signal."
+        )
+        channel_id = settings.discord_alert_channel_id
+        if channel_id:
+            try:
+                channel = self._bot.get_channel(channel_id)
+                if channel is None:
+                    channel = await self._bot.fetch_channel(channel_id)
+                if channel is not None:
+                    await channel.send(content=text)
+            except Exception as exc:
+                logger.warning("alerter.quality_channel_failed", error=str(exc)[:160])
+        try:
+            subs = await self._store.list_subscribers()
+        except Exception:
+            subs = []
+        for uid in subs:
+            try:
+                user = await self._bot.fetch_user(uid)
+                await user.send(content=text)
+            except Exception as exc:
+                logger.warning("alerter.quality_dm_failed", user_id=uid, error=str(exc)[:160])
+        logger.info("alerter.quality_sent", alert_id=spec.get("alert_id"), category=spec.get("category"), mint=mint)
 
     def _passes_quality_gate(self, payload: dict[str, Any]) -> bool:
         """Canonical Gate 1 FIRST, then intelligence gate.

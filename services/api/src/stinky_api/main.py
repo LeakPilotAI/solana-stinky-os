@@ -183,6 +183,7 @@ async def memory_stats(session: Annotated[AsyncSession, Depends(get_session)]) -
         "market_inspections",
         "market_observations",
         "intelligence_investigations",
+        "quality_state_transitions",
     )
     counts: dict[str, Any] = {}
     available = True
@@ -409,6 +410,71 @@ async def book_insights(payload: dict | None = None) -> dict:
     rows = body.get("dataset") if isinstance(body.get("dataset"), list) else []
     hold = body.get("holdout_mints") if isinstance(body.get("holdout_mints"), list) else []
     return candidate_insights(rows, holdout_mints=hold)
+
+
+@app.post("/v1/book/quality")
+async def book_quality(
+    payload: dict | None = None, session: Annotated[AsyncSession, Depends(get_session)] = None
+) -> dict:
+    """Quality states for investigated mints. Empty is empty."""
+    from stinky_core.quality_state import evaluate_book, QUALITY_VERSION
+
+    mem, loaded, source = await _book_memory(payload, session)
+    body = payload or {}
+    rows = evaluate_book(mem, as_of=body.get("as_of"))
+    mint = str(body.get("mint") or "").strip()
+    if mint:
+        rows = [r for r in rows if r.get("mint") == mint]
+    return {
+        "version": QUALITY_VERSION,
+        "states": rows,
+        "count": len(rows),
+        "source": source,
+        "hydrated": loaded,
+        "calibrated_probability": False,
+    }
+
+
+@app.post("/v1/book/dips")
+async def book_dips(
+    payload: dict | None = None, session: Annotated[AsyncSession, Depends(get_session)] = None
+) -> dict:
+    """Active and resolved quality dips. Never invented."""
+    from stinky_core.quality_state import evaluate_book, quality_dips, QUALITY_VERSION
+
+    mem, loaded, source = await _book_memory(payload, session)
+    body = payload or {}
+    cards = quality_dips(evaluate_book(mem, as_of=body.get("as_of")))
+    return {
+        "version": QUALITY_VERSION,
+        "dips": cards,
+        "count": len(cards),
+        "empty_note": "NO ACTIVE QUALITY DETERIORATION" if not cards else None,
+        "source": source,
+        "hydrated": loaded,
+        "calibrated_probability": False,
+    }
+
+
+@app.post("/v1/book/slice-analogues")
+async def book_slice_analogues(payload: dict, session: Annotated[AsyncSession, Depends(get_session)] = None) -> dict:
+    """Age-aware analogues: T+offset compares only with T+offset."""
+    from stinky_core.observation import slice_analogues
+
+    mem, loaded, source = await _book_memory(payload, session)
+    mint = str(payload.get("mint") or "").strip()
+    if not mint:
+        return {"error": "mint required", "calibrated_probability": False}
+    out = slice_analogues(
+        mem,
+        mint=mint,
+        offset_sec=int(payload.get("offset_sec") or 0),
+        t0=payload.get("t0") or payload.get("decision_timestamp") or payload.get("as_of"),
+        as_of=payload.get("as_of"),
+    )
+    out["source"] = source
+    out["hydrated"] = loaded
+    return out
 
 
 @app.get("/v1/metrics")

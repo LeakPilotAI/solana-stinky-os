@@ -67,23 +67,13 @@ function tokenSub(symbol?: string | null, name?: string | null) {
   return null;
 }
 
-/** Decorative sparkline — visual only, not a measured series */
-function Spark({ color = "#39ff14" }: { color?: string }) {
-  const d =
-    "M0 12 L4 10 L8 13 L12 7 L16 9 L20 4 L24 8 L28 5 L32 6 L36 3 L40 5 L44 2 L48 4";
-  return (
-    <svg viewBox="0 0 48 16" className="h-6 w-14 opacity-80" aria-hidden>
-      <path d={d} fill="none" stroke={color} strokeWidth="1.4" />
-    </svg>
-  );
-}
-
 export function CommandCenter() {
   const [data, setData] = useState<CommandCenterData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [dips, setDips] = useState<Array<Record<string, unknown>>>([]);
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
@@ -97,9 +87,13 @@ export function CommandCenter() {
       if (inFlight) return; // never stack polls when CC is slow
       inFlight = true;
       try {
-        const d = await api.commandCenter();
+        const [d, dipRes] = await Promise.all([
+          api.commandCenter(),
+          api.bookDips().catch(() => ({ dips: [] as Array<Record<string, unknown>> })),
+        ]);
         if (!cancelled) {
           setData(d);
+          setDips((dipRes as { dips?: Array<Record<string, unknown>> }).dips || []);
           setError(null);
           setUpdatedAt(new Date());
         }
@@ -222,35 +216,70 @@ export function CommandCenter() {
           label="Migrations"
           value={(c.migrations ?? 0).toLocaleString()}
           accent
-          sparkColor="#39ff14"
         />
         <Kpi
           label="Volume (5m sum)"
           value={vol5mSum != null ? fmtUsd(vol5mSum) : "—"}
-          sparkColor="#3dd6ff"
         />
         <Kpi
           label="Alerts (gated)"
           value={(c.alerts ?? 0).toLocaleString()}
           accent
-          sparkColor="#c084fc"
         />
         <Kpi
           label="Tracked wallets"
           value={(c.wallets ?? c.wallets ?? c.wallets_perf ?? 0).toLocaleString()}
-          sparkColor="#f0c000"
         />
         <Kpi
           label="Entities"
           value={(c.entities ?? 0).toLocaleString()}
-          sparkColor="#f472b6"
         />
         <Kpi
           label="Buyers captured"
           value={(c.buyers ?? 0).toLocaleString()}
-          sparkColor="#39ff14"
         />
       </div>
+
+      <section className="rounded-xl border border-terminal-border bg-[#0a0e0a] px-3 py-2">
+        <div className="mb-1 flex items-center justify-between">
+          <h2 className="text-[10px] font-semibold uppercase tracking-wider text-terminal-muted">
+            Quality dips
+          </h2>
+          <Link href="/dips" className="text-[10px] text-terminal-muted hover:text-terminal-accent">
+            Open →
+          </Link>
+        </div>
+        <p className="mb-1 text-[10px] text-terminal-dim">
+          Setup deterioration after Gate 1. Not price-down. Not a buy.
+        </p>
+        {dips.length === 0 ? (
+          <p className="py-3 text-center text-[12px] text-terminal-muted">
+            NO ACTIVE QUALITY DETERIORATION
+          </p>
+        ) : (
+          <ul className="divide-y divide-terminal-border">
+            {dips.slice(0, 6).map((d, i) => {
+              const mint = String(d.mint || "");
+              const why = Array.isArray(d.why) ? d.why : [];
+              const first = why[0] as { explanation?: string } | string | undefined;
+              const expl =
+                typeof first === "string" ? first : first?.explanation || "";
+              return (
+                <li key={`${mint}-${i}`} className="flex items-center justify-between gap-2 py-1.5 text-[11px]">
+                  <Link href={mint ? `/tokens/${mint}` : "/dips"} className="font-mono hover:text-terminal-accent">
+                    {shortAddr(mint, 4)}
+                  </Link>
+                  <span className="uppercase text-terminal-muted">
+                    {String(d.previous_state || "UNKNOWN")} → {String(d.current_state || d.state || "UNKNOWN")}
+                  </span>
+                  <span className="text-terminal-dim">{String(d.severity || "—")}</span>
+                  <span className="hidden truncate text-terminal-dim md:inline">{expl}</span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
 
       {/* ── ALERT PRECISION (measured outcomes) ── */}
       {(data as any).pipeline?.available && (
@@ -744,12 +773,10 @@ function Kpi({
   label,
   value,
   accent,
-  sparkColor,
 }: {
   label: string;
   value: string;
   accent?: boolean;
-  sparkColor?: string;
 }) {
   return (
     <div
@@ -759,11 +786,8 @@ function Kpi({
           : "border-terminal-border"
       }`}
     >
-      <div className="flex items-start justify-between gap-1">
-        <div className="text-[9px] font-medium uppercase tracking-wider text-terminal-muted">
-          {label}
-        </div>
-        <Spark color={sparkColor || "#39ff14"} />
+      <div className="text-[9px] font-medium uppercase tracking-wider text-terminal-muted">
+        {label}
       </div>
       <div
         className={`mt-1 text-[20px] font-semibold tabular leading-none ${

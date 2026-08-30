@@ -746,6 +746,7 @@ class VolumeMonitor:
                 MEMORY_SELECT_FINGERPRINT_OUTCOME,
                 MEMORY_SELECT_INVESTIGATION,
                 MEMORY_SELECT_MARKET_OBS,
+                MEMORY_SELECT_QUALITY,
                 MEMORY_SELECT_WALLET_OBS,
                 MEMORY_SELECT_WALLET_OUTCOME,
             )
@@ -768,6 +769,10 @@ class VolumeMonitor:
                     invs = (await session.execute(text(MEMORY_SELECT_INVESTIGATION))).mappings().all()
                 except Exception:
                     invs = []
+                try:
+                    qstates = (await session.execute(text(MEMORY_SELECT_QUALITY))).mappings().all()
+                except Exception:
+                    qstates = []
             self._memory.hydrate({
                 "wallet_obs": [dict(r) for r in wobs],
                 "wallet_outcomes": [dict(r) for r in wout],
@@ -778,6 +783,7 @@ class VolumeMonitor:
                 "decisions": [dict(r) for r in decs],
                 "market_ticks": [dict(r) for r in ticks],
                 "investigations": [dict(r) for r in invs],
+                "quality_states": [dict(r) for r in qstates],
             })
             logger.info("memory.hydrated", **self._memory.to_stats())
         except Exception as exc:
@@ -921,6 +927,39 @@ class VolumeMonitor:
                 txns=txns,
                 source="observed",
             )
+            try:
+                from stinky_core.quality_state import evaluate_quality_state
+
+                rec = next((r for r in mem.investigations if r.get("mint") == mint), None)
+                t0 = (rec or {}).get("gate1_at") or (rec or {}).get("decision_timestamp")
+                if t0:
+                    prev = next((q.get("state") for q in reversed(mem.quality_states) if q.get("mint") == mint), None)
+                    st = evaluate_quality_state(mem, mint=mint, t0=t0, as_of=at, previous_state=prev)
+                    if mem.record_quality_state(st):
+                        if self._sessions:
+                            await self._persist_quality_state(st)
+                        try:
+                            if st.get("state") != st.get("previous_state"):
+                                evt = Event(
+                                    event_type=EventType.QUALITY_STATE_CHANGED,
+                                    payload={
+                                        "mint": mint,
+                                        "previous_state": st.get("previous_state"),
+                                        "current_state": st.get("state"),
+                                        "state": st.get("state"),
+                                        "severity": st.get("severity"),
+                                        "why": st.get("why"),
+                                        "evidence_quality": st.get("evidence_quality"),
+                                        "not_a_buy": True,
+                                        "calibrated_probability": False,
+                                    },
+                                    producer="sentinel-volume",
+                                )
+                                await self._publisher.publish_raw_event(evt, kind="quality")
+                        except Exception as exc:
+                            logger.debug("quality.publish_failed", mint=mint, error=str(exc)[:200])
+            except Exception as exc:
+                logger.debug("quality.eval_failed", mint=mint, error=str(exc)[:200])
         if not self._sessions:
             return
         try:
@@ -948,6 +987,29 @@ class VolumeMonitor:
                 await session.commit()
         except Exception as exc:
             logger.debug("observation.tick_persist_failed", mint=mint, error=str(exc)[:200])
+
+    async def _persist_quality_state(self, row: dict[str, Any]) -> None:
+        if not self._sessions:
+            return
+        try:
+            import json
+            from stinky_core.memory import MEMORY_INSERT_QUALITY
+
+            async with self._sessions() as session:
+                await session.execute(
+                    text(MEMORY_INSERT_QUALITY),
+                    {
+                        "mint": row.get("mint"),
+                        "as_of": row.get("as_of"),
+                        "state": row.get("state"),
+                        "previous_state": row.get("previous_state"),
+                        "severity": row.get("severity"),
+                        "row": json.dumps(row, default=str),
+                    },
+                )
+                await session.commit()
+        except Exception as exc:
+            logger.debug("quality.persist_failed", mint=row.get("mint"), error=str(exc)[:200])
 
     async def _investigate_and_maybe_alert(
         self, migration: DetectedMigration, snap: VolumeSnapshot

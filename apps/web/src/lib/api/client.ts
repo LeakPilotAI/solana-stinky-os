@@ -166,6 +166,13 @@ export const api = {
     postJson<Record<string, unknown>>("/v1/book/recipe", body),
   bookInsights: (body: Record<string, unknown> = {}) =>
     postJson<Record<string, unknown>>("/v1/book/insights", body),
+  bookQuality: (body: Record<string, unknown> = {}) =>
+    postJson<{ states: Array<Record<string, unknown>>; count: number; source?: string }>("/v1/book/quality", body),
+  bookDips: (body: Record<string, unknown> = {}) =>
+    postJson<{ dips: Array<Record<string, unknown>>; count: number; empty_note?: string | null; source?: string }>(
+      "/v1/book/dips",
+      body
+    ),
 };
 
 async function postJson<T>(path: string, body?: unknown): Promise<T> {

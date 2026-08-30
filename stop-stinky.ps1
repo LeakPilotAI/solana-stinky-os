@@ -28,7 +28,6 @@ Get-CimInstance Win32_Process -EA SilentlyContinue | ForEach-Object {
   $c = $_.CommandLine
   if (-not $c) { return }
   if ($c -match "docker|Docker Desktop") { return }
-  if ($c -match "atlas" -and $c -notmatch "Project-Genesis") { return }
   if ($c -match "8000" -and $c -match "app\.main:app") { return }
   if ($c -match "Project-Genesis" -and $c -match "uvicorn|stinky-|next dev|npm run|event_log|stinky_api") {
     Kill-Pid ([int]$_.ProcessId)

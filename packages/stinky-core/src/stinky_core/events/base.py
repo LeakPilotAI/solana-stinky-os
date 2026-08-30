@@ -30,6 +30,7 @@ class EventType(StrEnum):
     RUG_SIGNAL = "rug.signal"
     MARKET_GATE1_PASSED = "market.gate1_passed"
     MARKET_INSPECTION_COMPLETED = "market.deep_inspection_completed"
+    QUALITY_STATE_CHANGED = "quality.state_changed"
 
     # Post-migration intelligence collector
     POST_MIGRATION_TRACKING_STARTED = "post_migration.tracking_started"

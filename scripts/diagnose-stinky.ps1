@@ -4,7 +4,7 @@ $root = "D:\Work\Project-Genesis"
 Set-Location $root
 .\.venv\Scripts\activate
 
-Write-Host "=== 1) Ports (Stinky vs Atlas) ===" -ForegroundColor Cyan
+Write-Host "=== 1) Ports (Stinky vs other local services) ===" -ForegroundColor Cyan
 netstat -ano | findstr "LISTENING" | findstr "5432 5433 6379 6380 8000 8002 8010 3000"
 
 Write-Host "`n=== 2) Docker ===" -ForegroundColor Cyan

@@ -11,12 +11,20 @@ export default function TokenPage() {
   const [data, setData] = useState<Record<string, unknown> | null>(null);
   const [happened, setHappened] = useState<Record<string, unknown> | null>(null);
   const [recipe, setRecipe] = useState<Record<string, unknown> | null>(null);
+  const [quality, setQuality] = useState<Record<string, unknown> | null>(null);
 
   useEffect(() => {
     if (!mint) return;
     api.token(mint).then(setData).catch(() => setData({ available: false }));
     api.bookWhatHappened(mint).then(setHappened).catch(() => setHappened(null));
     api.bookRecipe({ mint, exclude_mint: mint }).then(setRecipe).catch(() => setRecipe(null));
+    api
+      .bookQuality({ mint })
+      .then((r) => {
+        const rows = r.states || [];
+        setQuality(rows.find((s) => s.mint === mint) || rows[0] || null);
+      })
+      .catch(() => setQuality(null));
   }, [mint]);
 
   if (!data) {
@@ -203,6 +211,44 @@ export default function TokenPage() {
               <dd>{String(happened.source || "—")}</dd>
             </div>
           </dl>
+        </div>
+      )}
+
+      {quality && (
+        <div className="panel p-3">
+          <h2 className="text-2xs uppercase tracking-wide text-terminal-muted">Quality state</h2>
+          <p className="mt-1 text-[11px] text-terminal-dim">
+            Setup after Gate 1. Not a buy. Missing later ticks stay UNKNOWN.
+          </p>
+          <dl className="mt-2 grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
+            <div>
+              <dt className="text-terminal-muted">State</dt>
+              <dd>{String(quality.state || "UNKNOWN")}</dd>
+            </div>
+            <div>
+              <dt className="text-terminal-muted">Previous</dt>
+              <dd>{String(quality.previous_state || "UNKNOWN")}</dd>
+            </div>
+            <div>
+              <dt className="text-terminal-muted">Severity</dt>
+              <dd>{String(quality.severity || "—")}</dd>
+            </div>
+            <div>
+              <dt className="text-terminal-muted">Evidence</dt>
+              <dd>{String(quality.evidence_quality || "UNKNOWN")}</dd>
+            </div>
+          </dl>
+          {Array.isArray(quality.why) &&
+            (quality.why as Array<{ explanation?: string }>).map((w, i) => (
+              <p key={i} className="mt-1 text-[11px] text-terminal-muted">
+                {typeof w === "string" ? w : w.explanation}
+              </p>
+            ))}
+          {Array.isArray(quality.unknown) && (quality.unknown as string[]).length > 0 && (
+            <p className="mt-1 text-[11px] text-terminal-dim">
+              UNKNOWN: {(quality.unknown as string[]).join(", ")}
+            </p>
+          )}
         </div>
       )}
 

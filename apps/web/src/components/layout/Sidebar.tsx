@@ -19,6 +19,7 @@ const NAV = [
   { href: "/recipes", label: "Runner Recipes", key: "Y", icon: "≡" },
   { href: "/observations", label: "Observation Book", key: "O", icon: "◷" },
   { href: "/unknown", label: "Unknown Queue", key: "U", icon: "?" },
+  { href: "/dips", label: "Quality Dips", key: "D", icon: "!" },
   { href: "/graph", label: "Graph", key: "G", icon: "⎔" },
   { href: "/time-machine", label: "Time Machine", key: "T", icon: "◷" },
   { href: "/research", label: "Research", key: "Q", icon: "⌕" },

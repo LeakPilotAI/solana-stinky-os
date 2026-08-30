@@ -25,8 +25,8 @@ from stinky_core.observation import (
 )
 from stinky_core.recipes import runner_recipe
 
-BOOK_VERSION = "book-v1.3.0-observe"
-LIFE_SLICES_SEC = (0, 15, 30, 60, 90, 120, 180, 300, 600, 1200, 1800)
+BOOK_VERSION = "book-v1.4.0-quality"
+LIFE_SLICES_SEC = (0, 15, 30, 60, 90, 120, 180, 300, 600, 900, 1200, 1800)
 
 
 def wallet_book(memory: IntelligenceMemory, *, as_of: Any = None) -> list[dict[str, Any]]:
@@ -390,6 +390,14 @@ def dataset_health(memory: IntelligenceMemory, *, as_of: Any = None, exclude_min
             unique=int(stats.get("unique_mints") or 0),
         ),
         "calibrated_probability": False,
+        "recipe_readiness": int(stats.get("unique_mints") or 0) >= 20 and len(historical) >= 1,
+        "analogue_readiness": len(historical) >= 1,
+        "holdout_readiness": int(stats.get("unique_mints") or 0) >= 30,
+        "quality_state_transitions": len(getattr(memory, "quality_states", []) or []),
+        "observation_coverage": {
+            "investigations": int(stats.get("unique_mints") or 0),
+            "market_ticks": int(stats.get("market_ticks") or len(getattr(memory, "market_ticks", []) or [])),
+        },
         "note": "This tells us whether Stinky is actually learning. Empty book is not a live sample.",
     }
 
@@ -522,6 +530,26 @@ def desk_snapshot(memory: IntelligenceMemory, *, as_of: Any = None) -> dict[str,
         "creator_radar": creator_radar(memory, as_of=as_of),
         "pattern_radar": pattern_radar(memory, as_of=as_of),
         "observation_book": _observation_book(memory, as_of=as_of)[:40],
+        "quality": _quality_desk(memory, as_of=as_of),
+        "calibrated_probability": False,
+    }
+
+
+def _quality_desk(memory: IntelligenceMemory, *, as_of: Any = None) -> dict[str, Any]:
+    from stinky_core.quality_state import evaluate_book, quality_dips, QUALITY_VERSION
+
+    states = evaluate_book(memory, as_of=as_of)
+    dips = quality_dips(states)
+    counts: dict[str, int] = {}
+    for s in states:
+        st = str(s.get("state") or "UNKNOWN")
+        counts[st] = counts.get(st, 0) + 1
+    return {
+        "version": QUALITY_VERSION,
+        "states": states[:80],
+        "dips": dips[:40],
+        "counts": counts,
+        "active_dips": len([d for d in dips if d.get("current_state") in ("WATCH", "DETERIORATING", "SEVERE_DETERIORATION", "FAILED")]),
         "calibrated_probability": False,
     }
 

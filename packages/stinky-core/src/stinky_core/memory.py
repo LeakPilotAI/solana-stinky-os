@@ -17,7 +17,7 @@ import json
 from stinky_core.pools import is_rankable_wallet
 from stinky_core.reputation import creator_reputation, wallet_reputation
 
-MEMORY_VERSION = "memory-v1.6.0-observe"
+MEMORY_VERSION = "memory-v1.7.0-quality"
 
 MEMORY_DDL = """
 CREATE TABLE IF NOT EXISTS wallet_observations (
@@ -146,6 +146,17 @@ CREATE TABLE IF NOT EXISTS intelligence_investigations (
     correlation_id TEXT,
     row JSONB NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS quality_state_transitions (
+    id BIGSERIAL PRIMARY KEY,
+    mint TEXT NOT NULL,
+    as_of TIMESTAMPTZ NOT NULL,
+    state TEXT NOT NULL,
+    previous_state TEXT,
+    severity TEXT,
+    row JSONB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_quality_mint_time ON quality_state_transitions (mint, as_of DESC);
 """
 # Extra columns for existing Postgres installs. CREATE TABLE IF NOT EXISTS
 # above will not add them to an already-created table.
@@ -271,6 +282,13 @@ SELECT mint, gate1_at, discovered_at, protocol, volume_5m_at_gate, liquidity_at_
        market_cap_at_gate, price_at_gate, pair_identifier, creator, gate_decision,
        investigation_status, correlation_id, row
 FROM intelligence_investigations
+"""
+MEMORY_INSERT_QUALITY = """
+INSERT INTO quality_state_transitions (mint, as_of, state, previous_state, severity, row)
+VALUES (:mint, :as_of, :state, :previous_state, :severity, CAST(:row AS jsonb))
+"""
+MEMORY_SELECT_QUALITY = """
+SELECT mint, as_of, state, previous_state, severity, row FROM quality_state_transitions
 """
 
 
@@ -407,6 +425,7 @@ class IntelligenceMemory:
         self.decisions: list[dict[str, Any]] = []
         self.market_ticks: list[MarketTick] = []
         self.investigations: list[dict[str, Any]] = []
+        self.quality_states: list[dict[str, Any]] = []
         self.version = MEMORY_VERSION
 
     def record_wallet(
@@ -985,6 +1004,22 @@ class IntelligenceMemory:
         self.investigations.append(row)
         return True
 
+    def record_quality_state(self, rec: dict[str, Any] | None) -> bool:
+        """Append-only quality transition. Same mint+state as last is a no-op."""
+        if not rec:
+            return False
+        mint = str(rec.get("mint") or "").strip()
+        state = str(rec.get("state") or "").strip()
+        if not mint or not state:
+            return False
+        last = next((q for q in reversed(self.quality_states) if q.get("mint") == mint), None)
+        if last and last.get("state") == state and last.get("as_of") == rec.get("as_of"):
+            return False
+        if last and last.get("state") == state:
+            return False
+        self.quality_states.append(dict(rec))
+        return True
+
     def record_market_tick(
         self,
         *,
@@ -1090,6 +1125,7 @@ class IntelligenceMemory:
             for t in self.market_ticks
         ]
         investigations = [dict(r) for r in self.investigations]
+        quality_states = [dict(r) for r in self.quality_states]
         return {
             "wallet_obs": wallet_obs,
             "wallet_outcomes": wallet_outcomes,
@@ -1101,6 +1137,7 @@ class IntelligenceMemory:
             "decisions": decisions,
             "market_ticks": market_ticks,
             "investigations": investigations,
+            "quality_states": quality_states,
         }
 
     def load_wallet_obs(self, rows: Iterable[Any]) -> int:
@@ -1249,6 +1286,22 @@ class IntelligenceMemory:
                 n += 1
         return n
 
+    def load_quality_states(self, rows: Iterable[Any]) -> int:
+        n = 0
+        for r in rows:
+            d = dict(r)
+            nested = d.get("row")
+            if isinstance(nested, str):
+                try:
+                    nested = json.loads(nested or "{}")
+                except Exception:
+                    nested = {}
+            if isinstance(nested, dict) and nested.get("mint"):
+                d = {**nested, **{k: v for k, v in d.items() if k != "row" and v is not None}}
+            if self.record_quality_state(d):
+                n += 1
+        return n
+
     def hydrate(self, snapshot: dict[str, Any] | None) -> dict[str, int]:
         snap = snapshot or {}
         return {
@@ -1261,6 +1314,7 @@ class IntelligenceMemory:
             "decisions": self.load_decisions(snap.get("decisions") or []),
             "market_ticks": self.load_market_ticks(snap.get("market_ticks") or []),
             "investigations": self.load_investigations(snap.get("investigations") or []),
+            "quality_states": self.load_quality_states(snap.get("quality_states") or []),
         }
 
     def to_stats(self) -> dict[str, int]:
@@ -1275,6 +1329,7 @@ class IntelligenceMemory:
             "intelligence_decisions": len(self.decisions),
             "market_ticks": len(self.market_ticks),
             "investigations": len(self.investigations),
+            "quality_states": len(self.quality_states),
         }
 
 

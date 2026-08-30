@@ -40,7 +40,7 @@ pip install -e "./services/event-log[dev]"
 docker compose up -d
 ```
 
-This starts (ports chosen so Atlas can keep 5432 / 6379 / 8000):
+This starts (host ports offset from 5432 / 6379 / 8000 so other local stacks can keep those):
 
 | Service                  | Host port(s)   | Purpose                    |
 |--------------------------|----------------|----------------------------|

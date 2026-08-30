@@ -1,7 +1,7 @@
 """WebSocket logsSubscribe watcher for pump.fun → PumpSwap migrations.
 
 PUBLIC-RPC-ONLY (v1):
-  - Never opens Helius WebSocket (Atlas may own that key).
+  - Never opens Helius WebSocket from this watcher. Helius is optional enrichment.
   - Always uses public / configured Solana WS for logsSubscribe.
   - Helius API key is ignored for WS even if present in .env.
 """

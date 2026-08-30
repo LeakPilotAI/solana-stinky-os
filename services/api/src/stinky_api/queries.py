@@ -3252,6 +3252,7 @@ async def load_memory_snapshot(session: AsyncSession) -> dict[str, Any]:
         MEMORY_SELECT_FINGERPRINT_OUTCOME,
         MEMORY_SELECT_INVESTIGATION,
         MEMORY_SELECT_MARKET_OBS,
+        MEMORY_SELECT_QUALITY,
         MEMORY_SELECT_WALLET_OBS,
         MEMORY_SELECT_WALLET_OUTCOME,
     )
@@ -3280,4 +3281,5 @@ async def load_memory_snapshot(session: AsyncSession) -> dict[str, Any]:
         "decisions": await rows(MEMORY_SELECT_DECISION),
         "market_ticks": await rows(MEMORY_SELECT_MARKET_OBS),
         "investigations": await rows(MEMORY_SELECT_INVESTIGATION),
+        "quality_states": await rows(MEMORY_SELECT_QUALITY),
     }

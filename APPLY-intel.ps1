@@ -1,4 +1,4 @@
-# Overlay intel-v1.8.0-observe onto D:\Work\Project-Genesis
+# Overlay intel-v1.9.0-quality onto D:\Work\Project-Genesis
 # Usage (from the extracted overlay folder):
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\APPLY-intel.ps1
 
@@ -27,6 +27,8 @@ $paths = @(
   "packages\stinky-core\src\stinky_core\observation.py",
   "packages\stinky-core\src\stinky_core\recipes.py",
   "packages\stinky-core\src\stinky_core\insights.py",
+  "packages\stinky-core\src\stinky_core\quality_state.py",
+  "packages\stinky-core\src\stinky_core\events\base.py",
   "packages\stinky-core\tests\test_identity.py",
   "packages\stinky-core\tests\test_memory.py",
   "packages\stinky-core\tests\test_intelligence.py",
@@ -34,6 +36,7 @@ $paths = @(
   "packages\stinky-core\tests\test_recognition.py",
   "packages\stinky-core\tests\test_evidence_engine.py",
   "packages\stinky-core\tests\test_observe.py",
+  "packages\stinky-core\tests\test_quality_state.py",
   "packages\stinky-core\tests\test_hardening.py",
   "packages\stinky-core\tests\test_eligibility_matrix.py",
   "services\sentinel\src\sentinel\durable.py",
@@ -43,23 +46,37 @@ $paths = @(
   "services\sentinel\migrations\007_memory_enrich.sql",
   "services\sentinel\migrations\008_market_observations.sql",
   "services\sentinel\migrations\009_observations.sql",
+  "services\sentinel\migrations\010_quality_states.sql",
   "services\api\src\stinky_api\main.py",
   "services\api\src\stinky_api\queries.py",
+  "services\discord-bot\src\discord_bot\alerter.py",
+  "services\discord-bot\src\discord_bot\policy.py",
+  "services\discord-bot\tests\test_policy.py",
   "apps\web\src\lib\api\client.ts",
   "apps\web\src\components\layout\Sidebar.tsx",
   "apps\web\src\components\layout\AppShell.tsx",
+  "apps\web\src\components\command-center\CommandCenter.tsx",
   "apps\web\src\app\investigations\page.tsx",
   "apps\web\src\app\observations\page.tsx",
   "apps\web\src\app\recipes\page.tsx",
   "apps\web\src\app\unknown\page.tsx",
   "apps\web\src\app\health\page.tsx",
+  "apps\web\src\app\dips\page.tsx",
   "apps\web\src\app\creators\[address]\page.tsx",
   "apps\web\src\app\tokens\[mint]\page.tsx",
   "docs\adr\ADR-014-remember.md",
   "docs\adr\ADR-015-intelligence-book.md",
   "docs\adr\ADR-016-recognition.md",
   "docs\adr\ADR-017-evidence.md",
-  "docs\adr\ADR-018-observe.md"
+  "docs\adr\ADR-018-observe.md",
+  "docs\adr\ADR-019-genesis-boundary.md",
+  "docs\adr\ADR-020-quality-state.md",
+  "docs\GENESIS.md",
+  "docker-compose.yml",
+  "README.md",
+  "stop-stinky.ps1",
+  ".env.example",
+  "scripts\diagnose-stinky.ps1"
 )
 
 foreach ($rel in $paths) {
@@ -73,10 +90,10 @@ foreach ($rel in $paths) {
 }
 
 Write-Host ""
-Write-Host "Applied intel-v1.8.0-observe. Restart:"
+Write-Host "Applied intel-v1.9.0-quality. Restart:"
 Write-Host "  powershell -File D:\Work\Project-Genesis\stop-stinky.ps1"
 Write-Host "  powershell -File D:\Work\Project-Genesis\start-stinky.ps1"
-Write-Host "Verify: Gate 1 unchanged at `$150k. UNKNOWN does not promote. 2/2 is not STRONG."
-Write-Host "Watch loop: investigate once, keep ticking to T+1800."
-Write-Host "Dataset health: POST /v1/book/health  Observations: POST /v1/book/observations"
-Write-Host "What happened: POST /v1/book/what-happened  Recipe: POST /v1/book/recipe"
+Write-Host "Verify: Gate 1 unchanged at `$150k. UNKNOWN does not promote. Quality dip is not a buy."
+Write-Host "Watch loop: investigate once, keep ticking to T+1800 including T+900."
+Write-Host "Quality: POST /v1/book/quality  Dips: POST /v1/book/dips  Analogues: POST /v1/book/slice-analogues"
+Write-Host "Discord: state-change only. Same state silent. Not a trade signal."
