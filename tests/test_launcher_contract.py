@@ -222,10 +222,16 @@ def test_installer_verifies_cmd_exe_after_save():
 def test_amsi_start_ps1_removed():
     assert not (ROOT / "start-stinky.ps1").exists()
     assert not (ROOT / "scripts" / "run-genesis-service.ps1").exists()
+    assert not (ROOT / "scripts" / "install-desktop-shortcuts.ps1").exists()
+    assert not (ROOT / "patch_ensure_schema.py").exists()
     assert (ROOT / "start_genesis.py").exists()
     t = read("Start-Stinky-OS.cmd")
     assert "start-stinky.ps1" not in t
     assert "start_genesis.py" in t
+    inst = read("install-desktop-shortcut.ps1")
+    assert '$desktops += $root' not in inst
+    assert "removed project-folder leftover" in inst
+    assert "patch_ensure_schema.py" in inst
 
 
 def test_stop_restores_path_for_docker():
