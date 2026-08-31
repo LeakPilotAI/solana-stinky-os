@@ -275,11 +275,12 @@ def pid_from_log(name: str) -> int:
     return int(found[-1]) if found else 0
 
 
-def list_win_processes() -> list[tuple[int, str, str]]:
+def list_win_processes() -> list[tuple[int, int, str, str]]:
+    """(pid, parent_pid, name, commandline)."""
     ps = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
     cmd = (
         "Get-CimInstance Win32_Process | ForEach-Object { "
-        "'{0}\t{1}\t{2}' -f $_.ProcessId, $_.Name, "
+        "'{0}\t{1}\t{2}\t{3}' -f $_.ProcessId, $_.ParentProcessId, $_.Name, "
         "(($_.CommandLine) -replace '[\\r\\n]',' ') }"
     )
     try:
@@ -293,20 +294,48 @@ def list_win_processes() -> list[tuple[int, str, str]]:
         )
     except (subprocess.SubprocessError, OSError):
         return []
-    rows: list[tuple[int, str, str]] = []
+    rows: list[tuple[int, int, str, str]] = []
     for line in (r.stdout or "").splitlines():
-        parts = line.split("\t", 2)
-        if len(parts) < 2 or not parts[0].strip().isdigit():
+        parts = line.split("\t", 3)
+        if len(parts) < 3 or not parts[0].strip().isdigit():
             continue
         pid = int(parts[0].strip())
-        name = parts[1].strip() if len(parts) > 1 else ""
-        cl = parts[2] if len(parts) > 2 else ""
-        rows.append((pid, name, cl))
+        ppid = int(parts[1].strip()) if parts[1].strip().isdigit() else 0
+        name = parts[2].strip() if len(parts) > 2 else ""
+        cl = parts[3] if len(parts) > 3 else ""
+        rows.append((pid, ppid, name, cl))
     return rows
+
+
+def is_launcher_process(name: str, cmdline: str) -> bool:
+    n = (name or "").lower()
+    if n in (
+        "cmd.exe",
+        "powershell.exe",
+        "pwsh.exe",
+        "conhost.exe",
+        "openconsole.exe",
+        "windowsterminal.exe",
+        "explorer.exe",
+    ):
+        return True
+    cl = (cmdline or "").lower()
+    needles = (
+        "start-stinky-os.cmd",
+        "stop-stinky-os.cmd",
+        "apply-launcher.ps1",
+        "apply-launcher.cmd",
+        "apply-refresh.ps1",
+        "install-desktop-shortcut.ps1",
+        "start_genesis.py",
+    )
+    return any(s in cl for s in needles)
 
 
 def genesis_owned(pid: int, name: str, cmdline: str) -> bool:
     if pid <= 0:
+        return False
+    if is_launcher_process(name, cmdline):
         return False
     n = (name or "").lower()
     if n.startswith("docker") or "com.docker" in n:
@@ -329,17 +358,18 @@ def genesis_owned(pid: int, name: str, cmdline: str) -> bool:
         return False
     markers = (
         "uvicorn",
-        "stinky-",
-        "next",
-        "npm run",
         "event_log",
         "stinky_api",
+        "stinky_core",
         "sentinel.cli",
         "discord_bot",
         "post_migration",
         "entity_resolver",
         "run_genesis_service.py",
         "start-genesis-svc",
+        "npm run dev",
+        "next-server",
+        "next dev",
         "genesis-event-log",
         "genesis-api",
         "genesis-sentinel",
@@ -352,37 +382,53 @@ def genesis_owned(pid: int, name: str, cmdline: str) -> bool:
     return any(m in cl for m in markers)
 
 
-def kill_pid(pid: int) -> None:
+def kill_pid(pid: int, name: str = "") -> None:
     if pid <= 0:
         return
-    say("  taskkill /PID %d /T" % pid)
+    if is_launcher_process(name, ""):
+        say("  skip pid %d (%s is a launcher host)" % (pid, name or "?"))
+        return
+    say("  taskkill /PID %d /F" % pid)
     try:
-        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=10)
+        subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, timeout=10)
     except (subprocess.SubprocessError, OSError):
         pass
     log_line("pid", "killed", pid_value=str(pid))
 
 
 def stop_owned_instance() -> None:
-    """Kill leftover Genesis-owned apps, then stop Genesis compose. Never ATLAS / Docker Desktop."""
+    """Kill leftover Genesis-owned apps, then stop Genesis compose. Never ATLAS / Docker Desktop / this window."""
     step("[0] stop leftover Genesis processes (owned only)")
-    skip = {os.getpid(), os.getppid()}
+    me = os.getpid()
+    parent = os.getppid()
+    say("  launcher pid=%d parent=%d (never killed)" % (me, parent))
     procs = list_win_processes()
-    by_pid = {p: (n, c) for p, n, c in procs}
+    parent_of = {p: pp for p, pp, n, c in procs}
+    skip = {me, parent, 0}
+    cur = me
+    for _ in range(24):
+        pp = parent_of.get(cur, 0)
+        if pp <= 0 or pp in skip:
+            break
+        skip.add(pp)
+        cur = pp
+    by_pid = {p: (n, c) for p, pp, n, c in procs}
 
     def maybe_kill(pid: int) -> None:
         if pid in skip:
             return
         name, cl = by_pid.get(pid, ("", ""))
+        if is_launcher_process(name, cl):
+            say("  skip pid %d (launcher window)" % pid)
+            return
         if name or cl:
             if not genesis_owned(pid, name, cl):
                 say("  skip pid %d (not Genesis-owned)" % pid)
                 log_line("pid", "skipped", pid_value=str(pid), reason="not Genesis-owned")
                 return
         elif pid not in by_pid:
-            # pid-file leftover; process already gone
             return
-        kill_pid(pid)
+        kill_pid(pid, name)
         skip.add(pid)
 
     if PID_FILE.is_file():
@@ -398,7 +444,7 @@ def stop_owned_instance() -> None:
         except OSError:
             pass
 
-    for pid, name, cl in procs:
+    for pid, pp, name, cl in procs:
         if genesis_owned(pid, name, cl):
             maybe_kill(pid)
 

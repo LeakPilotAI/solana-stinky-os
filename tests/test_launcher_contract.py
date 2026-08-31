@@ -134,6 +134,10 @@ def test_default_start_stops_then_starts():
     assert 0 <= stop_at < start_at
     assert "taskkill" in t
     assert "not Genesis-owned" in t
+    assert "is_launcher_process" in t
+    assert "start-stinky-os.cmd" in t
+    assert "never killed" in t
+    assert '"stinky-"' not in t[t.find("def genesis_owned") : t.find("def kill_pid")]
     assert "8001" not in t[t.find("def stop_owned_instance") : t.find("def clean_broken_dists")]
     assert "foreach ($port in 8002, 8010, 3000, 8001)" not in t
     assert "utf-8-sig" in t
