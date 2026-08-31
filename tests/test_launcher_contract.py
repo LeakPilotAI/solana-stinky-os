@@ -64,9 +64,13 @@ def test_start_writes_startup_log_and_redacts_secrets():
 
 def test_start_detaches_via_cmd_start():
     t = read("start-stinky.ps1")
+    assert "start-genesis-svc.cmd" in t
     assert "cmd START" in t or "/c start" in t
-    assert "genesis-$Name" in t or "genesis-" in t
     assert "Explorer job" in t or "break away" in t.lower() or "breaks away" in t
+    c = read("scripts/start-genesis-svc.cmd")
+    assert "start " in c.lower()
+    assert "genesis-%NAME%" in c
+    assert "run-genesis-service.ps1" in c
 
 
 def test_start_health_uses_http_not_only_process():
@@ -162,10 +166,26 @@ def test_start_restores_explorer_path_and_resolves_tools():
     assert "GetEnvironmentVariable" in t
     assert "Get-DockerExe" in t
     assert "Get-NpmCmd" in t
-    assert "Unblock-File" in t
-    # detached children inherit the restored PATH
-    assert "`$env:Path = '$pathLiteral'" in t or "$env:Path = '$pathLiteral'" in t
     assert "NOT ON PATH" in t
+    # generating wrappers + Unblock-File of every .ps1 trips Defender AMSI
+    assert "Unblock-File" not in t
+    assert "pathLiteral" not in t
+    assert "main.zip" not in t
+    assert "run-$Name.ps1" not in t
+
+
+def test_static_service_runner_is_allowlisted():
+    assert (ROOT / "scripts/run-genesis-service.ps1").exists()
+    assert (ROOT / "scripts/start-genesis-svc.cmd").exists()
+    t = read("scripts/run-genesis-service.ps1")
+    assert "ValidateSet" in t
+    for name in ("event-log", "api", "sentinel", "discord", "collector", "entities", "web", "maintain"):
+        assert name in t
+    assert "Unblock-File" not in t
+    assert "Invoke-WebRequest" not in t
+    assert "main.zip" not in t
+    s = read("stop-stinky.ps1")
+    assert "run-genesis-service" in s
 
 
 def test_installer_verifies_cmd_exe_after_save():

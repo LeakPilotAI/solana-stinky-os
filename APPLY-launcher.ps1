@@ -103,15 +103,15 @@ Set-Location -LiteralPath $root
 
 if (Test-Path -LiteralPath (Join-Path $root ".git")) {
   Write-Host "  git fetch + reset --hard origin/main (.env kept)" -ForegroundColor Yellow
-  git -C $root remote set-url origin $repo 2>$null
-  git -C $root fetch origin 2>&1 | Out-Host
+  git -C $root remote set-url origin $repo
+  git -C $root fetch origin
   if ($LASTEXITCODE -ne 0) {
     Write-Host "  git fetch failed. Check network / GitHub access." -ForegroundColor Red
     Write-Apply "FAIL git fetch"
     exit 1
   }
-  git -C $root reset --hard origin/main 2>&1 | Out-Host
-  git -C $root checkout -f -B main origin/main 2>&1 | Out-Host
+  git -C $root reset --hard origin/main
+  git -C $root checkout -f -B main origin/main
 } elseif (Test-Path -LiteralPath $root) {
   Write-Host "  folder exists but is not git - overlay from clone" -ForegroundColor Yellow
   $tmp = Join-Path $env:TEMP "genesis-launcher-src"

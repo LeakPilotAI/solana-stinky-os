@@ -77,7 +77,6 @@ $logDir = Join-Path $root "logs"
 $venvPy = Join-Path $root ".venv\Scripts\python.exe"
 $pidFile = Join-Path $logDir "stinky-pids.txt"
 $startupLog = Join-Path $logDir "startup.log"
-$launchDir = Join-Path $logDir "launchers"
 $psExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
 if (-not (Test-Path -LiteralPath $psExe)) { $psExe = "powershell.exe" }
 $cmdExe = Join-Path $env:SystemRoot "System32\cmd.exe"
@@ -85,12 +84,7 @@ $failed = $false
 $script:health = [ordered]@{}
 
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
-New-Item -ItemType Directory -Force -Path $launchDir | Out-Null
 Set-Location -LiteralPath $root
-
-Get-ChildItem -Path (Join-Path $root "*") -Include *.ps1,*.cmd -File -ErrorAction SilentlyContinue | ForEach-Object {
-  try { Unblock-File -LiteralPath $_.FullName -ErrorAction SilentlyContinue } catch {}
-}
 
 function Get-DockerExe {
   $c = Get-Command docker -ErrorAction SilentlyContinue
@@ -196,6 +190,7 @@ function Test-GenesisOwned([int]$Id) {
     if ($c -match $rootEsc) { return $true }
     if ($c -match "Project-Genesis") { return $true }
     if ($c -match "solana-stinky-os") { return $true }
+    if ($c -match "run-genesis-service\.ps1") { return $true }
     if ($c -match "run-(event-log|api|sentinel|discord|collector|entities|web|maintain)\.ps1") { return $true }
     return $false
   } catch { return $false }
@@ -253,23 +248,15 @@ function Sync-FromGitHub {
   try {
     if (Test-Path (Join-Path $root ".git")) {
       Write-Step "[sync] git fetch + reset origin/main (keeps .env)"
-      git -C $root remote set-url origin $repo 2>$null
-      git -C $root fetch origin 2>&1 | Out-Host
-      git -C $root reset --hard origin/main 2>&1 | Out-Host
-      git -C $root checkout -f -B main origin/main 2>&1 | Out-Host
+      git -C $root remote set-url origin $repo
+      git -C $root fetch origin
+      git -C $root reset --hard origin/main
+      git -C $root checkout -f -B main origin/main
       Write-Ok ("tree = " + (git -C $root rev-parse --short HEAD))
       Write-StartupLog -Component "sync" -Result "ok" -Command "git reset --hard origin/main"
     } else {
-      Write-Step "[sync] overlay from GitHub zip (folder is not a git clone)"
-      $zip = Join-Path $env:TEMP "genesis-main.zip"
-      $extract = Join-Path $env:TEMP "genesis-main-src"
-      if (Test-Path $extract) { Remove-Item -Recurse -Force $extract }
-      Invoke-WebRequest -Uri "https://github.com/LeakPilotAI/solana-stinky-os/archive/refs/heads/main.zip" -OutFile $zip -UseBasicParsing
-      Expand-Archive -Force -Path $zip -DestinationPath $extract
-      $src = Get-ChildItem $extract -Directory | Select-Object -First 1
-      & robocopy $src.FullName $root /E /XD .git .venv node_modules logs dumps .next __pycache__ /XF .env /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
-      Write-Ok "overlay complete"
-      Write-StartupLog -Component "sync" -Result "ok" -Command "robocopy overlay"
+      Write-Warn "folder is not a git clone - starting with files on disk. Use APPLY-refresh.ps1 to overwrite from GitHub."
+      Write-StartupLog -Component "sync" -Result "skipped" -Reason "not a git clone"
     }
   } catch {
     Write-Warn ("sync failed: " + $_.Exception.Message + " - starting with files on disk")
@@ -452,10 +439,15 @@ SELECT v FROM genesis_launcher_smoke WHERE k = 'launcher';
 }
 
 function Find-WrapperPid([string]$Name) {
-  $marker = "run-$Name.ps1"
+  $hay = "run-genesis-service.ps1"
   try {
     $hits = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
-      Where-Object { $_.CommandLine -and ($_.CommandLine -like "*$marker*") }
+      Where-Object {
+        $c = [string]$_.CommandLine
+        if (-not $c) { return $false }
+        if ($c -notlike "*$hay*") { return $false }
+        return ($c -like "*-Name $Name*") -or ($c -like "*-Name `"$Name`"*")
+      }
     foreach ($h in $hits) { return [int]$h.ProcessId }
   } catch {}
   return 0
@@ -470,7 +462,7 @@ function Test-PidAlive([int]$Id) {
 }
 
 function Start-DetachedSvc {
-  param([string]$Name, [string]$Cmd, [int]$Port = 0, [switch]$Required)
+  param([string]$Name, [int]$Port = 0, [switch]$Required)
   if ($Port -gt 0) {
     $owner = Get-ListenPid $Port
     if ($owner -gt 0) {
@@ -502,41 +494,21 @@ function Start-DetachedSvc {
   $log = Join-Path $logDir "$Name.log"
   try { if (Test-Path $log) { Move-Item -Force $log "$log.old" } } catch {}
   try { "" | Set-Content $log -Encoding ascii } catch {}
-  $pyPath = @(
-    (Join-Path $root "packages\stinky-core\src"),
-    (Join-Path $root "services\event-log\src"),
-    (Join-Path $root "services\api\src"),
-    (Join-Path $root "services\sentinel\src"),
-    (Join-Path $root "services\discord-bot\src"),
-    (Join-Path $root "services\post-migration-collector\src"),
-    (Join-Path $root "services\entity-resolver\src")
-  ) -join ";"
-  $wrapper = Join-Path $launchDir "run-$Name.ps1"
-  $activate = Join-Path $root ".venv\Scripts\Activate.ps1"
-  $pathLiteral = [string]$env:Path
-  if ($pathLiteral) { $pathLiteral = $pathLiteral.Replace("'", "''") }
-  $body = @"
-`$ErrorActionPreference = 'Continue'
-`$env:Path = '$pathLiteral'
-Set-Location -LiteralPath '$root'
-if (Test-Path -LiteralPath '$activate') { & '$activate' }
-`$env:PYTHONPATH = '$pyPath;' + `$env:PYTHONPATH
-`$env:BROWSER = 'none'
-`$env:STINKY_ROOT = '$root'
-Write-Host ('=== $Name pid=' + `$PID)
-Add-Content -LiteralPath '$log' -Value ('[' + (Get-Date -Format o) + '] start pid=' + `$PID)
-$Cmd 2>&1 | Tee-Object -FilePath '$log' -Append
-Add-Content -LiteralPath '$log' -Value ('[' + (Get-Date -Format o) + '] exit LASTEXITCODE=' + `$LASTEXITCODE)
-"@
-  Set-Content -LiteralPath $wrapper -Value $body -Encoding ascii
-  try { Unblock-File -LiteralPath $wrapper -ErrorAction SilentlyContinue } catch {}
 
-  # cmd START creates a new console + process group and breaks away from the
-  # Explorer job object. Closing the launcher window must not kill services.
-  # Concatenate the start line so Windows PowerShell 5.1 does not eat nested quotes.
-  $title = "genesis-$Name"
-  $cmdLine = 'start "' + $title + '" /MIN "' + $psExe + '" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "' + $wrapper + '"'
-  & $cmdExe /d /c $cmdLine
+  $starter = Join-Path $root "scripts\start-genesis-svc.cmd"
+  if (-not (Test-Path -LiteralPath $starter)) {
+    $reason = "missing scripts\start-genesis-svc.cmd"
+    if ($Required) {
+      Fail-Component $Name "DOWN" $reason $log "Pull origin/main and retry."
+    } else {
+      Write-Warn ("{0,-12} $reason" -f $Name)
+    }
+    return 0
+  }
+
+  # Detached via scripts\start-genesis-svc.cmd (cmd START). Breaks away from the Explorer job.
+  # Closing this launcher window must not kill services.
+  & $cmdExe /d /c "`"$starter`" $Name"
   Start-Sleep -Milliseconds 800
   $id = Find-WrapperPid $Name
   if ($id -le 0) {
@@ -545,7 +517,7 @@ Add-Content -LiteralPath '$log' -Value ('[' + (Get-Date -Format o) + '] exit LAS
   }
   if ($id -gt 0) {
     Write-Ok ("{0,-12} PID {1}" -f $Name, $id)
-    Write-StartupLog -Component $Name -Result "started" -PidValue "$id" -Command $Cmd
+    Write-StartupLog -Component $Name -Result "started" -PidValue "$id" -Command ("run-genesis-service.ps1 -Name " + $Name)
     $script:health[$Name] = "STARTED"
     return $id
   }
@@ -655,23 +627,21 @@ try {
 
   Write-Step "[services] start (detached; launcher exit does not kill them)"
   $procs = [ordered]@{}
-  $procs["event-log"] = Start-DetachedSvc "event-log" "& '$venvPy' -m uvicorn event_log.api:app --port 8002 --host 127.0.0.1" -Port 8002 -Required
+  $procs["event-log"] = Start-DetachedSvc "event-log" -Port 8002 -Required
   Start-Sleep 3
-  $procs["api"]       = Start-DetachedSvc "api" "& '$venvPy' -m stinky_api.cli" -Port 8010 -Required
+  $procs["api"]       = Start-DetachedSvc "api" -Port 8010 -Required
   Start-Sleep 2
-  $procs["sentinel"]  = Start-DetachedSvc "sentinel" "& '$venvPy' -m sentinel.cli" -Required
+  $procs["sentinel"]  = Start-DetachedSvc "sentinel" -Required
   Start-Sleep 1
-  $procs["discord"]   = Start-DetachedSvc "discord" "& '$venvPy' -m discord_bot.cli"
+  $procs["discord"]   = Start-DetachedSvc "discord"
   Start-Sleep 1
-  $procs["collector"] = Start-DetachedSvc "collector" "& '$venvPy' -m post_migration.cli"
+  $procs["collector"] = Start-DetachedSvc "collector"
   Start-Sleep 1
-  $procs["entities"]  = Start-DetachedSvc "entities" "& '$venvPy' -m entity_resolver.cli"
+  $procs["entities"]  = Start-DetachedSvc "entities"
   Start-Sleep 1
-  $webCmd = "Set-Location -LiteralPath (Join-Path '$root' 'apps\web'); & '" + $script:NpmCmd + "' run dev -- -p 3000 -H 127.0.0.1"
-  if (-not $script:NpmCmd) { $webCmd = "Set-Location -LiteralPath (Join-Path '$root' 'apps\web'); npm run dev -- -p 3000 -H 127.0.0.1" }
-  $procs["web"]       = Start-DetachedSvc "web" $webCmd -Port 3000 -Required
+  $procs["web"]       = Start-DetachedSvc "web" -Port 3000 -Required
   Start-Sleep 1
-  $procs["maintain"]  = Start-DetachedSvc "maintain" "while (`$true) { try { & '$venvPy' -m post_migration.cli learn-success } catch {}; try { & '$venvPy' -m post_migration.cli recompute-performance } catch {}; Start-Sleep -Seconds 21600 }"
+  $procs["maintain"]  = Start-DetachedSvc "maintain"
   Write-PidFile $procs
 
   Write-Step "[health] real endpoints (not process-exists)"

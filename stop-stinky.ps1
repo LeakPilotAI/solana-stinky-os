@@ -75,6 +75,8 @@ function Test-GenesisOwned([int]$Id) {
     if ($c -match $rootEsc) { return $true }
     if ($c -match "Project-Genesis") { return $true }
     if ($c -match "solana-stinky-os") { return $true }
+    if ($c -match "run-genesis-service\.ps1") { return $true }
+    if ($c -match "start-genesis-svc\.cmd") { return $true }
     if ($c -match "run-(event-log|api|sentinel|discord|collector|entities|web|maintain)\.ps1") { return $true }
     if ($c -match "genesis-(event-log|api|sentinel|discord|collector|entities|web|maintain)") { return $true }
     return $false
@@ -117,7 +119,7 @@ try {
     $rootEsc = [regex]::Escape($root)
     $ownedPath = ($c -match $rootEsc) -or ($c -match "Project-Genesis")
     if (-not $ownedPath) { return }
-    if ($c -match "uvicorn|stinky-|next dev|npm run|event_log|stinky_api|sentinel\.cli|discord_bot|post_migration|entity_resolver|run-(event-log|api|sentinel|discord|collector|entities|web|maintain)\.ps1") {
+    if ($c -match "uvicorn|stinky-|next dev|npm run|event_log|stinky_api|sentinel\.cli|discord_bot|post_migration|entity_resolver|run-genesis-service\.ps1|run-(event-log|api|sentinel|discord|collector|entities|web|maintain)\.ps1") {
       Stop-OwnedPid $id
     }
   }

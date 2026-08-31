@@ -111,4 +111,12 @@ Write-Host "  installing desktop shortcuts" -ForegroundColor Yellow
 
 Write-Host "  starting Genesis" -ForegroundColor Yellow
 & $psExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root "start-stinky.ps1") -SkipSync
+if ($LASTEXITCODE -ne 0) {
+  Write-Host "  START FAILED exit $LASTEXITCODE" -ForegroundColor Red
+  Write-Host "  If Windows said the script contains malicious content:" -ForegroundColor Yellow
+  Write-Host "    Windows Security > Virus and threat protection > Manage settings" -ForegroundColor Yellow
+  Write-Host "    Exclusions > Add folder > $root" -ForegroundColor Yellow
+  Write-Host "    Then double-click Genesis. Do not turn Defender off." -ForegroundColor Yellow
+  exit $LASTEXITCODE
+}
 Write-Host "  DONE. Use the Genesis desktop icon next time." -ForegroundColor Green
