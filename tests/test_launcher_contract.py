@@ -138,3 +138,47 @@ def test_redact_line_contract():
     t = read("start-stinky.ps1")
     assert "Redact-Line" in t
     assert "***" in t
+
+
+def test_apply_launcher_exists_and_does_not_start_by_default():
+    assert (ROOT / "APPLY-launcher.ps1").exists()
+    assert (ROOT / "APPLY-launcher.cmd").exists()
+    t = read("APPLY-launcher.ps1")
+    assert "Restore-SearchPath" in t
+    assert "install-desktop-shortcut.ps1" in t
+    assert "reset --hard origin/main" in t
+    assert "/d /k" in t
+    assert "cmd.exe" in t
+    # apply remakes the shortcut; stack start is opt-in
+    assert "[switch]$Start" in t
+    start_at = t.find("if ($Start)")
+    assert start_at != -1
+    assert t.find("start-stinky.ps1") > start_at
+
+
+def test_start_restores_explorer_path_and_resolves_tools():
+    t = read("start-stinky.ps1")
+    assert "Restore-SearchPath" in t
+    assert "GetEnvironmentVariable" in t
+    assert "Get-DockerExe" in t
+    assert "Get-NpmCmd" in t
+    assert "Unblock-File" in t
+    # detached children inherit the restored PATH
+    assert "`$env:Path = '$pathLiteral'" in t or "$env:Path = '$pathLiteral'" in t
+    assert "NOT ON PATH" in t
+
+
+def test_installer_verifies_cmd_exe_after_save():
+    t = read("install-desktop-shortcut.ps1")
+    assert "VERIFY FAIL" in t or "still points at" in t
+    assert "cmd\\.exe" in t or "cmd.exe" in t
+    assert "Apply Genesis Launcher.lnk" in t
+    assert "OneDrive\\Desktop" in t
+    assert "NO shortcuts written" in t
+
+
+def test_stop_restores_path_for_docker():
+    t = read("stop-stinky.ps1")
+    assert "Restore-SearchPath" in t
+    assert "Docker\\Docker\\resources\\bin" in t
+    assert "Test-GenesisOwned" in t

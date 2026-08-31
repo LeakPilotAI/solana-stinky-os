@@ -1,10 +1,56 @@
-# APPLY-refresh.ps1 - overwrite D:\Work\Project-Genesis from GitHub.
+# APPLY-refresh.ps1 - overwrite Project-Genesis from GitHub.
 # Preserves .env. Recreates desktop launcher. Starts Genesis.
 # ASCII only. No nested cmd /c quotes (Windows PowerShell 5.1 parser).
 
 $ErrorActionPreference = "Continue"
-$root = "D:\Work\Project-Genesis"
 $repo = "https://github.com/LeakPilotAI/solana-stinky-os.git"
+$operatorRoot = "D:\Work\Project-Genesis"
+
+function Get-ScriptRoot {
+  if ($PSScriptRoot) { return $PSScriptRoot }
+  if ($MyInvocation.MyCommand.Path) { return (Split-Path -Parent $MyInvocation.MyCommand.Path) }
+  return (Get-Location).Path
+}
+
+function Restore-SearchPath {
+  try {
+    $machine = [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $user = [Environment]::GetEnvironmentVariable("Path", "User")
+    $parts = @()
+    if ($machine) { $parts += $machine }
+    if ($user) { $parts += $user }
+    if ($env:Path) { $parts += $env:Path }
+    if ($parts.Count -gt 0) { $env:Path = ($parts -join ";") }
+  } catch {}
+  $pf = $env:ProgramFiles
+  $pfx86 = ${env:ProgramFiles(x86)}
+  $la = $env:LOCALAPPDATA
+  $extras = @(
+    (Join-Path $pf "Git\cmd"),
+    (Join-Path $pf "Git\bin"),
+    (Join-Path $pf "Docker\Docker\resources\bin"),
+    (Join-Path $pf "nodejs"),
+    (Join-Path $la "Programs\Git\cmd"),
+    (Join-Path $la "Programs\Python\Launcher"),
+    (Join-Path $la "Programs\Python\Python312"),
+    (Join-Path $la "Programs\Python\Python312\Scripts")
+  )
+  if ($pfx86) { $extras += (Join-Path $pfx86 "Git\cmd") }
+  foreach ($d in $extras) {
+    if ($d -and (Test-Path -LiteralPath $d) -and ($env:Path -notlike ("*" + $d + "*"))) {
+      $env:Path = $d + ";" + $env:Path
+    }
+  }
+}
+
+Restore-SearchPath
+
+$here = Get-ScriptRoot
+if (Test-Path -LiteralPath (Join-Path $here "docker-compose.yml")) {
+  $root = $here
+} else {
+  $root = $operatorRoot
+}
 
 Write-Host ""
 Write-Host "  GENESIS refresh -> $root" -ForegroundColor Cyan
@@ -21,10 +67,13 @@ if (Test-Path -LiteralPath $envFile) {
   Write-Host "  backed up .env" -ForegroundColor Green
 }
 
+$psExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+if (-not (Test-Path -LiteralPath $psExe)) { $psExe = "powershell.exe" }
+
 $stop = Join-Path $root "stop-stinky.ps1"
 if (Test-Path $stop) {
   Write-Host "  stopping running instance..." -ForegroundColor Yellow
-  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $stop
+  & $psExe -NoProfile -ExecutionPolicy Bypass -File $stop
   Start-Sleep 2
 }
 
@@ -32,7 +81,6 @@ if (Test-Path (Join-Path $root ".git")) {
   Write-Host "  git fetch + reset --hard origin/main" -ForegroundColor Yellow
   git -C $root remote set-url origin $repo
   git -C $root fetch origin
-  # reset first so a dirty tree cannot abort checkout
   git -C $root reset --hard origin/main
   git -C $root checkout -f -B main origin/main
 } elseif (Test-Path $root) {
@@ -59,8 +107,8 @@ if (Test-Path -LiteralPath $envBak) {
 }
 
 Write-Host "  installing desktop shortcuts" -ForegroundColor Yellow
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root "install-desktop-shortcut.ps1")
+& $psExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root "install-desktop-shortcut.ps1")
 
 Write-Host "  starting Genesis" -ForegroundColor Yellow
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root "start-stinky.ps1") -SkipSync
+& $psExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root "start-stinky.ps1") -SkipSync
 Write-Host "  DONE. Use the Genesis desktop icon next time." -ForegroundColor Green

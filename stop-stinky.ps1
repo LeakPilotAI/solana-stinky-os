@@ -10,6 +10,31 @@ function Get-ScriptRoot {
   return (Get-Location).Path
 }
 
+function Restore-SearchPath {
+  try {
+    $machine = [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $user = [Environment]::GetEnvironmentVariable("Path", "User")
+    $parts = @()
+    if ($machine) { $parts += $machine }
+    if ($user) { $parts += $user }
+    if ($env:Path) { $parts += $env:Path }
+    if ($parts.Count -gt 0) { $env:Path = ($parts -join ";") }
+  } catch {}
+  $extras = @(
+    (Join-Path $env:ProgramFiles "Git\cmd"),
+    (Join-Path $env:ProgramFiles "Git\bin"),
+    (Join-Path $env:ProgramFiles "Docker\Docker\resources\bin"),
+    (Join-Path $env:ProgramFiles "nodejs")
+  )
+  foreach ($d in $extras) {
+    if ($d -and (Test-Path -LiteralPath $d) -and ($env:Path -notlike ("*" + $d + "*"))) {
+      $env:Path = $d + ";" + $env:Path
+    }
+  }
+}
+
+Restore-SearchPath
+
 $here = Get-ScriptRoot
 $operatorRoot = "D:\Work\Project-Genesis"
 if (Test-Path -LiteralPath (Join-Path $here "docker-compose.yml")) {
@@ -114,7 +139,17 @@ foreach ($port in 8002, 8010, 3000) {
 Start-Sleep 2
 if (Test-Path -LiteralPath (Join-Path $root "docker-compose.yml")) {
   Write-Host "Stopping Genesis containers (volumes kept, Docker Desktop not quit)..." -ForegroundColor Yellow
-  docker compose -f "$root\docker-compose.yml" stop 2>$null
+  $docker = $null
+  $dc = Get-Command docker -ErrorAction SilentlyContinue
+  if ($dc -and $dc.Source) { $docker = [string]$dc.Source }
+  elseif (Test-Path -LiteralPath (Join-Path $env:ProgramFiles "Docker\Docker\resources\bin\docker.exe")) {
+    $docker = Join-Path $env:ProgramFiles "Docker\Docker\resources\bin\docker.exe"
+  }
+  if ($docker) {
+    & $docker compose -f "$root\docker-compose.yml" stop 2>$null
+  } else {
+    docker compose -f "$root\docker-compose.yml" stop 2>$null
+  }
   Write-StartupLog "docker-compose" "stopped" "genesis compose project only"
 }
 Write-Host "STOPPED." -ForegroundColor Green

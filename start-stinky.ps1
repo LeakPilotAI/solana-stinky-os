@@ -20,6 +20,48 @@ function Get-ScriptRoot {
   return (Get-Location).Path
 }
 
+function Restore-SearchPath {
+  # Explorer desktop shortcuts often miss user PATH (git/docker/py/npm).
+  try {
+    $machine = [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $user = [Environment]::GetEnvironmentVariable("Path", "User")
+    $parts = @()
+    if ($machine) { $parts += $machine }
+    if ($user) { $parts += $user }
+    if ($env:Path) { $parts += $env:Path }
+    if ($parts.Count -gt 0) { $env:Path = ($parts -join ";") }
+  } catch {}
+  $pf = $env:ProgramFiles
+  $pfx86 = ${env:ProgramFiles(x86)}
+  $la = $env:LOCALAPPDATA
+  $extras = @(
+    (Join-Path $pf "Git\cmd"),
+    (Join-Path $pf "Git\bin"),
+    (Join-Path $pf "Docker\Docker\resources\bin"),
+    (Join-Path $pf "nodejs"),
+    (Join-Path $la "Programs\Git\cmd"),
+    (Join-Path $la "Programs\nodejs"),
+    (Join-Path $env:APPDATA "npm"),
+    (Join-Path $la "Programs\Python\Launcher"),
+    (Join-Path $la "Programs\Python\Python312"),
+    (Join-Path $la "Programs\Python\Python312\Scripts"),
+    (Join-Path $la "Programs\Python\Python313"),
+    (Join-Path $la "Programs\Python\Python313\Scripts"),
+    "C:\Python312",
+    "C:\Python312\Scripts",
+    "C:\Python313",
+    "C:\Python313\Scripts"
+  )
+  if ($pfx86) { $extras += (Join-Path $pfx86 "Git\cmd") }
+  foreach ($d in $extras) {
+    if ($d -and (Test-Path -LiteralPath $d) -and ($env:Path -notlike ("*" + $d + "*"))) {
+      $env:Path = $d + ";" + $env:Path
+    }
+  }
+}
+
+Restore-SearchPath
+
 $here = Get-ScriptRoot
 $operatorRoot = "D:\Work\Project-Genesis"
 if (Test-Path -LiteralPath (Join-Path $here "docker-compose.yml")) {
@@ -45,6 +87,38 @@ $script:health = [ordered]@{}
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 New-Item -ItemType Directory -Force -Path $launchDir | Out-Null
 Set-Location -LiteralPath $root
+
+Get-ChildItem -Path (Join-Path $root "*") -Include *.ps1,*.cmd -File -ErrorAction SilentlyContinue | ForEach-Object {
+  try { Unblock-File -LiteralPath $_.FullName -ErrorAction SilentlyContinue } catch {}
+}
+
+function Get-DockerExe {
+  $c = Get-Command docker -ErrorAction SilentlyContinue
+  if ($c -and $c.Source) { return [string]$c.Source }
+  $hits = @(
+    (Join-Path $env:ProgramFiles "Docker\Docker\resources\bin\docker.exe")
+  )
+  foreach ($h in $hits) {
+    if ($h -and (Test-Path -LiteralPath $h)) { return $h }
+  }
+  return $null
+}
+
+function Get-NpmCmd {
+  $c = Get-Command npm -ErrorAction SilentlyContinue
+  if ($c -and $c.Source) { return [string]$c.Source }
+  $hits = @(
+    (Join-Path $env:ProgramFiles "nodejs\npm.cmd"),
+    (Join-Path $env:LOCALAPPDATA "Programs\nodejs\npm.cmd")
+  )
+  foreach ($h in $hits) {
+    if ($h -and (Test-Path -LiteralPath $h)) { return $h }
+  }
+  return $null
+}
+
+$script:DockerExe = Get-DockerExe
+$script:NpmCmd = Get-NpmCmd
 
 function Write-Step([string]$Msg) { Write-Host ""; Write-Host $Msg -ForegroundColor Cyan }
 function Write-Ok([string]$Msg) { Write-Host "  $Msg" -ForegroundColor Green }
@@ -218,6 +292,20 @@ function Ensure-DotEnv {
 }
 
 function Get-Python {
+  $explicit = @(
+    (Join-Path $env:LOCALAPPDATA "Programs\Python\Python312\python.exe"),
+    (Join-Path $env:LOCALAPPDATA "Programs\Python\Python313\python.exe"),
+    "C:\Python312\python.exe",
+    "C:\Python313\python.exe"
+  )
+  foreach ($exe in $explicit) {
+    if (-not $exe) { continue }
+    if (-not (Test-Path -LiteralPath $exe)) { continue }
+    try {
+      $ver = & $exe --version 2>&1 | Out-String
+      if ($ver -match "Python 3\.(1[2-9]|[2-9]\d)") { return @{ Exe = $exe; Args = @() } }
+    } catch {}
+  }
   $candidates = @(
     @{ Exe = "py"; Args = @("-3.12") },
     @{ Exe = "py"; Args = @("-3") },
@@ -229,7 +317,7 @@ function Get-Python {
       if ($ver -match "Python 3\.(1[2-9]|[2-9]\d)") { return $c }
     } catch {}
   }
-  throw "Python 3.12+ not found. Install python.org 3.12 and retry."
+  throw "Python 3.12+ not found. Install python.org 3.12 and retry. Desktop launches need Python on Machine or User PATH."
 }
 
 function Ensure-Venv {
@@ -261,17 +349,30 @@ function Ensure-Web {
   $web = Join-Path $root "apps\web"
   if (-not (Test-Path (Join-Path $web "package.json"))) { return }
   Write-Step "[deps] npm install (web)"
+  $npm = $script:NpmCmd
+  if (-not $npm) { $npm = Get-NpmCmd }
+  if (-not $npm) {
+    Fail-Component "FRONTEND" "DOWN" "npm not found after PATH restore" "" "Install Node.js LTS, then double-click Genesis again."
+    throw "npm not found"
+  }
   Push-Location $web
   try {
-    npm install --no-fund --no-audit 2>&1 | Select-Object -Last 5 | Out-Host
+    & $npm install --no-fund --no-audit 2>&1 | Select-Object -Last 5 | Out-Host
   } finally { Pop-Location }
   Write-Ok "web deps ready"
-  Write-StartupLog -Component "web-deps" -Result "ok" -Command "npm install"
+  Write-StartupLog -Component "web-deps" -Result "ok" -Command "$npm install"
 }
 
 function Ensure-Docker {
   Write-Step "[docker] compose up (Postgres 5433 / Redis 6380 / MinIO 9010)"
-  $null = docker info 2>$null
+  $docker = $script:DockerExe
+  if (-not $docker) { $docker = Get-DockerExe }
+  $script:DockerExe = $docker
+  if (-not $docker) {
+    Fail-Component "Docker" "DOWN" "docker.exe not found after PATH restore" "" "Install Docker Desktop, start it, then double-click Genesis again."
+    throw "Docker is not running."
+  }
+  $null = & $docker info 2>$null
   if ($LASTEXITCODE -ne 0) {
     $dd = Join-Path $env:ProgramFiles "Docker\Docker\Docker Desktop.exe"
     if (Test-Path $dd) {
@@ -280,22 +381,22 @@ function Ensure-Docker {
     }
     for ($i = 0; $i -lt 40; $i++) {
       Start-Sleep 3
-      $null = docker info 2>$null
+      $null = & $docker info 2>$null
       if ($LASTEXITCODE -eq 0) { break }
     }
   }
-  $null = docker info 2>$null
+  $null = & $docker info 2>$null
   if ($LASTEXITCODE -ne 0) {
     Fail-Component "Docker" "DOWN" "Docker is not running" "" "Start Docker Desktop and double-click Genesis again."
     throw "Docker is not running."
   }
-  docker compose -f "$root\docker-compose.yml" up -d 2>&1 | Out-Host
-  Write-StartupLog -Component "docker" -Result "started" -Command "docker compose up -d"
+  & $docker compose -f "$root\docker-compose.yml" up -d 2>&1 | Out-Host
+  Write-StartupLog -Component "docker" -Result "started" -Command "$docker compose up -d"
   $pgOk = $false
   $rdOk = $false
   for ($i = 0; $i -lt 40; $i++) {
-    $pg = docker exec stinky-postgres pg_isready -U stinky -d stinky 2>$null
-    $rd = docker exec stinky-redis redis-cli ping 2>$null
+    $pg = & $docker exec stinky-postgres pg_isready -U stinky -d stinky 2>$null
+    $rd = & $docker exec stinky-redis redis-cli ping 2>$null
     if ("$pg" -match "accepting") { $pgOk = $true }
     if ("$rd" -match "PONG") { $rdOk = $true }
     if ($pgOk -and $rdOk) { break }
@@ -322,7 +423,7 @@ function Apply-Schema {
     Sort-Object Name
   foreach ($f in $files) {
     Write-Host ("  " + $f.Name)
-    Get-Content -LiteralPath $f.FullName -Raw | docker exec -i stinky-postgres psql -U stinky -d stinky -v ON_ERROR_STOP=0 2>&1 | Out-Null
+    Get-Content -LiteralPath $f.FullName -Raw | & $script:DockerExe exec -i stinky-postgres psql -U stinky -d stinky -v ON_ERROR_STOP=0 2>&1 | Out-Null
   }
   Write-Ok "schema applied"
   Write-StartupLog -Component "schema" -Result "ok"
@@ -340,7 +441,7 @@ INSERT INTO genesis_launcher_smoke(k, v) VALUES ('launcher', 'ok')
   ON CONFLICT (k) DO UPDATE SET v = 'ok', at = now();
 SELECT v FROM genesis_launcher_smoke WHERE k = 'launcher';
 "@
-  $raw = $sql | docker exec -i stinky-postgres psql -U stinky -d stinky -v ON_ERROR_STOP=0 -t -A 2>&1
+  $raw = $sql | & $script:DockerExe exec -i stinky-postgres psql -U stinky -d stinky -v ON_ERROR_STOP=0 -t -A 2>&1
   if ("$raw" -match "ok") {
     Write-Ok "wrote and read launcher smoke row"
     Write-StartupLog -Component "persist" -Result "ok" -Reason "write+read genesis_launcher_smoke"
@@ -412,8 +513,11 @@ function Start-DetachedSvc {
   ) -join ";"
   $wrapper = Join-Path $launchDir "run-$Name.ps1"
   $activate = Join-Path $root ".venv\Scripts\Activate.ps1"
+  $pathLiteral = [string]$env:Path
+  if ($pathLiteral) { $pathLiteral = $pathLiteral.Replace("'", "''") }
   $body = @"
 `$ErrorActionPreference = 'Continue'
+`$env:Path = '$pathLiteral'
 Set-Location -LiteralPath '$root'
 if (Test-Path -LiteralPath '$activate') { & '$activate' }
 `$env:PYTHONPATH = '$pyPath;' + `$env:PYTHONPATH
@@ -484,6 +588,11 @@ Write-Host "  $root"
 Write-Host ("  PowerShell " + $PSVersionTable.PSVersion.ToString() + "  cwd=" + (Get-Location).Path) -ForegroundColor DarkGray
 Write-Host "  Gate 1 = 150k USD / 5m  clamp 200k  (not a buy)" -ForegroundColor DarkGray
 Write-Host "  Closing this window does NOT stop Genesis." -ForegroundColor DarkGray
+foreach ($n in @("git", "docker", "py", "python", "npm")) {
+  $c = Get-Command $n -ErrorAction SilentlyContinue
+  if ($c) { Write-Host ("  {0,-8} {1}" -f $n, $c.Source) -ForegroundColor DarkGray }
+  else { Write-Host ("  {0,-8} NOT ON PATH" -f $n) -ForegroundColor Yellow }
+}
 Write-Host ""
 Write-StartupLog -Component "launcher" -Result "begin" -Command "start-stinky.ps1" -Reason ("ps=" + $PSVersionTable.PSVersion.ToString() + " root=" + $root)
 
@@ -513,7 +622,8 @@ if (-not $Restart -and (Test-CoreHealthy)) {
     if ($op.discord.delivery) { $script:health["DISCORD DELIVERY"] = [string]$op.discord.delivery }
   }
   if ($op -and $op.quality_state -and $op.quality_state.current) { $script:health["QUALITY"] = [string]$op.quality_state.current }
-  $rd = docker exec stinky-redis redis-cli ping 2>$null
+  $rd = $null
+  if ($script:DockerExe) { $rd = & $script:DockerExe exec stinky-redis redis-cli ping 2>$null }
   if ("$rd" -match "PONG") { $script:health["REDIS"] = "CONNECTED" } else { $script:health["REDIS"] = "UNKNOWN" }
   Show-HealthTable
   try { Start-Process "http://127.0.0.1:3000/operator" } catch {
@@ -557,7 +667,9 @@ try {
   Start-Sleep 1
   $procs["entities"]  = Start-DetachedSvc "entities" "& '$venvPy' -m entity_resolver.cli"
   Start-Sleep 1
-  $procs["web"]       = Start-DetachedSvc "web" "Set-Location -LiteralPath (Join-Path '$root' 'apps\web'); npm run dev -- -p 3000 -H 127.0.0.1" -Port 3000 -Required
+  $webCmd = "Set-Location -LiteralPath (Join-Path '$root' 'apps\web'); & '" + $script:NpmCmd + "' run dev -- -p 3000 -H 127.0.0.1"
+  if (-not $script:NpmCmd) { $webCmd = "Set-Location -LiteralPath (Join-Path '$root' 'apps\web'); npm run dev -- -p 3000 -H 127.0.0.1" }
+  $procs["web"]       = Start-DetachedSvc "web" $webCmd -Port 3000 -Required
   Start-Sleep 1
   $procs["maintain"]  = Start-DetachedSvc "maintain" "while (`$true) { try { & '$venvPy' -m post_migration.cli learn-success } catch {}; try { & '$venvPy' -m post_migration.cli recompute-performance } catch {}; Start-Sleep -Seconds 21600 }"
   Write-PidFile $procs
