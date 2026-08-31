@@ -17,6 +17,11 @@ if not "%ERR%"=="0" (
   echo   Component / status / error are above.
   echo   Log: %~dp0logs\startup.log
   echo   This window stays open so you can copy the failure.
+  echo.
+  echo   If Windows said the script contains malicious content:
+  echo     Windows Security  -  Virus and threat protection  -  Manage settings
+  echo     Exclusions  -  Add folder  -  %~dp0
+  echo     Then double-click Genesis again. Do not turn Defender off.
 ) else (
   echo   Genesis is running in the background.
   echo   Operator:  http://127.0.0.1:3000/operator

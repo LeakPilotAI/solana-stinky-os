@@ -29,6 +29,8 @@ That APPLY step:
 4. Writes `Genesis.lnk` as `cmd.exe /d /k` with an absolute working directory
 5. Reads the shortcut back and prints Target / Arguments / WorkingDirectory
 
+A failed save under `C:\Users\Public\Desktop` is expected without admin. Your OneDrive/user desktop shortcut is the one that matters.
+
 VS Code equivalent: **Terminal → Run Task… → Apply Genesis Launcher**.
 
 If `APPLY-launcher.ps1` is missing after the reset, remake the icon only:
@@ -42,6 +44,15 @@ To pull **and start** the OS in the same VS Code terminal:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\APPLY-refresh.ps1
 ```
+
+If Windows says `start-stinky.ps1` **contains malicious content**, Defender AMSI blocked the launcher. Do not turn Defender off. Add a folder exclusion, then double-click Genesis:
+
+```powershell
+# elevated PowerShell (Run as administrator)
+Add-MpPreference -ExclusionPath "D:\Work\Project-Genesis"
+```
+
+Or: Windows Security → Virus & threat protection → Manage settings → Exclusions → Add folder → `D:\Work\Project-Genesis`.
 
 The shortcut is:
 

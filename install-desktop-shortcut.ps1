@@ -25,7 +25,9 @@ foreach ($f in @(
   $refreshCmd,
   $applyCmd,
   (Join-Path $root "APPLY-refresh.ps1"),
-  (Join-Path $root "APPLY-launcher.ps1")
+  (Join-Path $root "APPLY-launcher.ps1"),
+  (Join-Path $root "scripts\run-genesis-service.ps1"),
+  (Join-Path $root "scripts\start-genesis-svc.cmd")
 )) {
   if (Test-Path -LiteralPath $f) { Unblock-File -LiteralPath $f -ErrorAction SilentlyContinue }
 }
@@ -46,7 +48,17 @@ if (Test-Path $od) { $desktops += $od }
 $userDesk = Join-Path $env:USERPROFILE "Desktop"
 if (Test-Path $userDesk) { $desktops += $userDesk }
 $pub = [Environment]::GetFolderPath("CommonDesktopDirectory")
-if ($pub -and (Test-Path $pub)) { $desktops += $pub }
+if ($pub -and (Test-Path $pub)) {
+  $canPub = $false
+  try {
+    $probe = Join-Path $pub ("genesis-write-probe-" + [guid]::NewGuid().ToString("N") + ".tmp")
+    [System.IO.File]::WriteAllText($probe, "ok")
+    Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+    $canPub = $true
+  } catch { $canPub = $false }
+  if ($canPub) { $desktops += $pub }
+  else { Write-Host "  skip $pub (no permission)" -ForegroundColor DarkGray }
+}
 $startMenu = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
 if (Test-Path $startMenu) { $desktops += $startMenu }
 $desktops += $root
@@ -79,7 +91,7 @@ foreach ($desk in ($desktops | Select-Object -Unique)) {
     $sc.WindowStyle = 1
     $sc.Description = $pair.Desc
     try { $sc.Save() } catch {
-      Write-Host "FAILED save $lnk  $($_.Exception.Message)" -ForegroundColor Red
+      Write-Host "  skip $lnk (no permission)" -ForegroundColor DarkGray
       continue
     }
     $check = $ws.CreateShortcut($lnk)

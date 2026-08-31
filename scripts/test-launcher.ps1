@@ -33,11 +33,15 @@ Assert-NotContains "stop-stinky.ps1" "Get-Process node" "must not kill generic n
 Assert-Contains "install-desktop-shortcut.ps1" "System32\cmd.exe" "shortcut uses absolute cmd.exe"
 Assert-Contains "install-desktop-shortcut.ps1" "/d /k" "shortcut keeps the window open"
 Assert-Contains "start-stinky.ps1" "Restore-SearchPath" "Explorer PATH restore"
+Assert-Contains "start-stinky.ps1" "start-genesis-svc.cmd" "static cmd START helper"
+Assert-NotContains "start-stinky.ps1" "Unblock-File" "mass Unblock-File trips Defender AMSI"
+Assert-NotContains "start-stinky.ps1" "main.zip" "zip overlay is a dropper pattern"
+Assert-Contains "scripts/start-genesis-svc.cmd" "run-genesis-service.ps1" "allowlisted runner"
 Assert-Contains "APPLY-launcher.ps1" "install-desktop-shortcut.ps1" "VS Code apply remakes the shortcut"
 Assert-Contains "APPLY-launcher.ps1" "[switch]$Start" "apply does not start the stack unless asked"
 
 Write-Host "syntax parse" -ForegroundColor Cyan
-foreach ($f in @("start-stinky.ps1", "stop-stinky.ps1", "install-desktop-shortcut.ps1", "APPLY-launcher.ps1", "APPLY-refresh.ps1")) {
+foreach ($f in @("start-stinky.ps1", "stop-stinky.ps1", "install-desktop-shortcut.ps1", "APPLY-launcher.ps1", "APPLY-refresh.ps1", "scripts/run-genesis-service.ps1")) {
   $errs = $null
   $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root $f), [ref]$null, [ref]$errs)
   if ($errs) { throw "$f parse: $($errs | Out-String)" }
