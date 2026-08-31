@@ -6,7 +6,7 @@ Gate 1 is **$150k / 5m volume**, clamp **$200k**. That is an investigation trigg
 
 ---
 
-## Windows operator box (`D:\\Work\\Project-Genesis`)
+## Windows operator box (`D:\Work\Project-Genesis`)
 
 Double-click **Genesis** on the desktop.
 
@@ -25,7 +25,7 @@ Stop with the **Stop Genesis** desktop icon. Stop only kills Genesis-owned proce
 
 To overwrite the folder from GitHub (`.env` kept), use **Refresh Genesis** — that is explicit, not part of a normal double-click.
 
-Startup log: `logs\\startup.log` (secrets redacted).
+Startup log: `logs\startup.log` (secrets redacted).
 
 | Need | Port | Owner |
 |---|---|---|
@@ -43,7 +43,7 @@ Discord with an empty token is UNKNOWN, not a crash of the rest of the box.
 Recreate shortcuts:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\\install-desktop-shortcut.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install-desktop-shortcut.ps1
 ```
 
 ---
