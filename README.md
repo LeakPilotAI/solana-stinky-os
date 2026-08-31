@@ -6,36 +6,45 @@ Gate 1 is **$150k / 5m volume**, clamp **$200k**. That is an investigation trigg
 
 ---
 
-## Windows operator box (`D:\Work\Project-Genesis`)
+## Windows operator box (`D:\\Work\\Project-Genesis`)
 
-One-time refresh (preserves `.env`):
+Double-click **Genesis** on the desktop.
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\APPLY-refresh.ps1
-```
+The shortcut runs `cmd.exe /d /k` with absolute paths at this folder. It does **not** depend on the current working directory, a prior terminal, or PowerShell execution policy.
 
-That overwrites the folder from GitHub, keeps Discord/RPC secrets, installs desktop shortcuts, and starts the OS.
+Every **start**:
 
-After that, double-click **Genesis** on the desktop. Every launch:
+1. If API + operator UI are already healthy: print **ALREADY RUNNING** and reuse them (no duplicates)
+2. Else start Genesis-owned infrastructure (Docker compose: Postgres 5433 / Redis 6380 / MinIO 9010)
+3. Start backend, frontend, Sentinel in detached consoles so **closing the launcher window does not kill Genesis**
+4. Health-check real endpoints, then open **http://127.0.0.1:3000/operator**
 
-1. Stops the previous instance
-2. Pulls latest `main` (`.env` kept)
-3. Ensures Python venv + npm + Docker
-4. Applies SQL migrations (operator tables included)
-5. Starts sentinel, API, event-log, collector, entities, Discord, web
-6. Opens **http://127.0.0.1:3000/operator**
+The launcher window **stays open** with the health table. Press a key to dismiss it. Services stay up.
 
-Stop with the **Stop Genesis** desktop icon.
+Stop with the **Stop Genesis** desktop icon. Stop only kills Genesis-owned processes/containers (PID file, command line, compose project). It will not kill ATLAS.
 
-| Need | Port |
-|---|---|
-| Operator UI | 3000 |
-| API | 8010 |
-| Event log | 8002 |
-| Postgres | 5433 |
-| Redis | 6380 |
+To overwrite the folder from GitHub (`.env` kept), use **Refresh Genesis** — that is explicit, not part of a normal double-click.
+
+Startup log: `logs\\startup.log` (secrets redacted).
+
+| Need | Port | Owner |
+|---|---|---|
+| Operator UI | 3000 | Genesis |
+| API | 8010 | Genesis |
+| Event log | 8002 | Genesis |
+| Postgres | 5433 | Genesis (`stinky-postgres`) |
+| Redis | 6380 | Genesis (`stinky-redis`) |
+| MinIO | 9010 / 9011 | Genesis |
+
+Ports 8000 / 5432 / 6379 are left alone for ATLAS coexistence.
 
 Discord with an empty token is UNKNOWN, not a crash of the rest of the box.
+
+Recreate shortcuts:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\\install-desktop-shortcut.ps1
+```
 
 ---
 
