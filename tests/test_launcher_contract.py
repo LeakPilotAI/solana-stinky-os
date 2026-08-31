@@ -45,12 +45,12 @@ def test_shortcut_installer_absolute_cmd_exe():
 def test_start_has_duplicate_protection_before_stop():
     t = read("start_genesis.py")
     already = t.find("ALREADY RUNNING")
-    restart_stop = t.find("Restart requested")
+    stop_fn = t.find("def stop_owned_instance")
     assert already != -1
-    assert restart_stop != -1
-    assert already < restart_stop
+    assert stop_fn != -1
     assert "core_healthy" in t
-    assert "args.restart" in t
+    assert "--keep" in t
+    assert "args.keep" in t
 
 
 def test_start_writes_startup_log_and_redacts_secrets():
@@ -124,10 +124,27 @@ def test_git_sync_is_opt_in():
     t = read("start_genesis.py")
     assert "--sync" in t
     assert "if not do_sync or skip_sync" in t
-    begin = t.find("if not args.restart and core_healthy()")
-    assert begin != -1
-    stop_always = t.find('Stop previous instance')
-    assert stop_always == -1
+
+
+def test_default_start_stops_then_starts():
+    t = read("start_genesis.py")
+    assert "def stop_owned_instance" in t
+    stop_at = t.find("stop_owned_instance()")
+    start_at = t.find('start_detached("event-log"')
+    assert 0 <= stop_at < start_at
+    assert "taskkill" in t
+    assert "not Genesis-owned" in t
+    assert "8001" not in t[t.find("def stop_owned_instance") : t.find("def clean_broken_dists")]
+    assert "foreach ($port in 8002, 8010, 3000, 8001)" not in t
+    assert "utf-8-sig" in t
+    assert "configure_stdio" in t
+    assert "clean_broken_dists" in t
+
+
+def test_sql_migrations_have_no_bom():
+    for p in (ROOT / "services").rglob("*.sql"):
+        data = p.read_bytes()[:4]
+        assert not data.startswith(b"\xef\xbb\xbf"), str(p)
 
 
 def test_start_does_not_sleep_then_exit():

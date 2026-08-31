@@ -1,4 +1,4 @@
-﻿CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE TABLE IF NOT EXISTS entities (
     entity_id       UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     entity_type     TEXT NOT NULL DEFAULT 'operator',

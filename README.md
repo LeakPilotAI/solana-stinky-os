@@ -27,6 +27,8 @@ Start chain:
 
 `Genesis.lnk` → `Start-Stinky-OS.cmd` → `.venv\Scripts\python.exe start_genesis.py`
 
+One click **stops leftover Genesis-owned processes**, then starts a clean instance. It does not kill ATLAS. Stop Genesis still works.
+
 `start-stinky.ps1` is gone. Windows Defender AMSI was blocking it.
 
 VS Code equivalent: **Terminal → Run Task… → Apply Genesis Launcher**.

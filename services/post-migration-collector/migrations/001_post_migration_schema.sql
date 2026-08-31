@@ -1,4 +1,4 @@
-﻿-- Stinky OS â€“ Post-Migration Intelligence Collector
+-- Stinky OS â€“ Post-Migration Intelligence Collector
 -- Migration 001
 -- Materialized views derived from events; still event-sourced (ADR-002)
 
