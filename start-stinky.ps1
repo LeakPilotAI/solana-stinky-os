@@ -1,6 +1,6 @@
-# start-stinky.ps1 — one-click Genesis operator box.
+# start-stinky.ps1 - one-click Genesis operator box.
 # Desktop shortcut: Start-Stinky-OS.cmd
-# Preserves .env. Gate 1 stays $150k / $200k clamp.
+# Preserves .env. Gate 1 stays 150k / 200k clamp.
 # Stop with Stop-Stinky-OS.cmd / stop-stinky.ps1
 param(
   [switch]$SkipSync,
@@ -11,7 +11,6 @@ $root = "D:\Work\Project-Genesis"
 $repo = "https://github.com/LeakPilotAI/solana-stinky-os.git"
 $logDir = Join-Path $root "logs"
 $venvPy = Join-Path $root ".venv\Scripts\python.exe"
-$venvPip = Join-Path $root ".venv\Scripts\pip.exe"
 $pidFile = Join-Path $logDir "stinky-pids.txt"
 
 if (-not (Test-Path -LiteralPath $root)) {
@@ -43,7 +42,7 @@ function Restore-DotEnv([string]$Bak) {
 }
 
 function Sync-FromGitHub {
-  if ($SkipSync) { Write-Warn "SkipSync — using files on disk"; return }
+  if ($SkipSync) { Write-Warn "SkipSync - using files on disk"; return }
   if ($env:STINKY_SKIP_SYNC -eq "1") { Write-Warn "STINKY_SKIP_SYNC=1"; return }
   $bak = Backup-DotEnv
   try {
@@ -51,9 +50,9 @@ function Sync-FromGitHub {
       Write-Step "[sync] git fetch + reset origin/main (keeps .env)"
       git -C $root remote set-url origin $repo 2>$null
       git -C $root fetch origin 2>&1 | Out-Host
-      git -C $root checkout -B main origin/main 2>&1 | Out-Host
       git -C $root reset --hard origin/main 2>&1 | Out-Host
-      Write-Ok "tree = $(git -C $root rev-parse --short HEAD)"
+      git -C $root checkout -f -B main origin/main 2>&1 | Out-Host
+      Write-Ok ("tree = " + (git -C $root rev-parse --short HEAD))
     } else {
       Write-Step "[sync] overlay from GitHub zip (folder is not a git clone)"
       $zip = Join-Path $env:TEMP "genesis-main.zip"
@@ -62,11 +61,11 @@ function Sync-FromGitHub {
       Invoke-WebRequest -Uri "https://github.com/LeakPilotAI/solana-stinky-os/archive/refs/heads/main.zip" -OutFile $zip -UseBasicParsing
       Expand-Archive -Force -Path $zip -DestinationPath $extract
       $src = Get-ChildItem $extract -Directory | Select-Object -First 1
-      robocopy $src.FullName $root /E /XD .git .venv node_modules logs dumps .next __pycache__ /XF .env /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
+      & robocopy $src.FullName $root /E /XD .git .venv node_modules logs dumps .next __pycache__ /XF .env /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
       Write-Ok "overlay complete"
     }
   } catch {
-    Write-Warn "sync failed: $($_.Exception.Message) — starting with files on disk"
+    Write-Warn ("sync failed: " + $_.Exception.Message + " - starting with files on disk")
   }
   Restore-DotEnv $bak
 }
@@ -77,7 +76,7 @@ function Ensure-DotEnv {
   if (-not (Test-Path -LiteralPath $envFile)) {
     if (Test-Path -LiteralPath $example) {
       Copy-Item $example $envFile
-      Write-Warn "created .env from .env.example — add Discord token locally if you want alerts"
+      Write-Warn "created .env from .env.example - add Discord token locally if you want alerts"
     }
   } else {
     Write-Ok ".env present (secrets kept)"
@@ -163,16 +162,16 @@ function Ensure-Docker {
     }
     Start-Sleep 2
   }
-  Write-Warn "Postgres/Redis not confirmed ready — continuing"
+  Write-Warn "Postgres/Redis not confirmed ready - continuing"
 }
 
 function Apply-Schema {
-  Write-Step "[schema] apply SQL migrations (IF NOT EXISTS / fail-soft)"
+  Write-Step "[schema] apply SQL migrations (fail-soft)"
   $files = Get-ChildItem -Path (Join-Path $root "services") -Recurse -Filter "*.sql" |
     Where-Object { $_.FullName -match "migrations" } |
     Sort-Object Name
   foreach ($f in $files) {
-    Write-Host "  $($f.Name)"
+    Write-Host ("  " + $f.Name)
     Get-Content -LiteralPath $f.FullName -Raw | docker exec -i stinky-postgres psql -U stinky -d stinky -v ON_ERROR_STOP=0 2>&1 | Out-Null
   }
   Write-Ok "schema applied"
@@ -219,11 +218,10 @@ function Wait-Http([string]$Url, [int]$Seconds = 60) {
   return $false
 }
 
-# ---------- run ----------
 Write-Host ""
 Write-Host "  GENESIS  intel-v1.11.0-operator" -ForegroundColor Cyan
 Write-Host "  $root"
-Write-Host "  Gate 1 = `$150k / 5m  clamp `$200k  (not a buy)" -ForegroundColor DarkGray
+Write-Host "  Gate 1 = 150k USD / 5m  clamp 200k  (not a buy)" -ForegroundColor DarkGray
 Write-Host ""
 
 Write-Step "[0] Stop previous instance"
@@ -262,15 +260,15 @@ $procs.GetEnumerator() | ForEach-Object {
 Write-Step "[health]"
 $apiOk = Wait-Http "http://127.0.0.1:8010/health" 75
 $elOk  = Wait-Http "http://127.0.0.1:8002/health" 20
-if ($apiOk) { Write-Ok "API http://127.0.0.1:8010/health" } else { Write-Warn "API not ready — see logs\api.log" }
-if ($elOk)  { Write-Ok "event-log http://127.0.0.1:8002/health" } else { Write-Warn "event-log not ready — see logs\event-log.log" }
+if ($apiOk) { Write-Ok "API http://127.0.0.1:8010/health" } else { Write-Warn "API not ready - see logs\api.log" }
+if ($elOk)  { Write-Ok "event-log http://127.0.0.1:8002/health" } else { Write-Warn "event-log not ready - see logs\event-log.log" }
 
 $webUp = $false
 for ($i = 0; $i -lt 45; $i++) {
   if (Get-NetTCPConnection -LocalPort 3000 -State Listen -EA SilentlyContinue) { $webUp = $true; break }
   Start-Sleep 1
 }
-if ($webUp) { Write-Ok "web :3000" } else { Write-Warn "web not listening yet — see logs\web.log" }
+if ($webUp) { Write-Ok "web :3000" } else { Write-Warn "web not listening yet - see logs\web.log" }
 
 Write-Step "[ui] open operator desk (one tab)"
 Start-Process "http://127.0.0.1:3000/operator"
@@ -284,6 +282,6 @@ Write-Host "  READY. Services stay up after this window closes." -ForegroundColo
 Write-Host "  Operator:  http://127.0.0.1:3000/operator" -ForegroundColor Cyan
 Write-Host "  Command:   http://127.0.0.1:3000/command-center" -ForegroundColor Cyan
 Write-Host "  Stop:      double-click  Stop Genesis  on the desktop" -ForegroundColor Yellow
-Write-Host "  LIVE GATE-1 is NOT OBSERVED until a real `$150k / 5m print." -ForegroundColor DarkGray
+Write-Host "  LIVE GATE-1 is NOT OBSERVED until a real 150k USD / 5m print." -ForegroundColor DarkGray
 Write-Host ""
 Start-Sleep 6
