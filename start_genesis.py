@@ -130,6 +130,16 @@ DOCKER = None
 NPM = None
 
 
+def configure_stdio() -> None:
+    os.environ["PYTHONUTF8"] = "1"
+    os.environ["PYTHONIOENCODING"] = "utf-8"
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
 def say(msg: str) -> None:
     print(msg, flush=True)
 
@@ -165,7 +175,7 @@ def log_line(component: str, result: str, command: str = "", pid_value: str = ""
     if reason:
         parts.append("reason=" + redact(reason))
     STARTUP_LOG.parent.mkdir(parents=True, exist_ok=True)
-    with STARTUP_LOG.open("a", encoding="ascii", errors="replace") as f:
+    with STARTUP_LOG.open("a", encoding="utf-8", errors="replace") as f:
         f.write("  ".join(parts) + "\n")
 
 
@@ -265,11 +275,179 @@ def pid_from_log(name: str) -> int:
     return int(found[-1]) if found else 0
 
 
+def list_win_processes() -> list[tuple[int, str, str]]:
+    ps = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    cmd = (
+        "Get-CimInstance Win32_Process | ForEach-Object { "
+        "'{0}\t{1}\t{2}' -f $_.ProcessId, $_.Name, "
+        "(($_.CommandLine) -replace '[\\r\\n]',' ') }"
+    )
+    try:
+        r = subprocess.run(
+            [str(ps), "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", cmd],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=45,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return []
+    rows: list[tuple[int, str, str]] = []
+    for line in (r.stdout or "").splitlines():
+        parts = line.split("\t", 2)
+        if len(parts) < 2 or not parts[0].strip().isdigit():
+            continue
+        pid = int(parts[0].strip())
+        name = parts[1].strip() if len(parts) > 1 else ""
+        cl = parts[2] if len(parts) > 2 else ""
+        rows.append((pid, name, cl))
+    return rows
+
+
+def genesis_owned(pid: int, name: str, cmdline: str) -> bool:
+    if pid <= 0:
+        return False
+    n = (name or "").lower()
+    if n.startswith("docker") or "com.docker" in n:
+        return False
+    c = cmdline or ""
+    if not c:
+        return False
+    cl = c.lower()
+    if "docker desktop" in cl or "dockerd" in cl:
+        return False
+    root_s = str(ROOT).lower()
+    path_hit = (
+        root_s in cl
+        or "project-genesis" in cl
+        or "solana-stinky-os" in cl
+        or "run_genesis_service.py" in cl
+        or "start-genesis-svc.cmd" in cl
+    )
+    if not path_hit:
+        return False
+    markers = (
+        "uvicorn",
+        "stinky-",
+        "next",
+        "npm run",
+        "event_log",
+        "stinky_api",
+        "sentinel.cli",
+        "discord_bot",
+        "post_migration",
+        "entity_resolver",
+        "run_genesis_service.py",
+        "start-genesis-svc",
+        "genesis-event-log",
+        "genesis-api",
+        "genesis-sentinel",
+        "genesis-discord",
+        "genesis-collector",
+        "genesis-entities",
+        "genesis-web",
+        "genesis-maintain",
+    )
+    return any(m in cl for m in markers)
+
+
+def kill_pid(pid: int) -> None:
+    if pid <= 0:
+        return
+    say("  taskkill /PID %d /T" % pid)
+    try:
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=10)
+    except (subprocess.SubprocessError, OSError):
+        pass
+    log_line("pid", "killed", pid_value=str(pid))
+
+
+def stop_owned_instance() -> None:
+    """Kill leftover Genesis-owned apps, then stop Genesis compose. Never ATLAS / Docker Desktop."""
+    step("[0] stop leftover Genesis processes (owned only)")
+    skip = {os.getpid(), os.getppid()}
+    procs = list_win_processes()
+    by_pid = {p: (n, c) for p, n, c in procs}
+
+    def maybe_kill(pid: int) -> None:
+        if pid in skip:
+            return
+        name, cl = by_pid.get(pid, ("", ""))
+        if name or cl:
+            if not genesis_owned(pid, name, cl):
+                say("  skip pid %d (not Genesis-owned)" % pid)
+                log_line("pid", "skipped", pid_value=str(pid), reason="not Genesis-owned")
+                return
+        elif pid not in by_pid:
+            # pid-file leftover; process already gone
+            return
+        kill_pid(pid)
+        skip.add(pid)
+
+    if PID_FILE.is_file():
+        try:
+            for line in PID_FILE.read_text(encoding="utf-8", errors="replace").splitlines():
+                m = re.search(r"=(\d+)\s*$", line.strip()) or re.match(r"^(\d+)$", line.strip())
+                if m:
+                    maybe_kill(int(m.group(1)))
+        except OSError:
+            pass
+        try:
+            PID_FILE.unlink()
+        except OSError:
+            pass
+
+    for pid, name, cl in procs:
+        if genesis_owned(pid, name, cl):
+            maybe_kill(pid)
+
+    for port in (8002, 8010, 3000):
+        owner = listen_pid(port)
+        if owner > 0:
+            maybe_kill(owner)
+
+    docker = DOCKER or find_docker()
+    if docker and (ROOT / "docker-compose.yml").is_file():
+        say("  docker compose stop (volumes kept, Docker Desktop stays up)")
+        subprocess.run(
+            [docker, "compose", "-f", str(ROOT / "docker-compose.yml"), "stop"],
+            cwd=str(ROOT),
+            capture_output=True,
+        )
+        log_line("docker-compose", "stopped", reason="genesis compose project only")
+    time.sleep(2)
+    ok("previous Genesis instance stopped")
+    log_line("launcher", "STOPPED")
+
+
+def clean_broken_dists() -> None:
+    sp = ROOT / ".venv" / "Lib" / "site-packages"
+    if not sp.is_dir():
+        return
+    removed = 0
+    for p in list(sp.iterdir()):
+        if not p.name.startswith("~"):
+            continue
+        if p.is_dir():
+            shutil.rmtree(p, ignore_errors=True)
+        else:
+            try:
+                p.unlink()
+            except OSError:
+                pass
+        removed += 1
+    if removed:
+        ok("removed %d broken pip leftover(s)" % removed)
+
+
 def run_cmd(args: list[str], timeout: int | None = None, stdin: str | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         args,
         cwd=str(ROOT),
         text=True,
+        encoding="utf-8",
+        errors="replace",
         input=stdin,
         capture_output=True,
         timeout=timeout,
@@ -277,7 +455,14 @@ def run_cmd(args: list[str], timeout: int | None = None, stdin: str | None = Non
 
 
 def tail_run(args: list[str], last: int = 5, cwd: Path | None = None) -> int:
-    p = subprocess.run(args, cwd=str(cwd or ROOT), text=True, capture_output=True)
+    p = subprocess.run(
+        args,
+        cwd=str(cwd or ROOT),
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+    )
     out = (p.stdout or "") + (p.stderr or "")
     lines = [ln for ln in out.splitlines() if ln.strip()]
     for ln in lines[-last:]:
@@ -340,6 +525,7 @@ def ensure_venv(skip_install: bool) -> None:
     if skip_install and VENV_PY.is_file():
         return
     step("[deps] Python venv + editable installs")
+    clean_broken_dists()
     if not VENV_PY.is_file():
         subprocess.check_call([sys.executable, "-m", "venv", str(ROOT / ".venv")])
     py = str(VENV_PY)
@@ -447,13 +633,16 @@ def apply_schema() -> None:
     )
     for f in files:
         say("  " + f.name)
-        raw = f.read_text(encoding="utf-8", errors="replace")
-        subprocess.run(
-            [DOCKER, "exec", "-i", "stinky-postgres", "psql", "-U", "stinky", "-d", "stinky", "-v", "ON_ERROR_STOP=0"],
-            input=raw,
-            text=True,
-            capture_output=True,
-        )
+        try:
+            raw = f.read_text(encoding="utf-8-sig", errors="replace")
+            subprocess.run(
+                [DOCKER, "exec", "-i", "stinky-postgres", "psql", "-U", "stinky", "-d", "stinky", "-v", "ON_ERROR_STOP=0"],
+                input=raw.encode("utf-8"),
+                capture_output=True,
+                timeout=60,
+            )
+        except Exception as exc:
+            warn("%s skipped: %s" % (f.name, exc))
     ok("schema applied")
     log_line("schema", "ok")
 
@@ -495,6 +684,7 @@ def start_detached(name: str, port: int = 0, required: bool = False) -> int:
                 healthy = http_ok("http://127.0.0.1:3000/operator", 2)
             else:
                 healthy = http_ok("http://127.0.0.1:%d/health" % port, 2)
+            if healthy:
                 ok("%-12s ALREADY RUNNING  pid %s  port %s" % (name, owner, port))
                 log_line(name, "ALREADY RUNNING", pid_value=str(owner))
                 HEALTH[name] = "ALREADY RUNNING"
@@ -635,10 +825,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(add_help=True)
     parser.add_argument("--skip-sync", action="store_true")
     parser.add_argument("--sync", action="store_true")
-    parser.add_argument("--restart", action="store_true")
+    parser.add_argument("--keep", action="store_true", help="do not stop a healthy instance")
+    parser.add_argument("--restart", action="store_true", help="compat alias: stop then start (now the default)")
     parser.add_argument("--skip-install", action="store_true")
     args = parser.parse_args()
 
+    configure_stdio()
     restore_search_path()
     os.chdir(ROOT)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -660,21 +852,11 @@ def main() -> int:
     say("")
     log_line("launcher", "begin", command="start_genesis.py", reason="py=%s root=%s" % (sys.version.split()[0], ROOT))
 
-    if not args.restart and core_healthy():
+    if args.keep and not args.restart and core_healthy():
         return already_running()
 
-    if args.restart:
-        step("[0] Restart requested - stopping previous Genesis instance")
-        stop = ROOT / "stop-stinky.ps1"
-        if stop.is_file():
-            ps = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
-            subprocess.run(
-                [str(ps), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(stop)],
-                cwd=str(ROOT),
-            )
-        time.sleep(3)
-
     try:
+        stop_owned_instance()
         sync_from_github(args.sync, args.skip_sync)
         ensure_dotenv()
         ensure_venv(args.skip_install)
