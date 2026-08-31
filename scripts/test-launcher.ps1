@@ -1,7 +1,7 @@
 # Windows-side launcher contract checks. Safe to run without starting the stack.
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
-if (-not (Test-Path (Join-Path $root "start-stinky.ps1"))) { $root = $PSScriptRoot }
+if (-not (Test-Path (Join-Path $root "start_genesis.py"))) { $root = $PSScriptRoot }
 
 function Assert-Contains([string]$Path, [string]$Needle, [string]$Why) {
   $t = Get-Content -LiteralPath (Join-Path $root $Path) -Raw
@@ -38,7 +38,7 @@ Assert-Contains "APPLY-launcher.ps1" "install-desktop-shortcut.ps1" "VS Code app
 Assert-Contains "APPLY-launcher.ps1" "[switch]$Start" "apply does not start the stack unless asked"
 
 Write-Host "syntax parse" -ForegroundColor Cyan
-foreach ($f in @("start-stinky.ps1", "stop-stinky.ps1", "install-desktop-shortcut.ps1", "APPLY-launcher.ps1", "APPLY-refresh.ps1")) {
+foreach ($f in @("stop-stinky.ps1", "install-desktop-shortcut.ps1", "APPLY-launcher.ps1", "APPLY-refresh.ps1")) {
   $errs = $null
   $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root $f), [ref]$null, [ref]$errs)
   if ($errs) { throw "$f parse: $($errs | Out-String)" }

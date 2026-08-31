@@ -19,13 +19,15 @@ git checkout -f -B main origin/main
 powershell -NoProfile -ExecutionPolicy Bypass -File .\APPLY-launcher.ps1
 ```
 
-Then **close any leftover Genesis windows**, start **Docker Desktop**, and double-click **Genesis** or **Stinky OS** on the desktop (same launcher).
+Then **close leftover Genesis windows**, start **Docker Desktop**, and double-click **Genesis** on the desktop.
 
-That APPLY step remakes `Genesis.lnk` as `cmd.exe /d /k`. The start chain is:
+That APPLY step remakes **only two desktop icons**: `Genesis.lnk` (start) and `Stop Genesis.lnk`. Leftover `Stinky OS`, `Apply Genesis Launcher`, and `Refresh Genesis` icons are removed.
+
+Start chain:
 
 `Genesis.lnk` → `Start-Stinky-OS.cmd` → `.venv\Scripts\python.exe start_genesis.py`
 
-It does **not** load `start-stinky.ps1`. Windows Defender AMSI was blocking that PowerShell file at parse time.
+`start-stinky.ps1` is gone. Windows Defender AMSI was blocking it.
 
 VS Code equivalent: **Terminal → Run Task… → Apply Genesis Launcher**.
 

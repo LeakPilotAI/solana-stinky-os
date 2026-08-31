@@ -1,4 +1,4 @@
-﻿.env
+.env
 .env.*
 !.env.example
 node_modules/
@@ -16,3 +16,4 @@ cc.json
 .maintain_last_utc
 .DS_Store
 Thumbs.db
+*.lnk

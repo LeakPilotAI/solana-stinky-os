@@ -1,4 +1,5 @@
 # Recreate desktop + Start Menu shortcuts for Genesis.
+# Only two icons: Genesis (start) and Stop Genesis.
 # Shortcut target is cmd.exe with absolute paths. No Explorer cwd, no relative paths.
 $ErrorActionPreference = "Continue"
 
@@ -12,23 +13,17 @@ $root = Get-ScriptRoot
 $cmdExe = Join-Path $env:SystemRoot "System32\cmd.exe"
 $startCmd = Join-Path $root "Start-Stinky-OS.cmd"
 $stopCmd = Join-Path $root "Stop-Stinky-OS.cmd"
-$refreshCmd = Join-Path $root "Refresh-Genesis.cmd"
-$applyCmd = Join-Path $root "APPLY-launcher.cmd"
 
 foreach ($f in @(
-  (Join-Path $root "start-stinky.ps1"),
   (Join-Path $root "stop-stinky.ps1"),
   $startCmd,
   $stopCmd,
   (Join-Path $root "Start-Genesis.cmd"),
   (Join-Path $root "Stop-Genesis.cmd"),
-  $refreshCmd,
-  $applyCmd,
   (Join-Path $root "APPLY-refresh.ps1"),
   (Join-Path $root "APPLY-launcher.ps1"),
   (Join-Path $root "start_genesis.py"),
   (Join-Path $root "scripts\run_genesis_service.py"),
-  (Join-Path $root "scripts\run-genesis-service.ps1"),
   (Join-Path $root "scripts\start-genesis-svc.cmd")
 )) {
   if (Test-Path -LiteralPath $f) { Unblock-File -LiteralPath $f -ErrorAction SilentlyContinue }
@@ -36,6 +31,10 @@ foreach ($f in @(
 
 if (-not (Test-Path -LiteralPath $startCmd)) {
   Write-Host "MISSING launcher: $startCmd" -ForegroundColor Red
+  exit 1
+}
+if (-not (Test-Path -LiteralPath (Join-Path $root "start_genesis.py"))) {
+  Write-Host "MISSING start_genesis.py - pull origin/main" -ForegroundColor Red
   exit 1
 }
 if (-not (Test-Path -LiteralPath $cmdExe)) {
@@ -65,23 +64,32 @@ $startMenu = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
 if (Test-Path $startMenu) { $desktops += $startMenu }
 $desktops += $root
 
+$stale = @(
+  "Stinky OS.lnk",
+  "Apply Genesis Launcher.lnk",
+  "Refresh Genesis.lnk",
+  "Apply Genesis.lnk",
+  "Start Genesis.lnk",
+  "Start Stinky OS.lnk"
+)
+
 $ws = New-Object -ComObject WScript.Shell
 $pairs = @(
   @{ Name = "Genesis.lnk"; Target = $startCmd; Desc = "Start Genesis operator box" },
-  @{ Name = "Stinky OS.lnk"; Target = $startCmd; Desc = "Start Genesis / Stinky OS" },
   @{ Name = "Stop Genesis.lnk"; Target = $stopCmd; Desc = "Stop Genesis-owned apps + containers" }
 )
-if (Test-Path -LiteralPath $refreshCmd) {
-  $pairs += @{ Name = "Refresh Genesis.lnk"; Target = $refreshCmd; Desc = "Overwrite Project-Genesis from GitHub, keep .env" }
-}
-if (Test-Path -LiteralPath $applyCmd) {
-  $pairs += @{ Name = "Apply Genesis Launcher.lnk"; Target = $applyCmd; Desc = "Pull main and remake Genesis.lnk" }
-}
 
 $ok = 0
 foreach ($desk in ($desktops | Select-Object -Unique)) {
   if (-not $desk) { continue }
   if (-not (Test-Path -LiteralPath $desk)) { continue }
+  foreach ($name in $stale) {
+    $junk = Join-Path $desk $name
+    if (Test-Path -LiteralPath $junk) {
+      Remove-Item -LiteralPath $junk -Force -ErrorAction SilentlyContinue
+      Write-Host "  removed leftover $junk" -ForegroundColor DarkGray
+    }
+  }
   foreach ($pair in $pairs) {
     if (-not (Test-Path -LiteralPath $pair.Target)) { continue }
     $lnk = Join-Path $desk $pair.Name
