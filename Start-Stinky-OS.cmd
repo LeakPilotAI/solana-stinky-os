@@ -48,5 +48,7 @@ if not "%ERR%"=="0" (
 )
 echo.
 pause
+echo   Window stays open. Press any key again to close.
+pause
 endlocal
-exit /b %ERR%
+exit /b 0
