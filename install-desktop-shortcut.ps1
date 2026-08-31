@@ -62,7 +62,24 @@ if ($pub -and (Test-Path $pub)) {
 }
 $startMenu = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
 if (Test-Path $startMenu) { $desktops += $startMenu }
-$desktops += $root
+
+# Never drop .lnk into the git folder (clutters VS Code). Delete leftovers.
+Get-ChildItem -LiteralPath $root -Filter "*.lnk" -ErrorAction SilentlyContinue | ForEach-Object {
+  Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+  Write-Host "  removed project-folder leftover $($_.Name)" -ForegroundColor DarkGray
+}
+foreach ($rel in @(
+  "start-stinky.ps1",
+  "scripts\run-genesis-service.ps1",
+  "scripts\install-desktop-shortcuts.ps1",
+  "patch_ensure_schema.py"
+)) {
+  $junk = Join-Path $root $rel
+  if (Test-Path -LiteralPath $junk) {
+    Remove-Item -LiteralPath $junk -Force -ErrorAction SilentlyContinue
+    Write-Host "  removed leftover $rel" -ForegroundColor DarkGray
+  }
+}
 
 $stale = @(
   "Stinky OS.lnk",
