@@ -205,8 +205,14 @@ Write-Host ("  Log: " + $applyLog) -ForegroundColor DarkGray
 Write-Apply "READY"
 
 if ($Start) {
-  Write-Host "  starting Genesis (-SkipSync)..." -ForegroundColor Yellow
-  & $psExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root "start-stinky.ps1") -SkipSync
+  Write-Host "  starting Genesis (--skip-sync)..." -ForegroundColor Yellow
+  $py = Join-Path $root ".venv\Scripts\python.exe"
+  $starter = Join-Path $root "start_genesis.py"
+  if (Test-Path -LiteralPath $py) {
+    & $py $starter --skip-sync
+  } else {
+    py -3.12 $starter --skip-sync
+  }
 }
 
 exit 0
