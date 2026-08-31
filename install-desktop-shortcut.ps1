@@ -26,6 +26,8 @@ foreach ($f in @(
   $applyCmd,
   (Join-Path $root "APPLY-refresh.ps1"),
   (Join-Path $root "APPLY-launcher.ps1"),
+  (Join-Path $root "start_genesis.py"),
+  (Join-Path $root "scripts\run_genesis_service.py"),
   (Join-Path $root "scripts\run-genesis-service.ps1"),
   (Join-Path $root "scripts\start-genesis-svc.cmd")
 )) {

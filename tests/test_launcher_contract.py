@@ -18,10 +18,9 @@ def read(rel: str) -> str:
 def test_start_cmd_uses_script_dir_not_cd():
     t = read("Start-Stinky-OS.cmd")
     assert "%~dp0" in t
-    assert "ExecutionPolicy Bypass" in t
+    assert "start_genesis.py" in t
+    assert "start-stinky.ps1" not in t
     assert "pause" in t.lower()
-    assert "WindowsPowerShell\\v1.0\\powershell.exe" in t
-    # pause is not gated only on failure
     assert re.search(r"if errorlevel 1 \(\s*echo.*\s*pause\s*\)\s*$", t, re.I | re.S) is None
     assert t.lower().rfind("pause") > t.lower().rfind("if not")
 
@@ -44,52 +43,52 @@ def test_shortcut_installer_absolute_cmd_exe():
 
 
 def test_start_has_duplicate_protection_before_stop():
-    t = read("start-stinky.ps1")
+    t = read("start_genesis.py")
     already = t.find("ALREADY RUNNING")
     restart_stop = t.find("Restart requested")
     assert already != -1
     assert restart_stop != -1
     assert already < restart_stop
-    assert "Test-CoreHealthy" in t
-    assert "if ($Restart)" in t
+    assert "core_healthy" in t
+    assert "args.restart" in t
 
 
 def test_start_writes_startup_log_and_redacts_secrets():
-    t = read("start-stinky.ps1")
+    t = read("start_genesis.py")
     assert "startup.log" in t
-    assert "Redact-Line" in t
+    assert "def redact" in t
     assert "API_KEY" in t and "TOKEN" in t and "PASSWORD" in t
     assert "150k" in t or "150_000" in t or "150000" in t
 
 
 def test_start_detaches_via_cmd_start():
-    t = read("start-stinky.ps1")
+    t = read("start_genesis.py")
     assert "start-genesis-svc.cmd" in t
-    assert "cmd START" in t or "/c start" in t
-    assert "Explorer job" in t or "break away" in t.lower() or "breaks away" in t
+    assert "cmd START" in t or "Explorer job" in t
     c = read("scripts/start-genesis-svc.cmd")
     assert "start " in c.lower()
     assert "genesis-%NAME%" in c
-    assert "run-genesis-service.ps1" in c
+    assert "run_genesis_service.py" in c
+    assert "run-genesis-service.ps1" not in c
 
 
 def test_start_health_uses_http_not_only_process():
-    t = read("start-stinky.ps1")
+    t = read("start_genesis.py")
     assert "http://127.0.0.1:8010/health" in t
     assert "http://127.0.0.1:3000/operator" in t
-    assert "Wait-Http" in t
+    assert "wait_http" in t
     assert "LIVE MARKET DATA" in t
     assert "LIVE GATE-1 EVENT" in t
     assert "UNKNOWN" in t
 
 
 def test_browser_only_after_frontend_ready():
-    t = read("start-stinky.ps1")
+    t = read("start_genesis.py")
     assert "frontend is actually ready" in t
-    open_at = t.find('Start-Process "http://127.0.0.1:3000/operator"')
+    open_at = t.find("open_operator")
     wait_at = t.find("http://127.0.0.1:3000/operator")
     assert wait_at != -1 and open_at != -1
-    assert "browser launch failed - Genesis itself continues running" in t or "browser launch failed" in t
+    assert "browser launch failed" in t
 
 
 def test_stop_is_genesis_owned_only():
@@ -122,25 +121,24 @@ def test_aliases_exist():
 
 
 def test_git_sync_is_opt_in():
-    t = read("start-stinky.ps1")
-    assert "[switch]$Sync" in t
-    assert "if (-not $Sync) { return }" in t
-    # must not always stop then git reset on every double-click
-    begin = t.find("if (-not $Restart -and (Test-CoreHealthy))")
+    t = read("start_genesis.py")
+    assert "--sync" in t
+    assert "if not do_sync or skip_sync" in t
+    begin = t.find("if not args.restart and core_healthy()")
     assert begin != -1
-    stop_always = t.find('Write-Step "[0] Stop previous instance"')
+    stop_always = t.find('Stop previous instance')
     assert stop_always == -1
 
 
 def test_start_does_not_sleep_then_exit():
-    t = read("start-stinky.ps1").strip()
-    assert not t.endswith("Start-Sleep 6")
-    assert "exit 0" in t and "exit 1" in t
+    t = read("start_genesis.py").strip()
+    assert not t.endswith("time.sleep(6)")
+    assert "return 0" in t and "return 1" in t
 
 
 def test_redact_line_contract():
-    t = read("start-stinky.ps1")
-    assert "Redact-Line" in t
+    t = read("start_genesis.py")
+    assert "def redact" in t
     assert "***" in t
 
 
@@ -157,35 +155,33 @@ def test_apply_launcher_exists_and_does_not_start_by_default():
     assert "[switch]$Start" in t
     start_at = t.find("if ($Start)")
     assert start_at != -1
-    assert t.find("start-stinky.ps1") > start_at
+    assert t.find("start_genesis.py") > start_at
 
 
 def test_start_restores_explorer_path_and_resolves_tools():
-    t = read("start-stinky.ps1")
-    assert "Restore-SearchPath" in t
-    assert "GetEnvironmentVariable" in t
-    assert "Get-DockerExe" in t
-    assert "Get-NpmCmd" in t
+    t = read("start_genesis.py")
+    assert "restore_search_path" in t
+    assert "winreg" in t
+    assert "find_docker" in t
+    assert "find_npm" in t
     assert "NOT ON PATH" in t
-    # generating wrappers + Unblock-File of every .ps1 trips Defender AMSI
     assert "Unblock-File" not in t
-    assert "pathLiteral" not in t
     assert "main.zip" not in t
-    assert "run-$Name.ps1" not in t
 
 
 def test_static_service_runner_is_allowlisted():
-    assert (ROOT / "scripts/run-genesis-service.ps1").exists()
+    assert (ROOT / "scripts/run_genesis_service.py").exists()
     assert (ROOT / "scripts/start-genesis-svc.cmd").exists()
-    t = read("scripts/run-genesis-service.ps1")
-    assert "ValidateSet" in t
+    t = read("scripts/run_genesis_service.py")
     for name in ("event-log", "api", "sentinel", "discord", "collector", "entities", "web", "maintain"):
         assert name in t
-    assert "Unblock-File" not in t
-    assert "Invoke-WebRequest" not in t
+    assert "urllib.request" not in t
     assert "main.zip" not in t
     s = read("stop-stinky.ps1")
-    assert "run-genesis-service" in s
+    assert "run-genesis-service" in s or "run_genesis_service" in s
+    cmd = read("Start-Stinky-OS.cmd")
+    assert "start_genesis.py" in cmd
+    assert "powershell" not in cmd.lower()
 
 
 def test_installer_verifies_cmd_exe_after_save():

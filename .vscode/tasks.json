@@ -24,7 +24,7 @@
     {
       "label": "Start Genesis",
       "type": "shell",
-      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"${workspaceFolder}\\start-stinky.ps1\" -SkipSync",
+      "command": "if (Test-Path .\\.venv\\Scripts\\python.exe) { .\\.venv\\Scripts\\python.exe .\\start_genesis.py --skip-sync } else { py -3.12 .\\start_genesis.py --skip-sync }",
       "problemMatcher": [],
       "presentation": {
         "reveal": "always",

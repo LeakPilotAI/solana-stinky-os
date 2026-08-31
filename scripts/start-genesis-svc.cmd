@@ -6,8 +6,11 @@ if "%NAME%"=="" (
   echo missing service name
   exit /b 1
 )
-set "PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
-if not exist "%PS%" set "PS=powershell.exe"
+set "PY=%CD%\.venv\Scripts\python.exe"
+if not exist "%PY%" (
+  echo missing venv python
+  exit /b 1
+)
 rem cmd START creates a new console and breaks away from the Explorer job object.
-start "genesis-%NAME%" /MIN "%PS%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0run-genesis-service.ps1" -Name "%NAME%"
+start "genesis-%NAME%" /MIN "%PY%" "%~dp0run_genesis_service.py" --name "%NAME%"
 exit /b 0
