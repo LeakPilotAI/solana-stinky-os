@@ -97,7 +97,7 @@ foreach ($rel in $paths) {
 Write-Host ""
 Write-Host "Applied intel-v1.10.0-live-validation. Restart:"
 Write-Host "  powershell -File D:\Work\Project-Genesis\stop-stinky.ps1"
-Write-Host "  powershell -File D:\Work\Project-Genesis\start-stinky.ps1"
+Write-Host "  .venv\Scripts\python.exe D:\Work\Project-Genesis\start_genesis.py --skip-sync"
 Write-Host "Verify: Gate 1 unchanged at `$150k. After Gate 1, ticks continue even if volume dumps."
 Write-Host "Restart: open investigations inside T+1800 resume. pumpfun bonding is not migrated."
 Write-Host "Quality: POST /v1/book/quality  Dips: POST /v1/book/dips"
