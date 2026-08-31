@@ -13,6 +13,7 @@ $cmdExe = Join-Path $env:SystemRoot "System32\cmd.exe"
 $startCmd = Join-Path $root "Start-Stinky-OS.cmd"
 $stopCmd = Join-Path $root "Stop-Stinky-OS.cmd"
 $refreshCmd = Join-Path $root "Refresh-Genesis.cmd"
+$applyCmd = Join-Path $root "APPLY-launcher.cmd"
 
 foreach ($f in @(
   (Join-Path $root "start-stinky.ps1"),
@@ -22,7 +23,9 @@ foreach ($f in @(
   (Join-Path $root "Start-Genesis.cmd"),
   (Join-Path $root "Stop-Genesis.cmd"),
   $refreshCmd,
-  (Join-Path $root "APPLY-refresh.ps1")
+  $applyCmd,
+  (Join-Path $root "APPLY-refresh.ps1"),
+  (Join-Path $root "APPLY-launcher.ps1")
 )) {
   if (Test-Path -LiteralPath $f) { Unblock-File -LiteralPath $f -ErrorAction SilentlyContinue }
 }
@@ -40,8 +43,13 @@ $desktop = [Environment]::GetFolderPath("Desktop")
 $desktops = @($desktop)
 $od = Join-Path $env:USERPROFILE "OneDrive\Desktop"
 if (Test-Path $od) { $desktops += $od }
+$userDesk = Join-Path $env:USERPROFILE "Desktop"
+if (Test-Path $userDesk) { $desktops += $userDesk }
+$pub = [Environment]::GetFolderPath("CommonDesktopDirectory")
+if ($pub -and (Test-Path $pub)) { $desktops += $pub }
 $startMenu = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
 if (Test-Path $startMenu) { $desktops += $startMenu }
+$desktops += $root
 
 $ws = New-Object -ComObject WScript.Shell
 $pairs = @(
@@ -52,7 +60,11 @@ $pairs = @(
 if (Test-Path -LiteralPath $refreshCmd) {
   $pairs += @{ Name = "Refresh Genesis.lnk"; Target = $refreshCmd; Desc = "Overwrite Project-Genesis from GitHub, keep .env" }
 }
+if (Test-Path -LiteralPath $applyCmd) {
+  $pairs += @{ Name = "Apply Genesis Launcher.lnk"; Target = $applyCmd; Desc = "Pull main and remake Genesis.lnk" }
+}
 
+$ok = 0
 foreach ($desk in ($desktops | Select-Object -Unique)) {
   if (-not $desk) { continue }
   if (-not (Test-Path -LiteralPath $desk)) { continue }
@@ -66,12 +78,26 @@ foreach ($desk in ($desktops | Select-Object -Unique)) {
     $sc.WorkingDirectory = $root
     $sc.WindowStyle = 1
     $sc.Description = $pair.Desc
-    $sc.Save()
+    try { $sc.Save() } catch {
+      Write-Host "FAILED save $lnk  $($_.Exception.Message)" -ForegroundColor Red
+      continue
+    }
+    $check = $ws.CreateShortcut($lnk)
+    if ($check.TargetPath -notmatch "cmd\.exe") {
+      Write-Host "VERIFY FAIL $lnk still points at $($check.TargetPath)" -ForegroundColor Red
+      continue
+    }
     Write-Host "Created: $lnk" -ForegroundColor Green
-    Write-Host "  target  $cmdExe" -ForegroundColor DarkGray
-    Write-Host "  args    /d /k `"$($pair.Target)`"" -ForegroundColor DarkGray
-    Write-Host "  cwd     $root" -ForegroundColor DarkGray
+    Write-Host "  target  $($check.TargetPath)" -ForegroundColor DarkGray
+    Write-Host "  args    $($check.Arguments)" -ForegroundColor DarkGray
+    Write-Host "  cwd     $($check.WorkingDirectory)" -ForegroundColor DarkGray
+    $ok = $ok + 1
   }
+}
+
+if ($ok -lt 1) {
+  Write-Host "NO shortcuts written." -ForegroundColor Red
+  exit 1
 }
 Write-Host "Double-click  Genesis  on the desktop. Window stays open. Services stay up if you close it." -ForegroundColor Cyan
 Write-Host "Stop with  Stop Genesis." -ForegroundColor Cyan

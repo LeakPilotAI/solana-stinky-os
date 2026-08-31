@@ -8,9 +8,46 @@ Gate 1 is **$150k / 5m volume**, clamp **$200k**. That is an investigation trigg
 
 ## Windows operator box (`D:\Work\Project-Genesis`)
 
-Double-click **Genesis** on the desktop.
+If the desktop icon still flashes or fails, paste this **in the VS Code terminal** at the project folder. It overwrites the tree from GitHub (`main`), keeps `.env`, and remakes `Genesis.lnk`.
 
-The shortcut runs `cmd.exe /d /k` with absolute paths at this folder. It does **not** depend on the current working directory, a prior terminal, or PowerShell execution policy.
+```powershell
+cd D:\Work\Project-Genesis
+git remote set-url origin https://github.com/LeakPilotAI/solana-stinky-os.git
+git fetch origin
+git reset --hard origin/main
+git checkout -f -B main origin/main
+powershell -NoProfile -ExecutionPolicy Bypass -File .\APPLY-launcher.ps1
+```
+
+Then **close any leftover Genesis windows**, start **Docker Desktop**, and double-click **Genesis** on the desktop.
+
+That APPLY step:
+
+1. Restores Machine + User PATH (Explorer shortcuts often miss git / docker / python / npm)
+2. Pulls `origin/main` (`.env` kept)
+3. Unblocks the launcher files
+4. Writes `Genesis.lnk` as `cmd.exe /d /k` with an absolute working directory
+5. Reads the shortcut back and prints Target / Arguments / WorkingDirectory
+
+VS Code equivalent: **Terminal → Run Task… → Apply Genesis Launcher**.
+
+If `APPLY-launcher.ps1` is missing after the reset, remake the icon only:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install-desktop-shortcut.ps1
+```
+
+To pull **and start** the OS in the same VS Code terminal:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\APPLY-refresh.ps1
+```
+
+The shortcut is:
+
+- Target: `C:\Windows\System32\cmd.exe`
+- Arguments: `/d /k "D:\Work\Project-Genesis\Start-Stinky-OS.cmd"`
+- Working directory: `D:\Work\Project-Genesis`
 
 Every **start**:
 
@@ -21,11 +58,9 @@ Every **start**:
 
 The launcher window **stays open** with the health table. Press a key to dismiss it. Services stay up.
 
-Stop with the **Stop Genesis** desktop icon. Stop only kills Genesis-owned processes/containers (PID file, command line, compose project). It will not kill ATLAS.
+Stop with the **Stop Genesis** desktop icon. Stop only kills Genesis-owned processes/containers. It will not kill ATLAS.
 
-To overwrite the folder from GitHub (`.env` kept), use **Refresh Genesis** — that is explicit, not part of a normal double-click.
-
-Startup log: `logs\startup.log` (secrets redacted).
+Startup log: `logs\startup.log` (secrets redacted). Apply log: `logs\launcher-apply.log`.
 
 | Need | Port | Owner |
 |---|---|---|
@@ -39,12 +74,6 @@ Startup log: `logs\startup.log` (secrets redacted).
 Ports 8000 / 5432 / 6379 are left alone for ATLAS coexistence.
 
 Discord with an empty token is UNKNOWN, not a crash of the rest of the box.
-
-Recreate shortcuts:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install-desktop-shortcut.ps1
-```
 
 ---
 
