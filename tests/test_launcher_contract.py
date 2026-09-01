@@ -123,6 +123,7 @@ def test_compose_is_capped_and_not_atlas():
     assert "8001" not in y
     t = read("start_genesis.py")
     assert "project-genesis" in t
+    assert "--force-recreate" in t
     assert "-p atlas" not in t
     w = read("scripts/run_genesis_service.py")
     assert "project-genesis" in w
