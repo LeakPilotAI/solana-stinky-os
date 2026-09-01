@@ -134,16 +134,25 @@ def main() -> None:
         track_max_duration_sec=getattr(settings, "track_max_duration_sec", 3600),
     )
 
-    if cmd == "backfill":
-        asyncio.run(_run_backfill(args.limit))
-    elif cmd == "track":
-        asyncio.run(_run_track(args.mint, args.pool))
-    elif cmd == "recompute-performance":
-        asyncio.run(_run_recompute(args.limit))
-    elif cmd == "learn-success":
-        asyncio.run(_run_learn(args.token_limit))
-    else:
-        asyncio.run(_run_forever())
+    try:
+        if cmd == "backfill":
+            asyncio.run(_run_backfill(args.limit))
+        elif cmd == "track":
+            asyncio.run(_run_track(args.mint, args.pool))
+        elif cmd == "recompute-performance":
+            asyncio.run(_run_recompute(args.limit))
+        elif cmd == "learn-success":
+            asyncio.run(_run_learn(args.token_limit))
+        else:
+            asyncio.run(_run_forever())
+    except (ConnectionResetError, ConnectionError, TimeoutError) as exc:
+        log.error("collector.network_blip", cmd=cmd, error=str(exc))
+        sys.exit(1)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 64:
+            log.error("collector.windows_network_gone", cmd=cmd, error=str(exc))
+            sys.exit(1)
+        raise
 
 
 if __name__ == "__main__":

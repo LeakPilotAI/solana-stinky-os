@@ -196,6 +196,8 @@ def test_static_service_runner_is_allowlisted():
     t = read("scripts/run_genesis_service.py")
     for name in ("event-log", "api", "sentinel", "discord", "collector", "entities", "web", "maintain"):
         assert name in t
+    assert "run_supervised" in t
+    assert "run_job_with_retry" in t
     assert "urllib.request" not in t
     assert "main.zip" not in t
     s = read("stop-stinky.ps1")
