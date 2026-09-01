@@ -122,10 +122,22 @@ async def ingest_event(
     try:
         accepted, errors = await service.ingest(event)
     except Exception as exc:
-        logger.exception("ingest.failed", error=str(exc))
+        msg = str(exc)
+        blip = (
+            isinstance(exc, (TimeoutError, ConnectionError, OSError))
+            or "timeout" in msg.lower()
+            or "6380" in msg
+        )
+        if blip:
+            logger.error("ingest.redis_unavailable", error=msg[:200])
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={"accepted": False, "errors": ["redis unavailable"]},
+            ) from exc
+        logger.exception("ingest.failed", error=msg)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={"accepted": False, "errors": [str(exc)]},
+            detail={"accepted": False, "errors": [msg]},
         ) from exc
 
     if not accepted:

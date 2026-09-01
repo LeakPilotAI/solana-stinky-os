@@ -602,7 +602,15 @@ async def health(session: Annotated[AsyncSession, Depends(get_session)]) -> dict
     try:
         async with httpx.AsyncClient(timeout=2.0) as client:
             r = await client.get(f"{settings.event_log_url.rstrip('/')}/health")
-            event_log = "ok" if r.status_code < 300 else "degraded"
+            if r.status_code >= 300:
+                event_log = "degraded"
+            else:
+                body = r.json() if r.content else {}
+                event_log = (
+                    "ok"
+                    if body.get("status") == "ok" and body.get("transport")
+                    else "degraded"
+                )
     except Exception:
         event_log = "down"
 

@@ -5,10 +5,10 @@ Business logic must never import this module directly.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
-import orjson
 import structlog
 from redis.asyncio import Redis
 
@@ -31,19 +31,39 @@ class RedisStreamsTransport(EventTransport):
         self._default_stream = default_stream
         self._maxlen = maxlen
         self._redis: Redis | None = None
+        self._since_trim = 0
+
+    def _new_client(self) -> Redis:
+        return Redis.from_url(
+            self._redis_url,
+            decode_responses=False,
+            socket_connect_timeout=2,
+            socket_timeout=3,
+            retry_on_timeout=True,
+            health_check_interval=15,
+            socket_keepalive=True,
+        )
 
     async def connect(self) -> None:
         if self._redis is not None:
             return
-        self._redis = Redis.from_url(self._redis_url, decode_responses=False)
-        await self._redis.ping()
+        self._redis = self._new_client()
+        await asyncio.wait_for(self._redis.ping(), timeout=3)
         logger.info("redis_streams.connected", url=self._redis_url)
 
     async def close(self) -> None:
-        if self._redis is not None:
-            await self._redis.aclose()
-            self._redis = None
-            logger.info("redis_streams.closed")
+        await self._reset()
+        logger.info("redis_streams.closed")
+
+    async def _reset(self) -> None:
+        client = self._redis
+        self._redis = None
+        if client is None:
+            return
+        try:
+            await client.aclose()
+        except Exception:
+            pass
 
     def _client(self) -> Redis:
         if self._redis is None:
@@ -53,21 +73,41 @@ class RedisStreamsTransport(EventTransport):
     async def publish(self, event: Event, *, stream: str | None = None) -> str:
         envelope = EventEnvelope(event=event)
         target = stream or self._default_stream
-        message_id: bytes = await self._client().xadd(
-            target,
-            {"data": envelope.to_bytes()},
-            maxlen=self._maxlen,
-            approximate=True,
-        )
-        mid = message_id.decode() if isinstance(message_id, bytes) else str(message_id)
-        logger.debug(
-            "event.published",
-            stream=target,
-            event_type=event.event_type,
-            event_id=str(event.event_id),
-            message_id=mid,
-        )
-        return mid
+        last_exc: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                if self._redis is None:
+                    await self.connect()
+                kwargs: dict[str, Any] = {}
+                self._since_trim += 1
+                if self._since_trim >= 200:
+                    kwargs = {"maxlen": self._maxlen, "approximate": True}
+                    self._since_trim = 0
+                message_id: bytes = await asyncio.wait_for(
+                    self._client().xadd(target, {"data": envelope.to_bytes()}, **kwargs),
+                    timeout=4,
+                )
+                mid = message_id.decode() if isinstance(message_id, bytes) else str(message_id)
+                logger.debug(
+                    "event.published",
+                    stream=target,
+                    event_type=event.event_type,
+                    event_id=str(event.event_id),
+                    message_id=mid,
+                )
+                return mid
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "redis_streams.publish_retry",
+                    attempt=attempt,
+                    error=f"{type(exc).__name__}: {exc}"[:200],
+                )
+                await self._reset()
+                if attempt < 3:
+                    await asyncio.sleep(0.25 * attempt)
+        assert last_exc is not None
+        raise last_exc
 
     async def publish_batch(
         self, events: Sequence[Event], *, stream: str | None = None
@@ -146,8 +186,17 @@ class RedisStreamsTransport(EventTransport):
             logger.debug("consumer_group.exists", stream=stream, group=group)
 
     async def health_check(self) -> bool:
-        try:
+        async def _ping() -> bool:
+            if self._redis is None:
+                await self.connect()
             pong = await self._client().ping()
             return bool(pong)
+
+        try:
+            return bool(await asyncio.wait_for(_ping(), timeout=1.5))
         except Exception:
-            return False
+            await self._reset()
+            try:
+                return bool(await asyncio.wait_for(_ping(), timeout=1.5))
+            except Exception:
+                return False
