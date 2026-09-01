@@ -80,6 +80,7 @@ def test_start_health_uses_http_not_only_process():
     assert "http://127.0.0.1:8010/health" in t
     assert "http://127.0.0.1:3000/operator" in t
     assert "wait_http" in t
+    assert "waiting %s" in t or "waiting event-log" in t or 'label' in t
     assert "LIVE MARKET DATA" in t
     assert "LIVE GATE-1 EVENT" in t
     assert "UNKNOWN" in t

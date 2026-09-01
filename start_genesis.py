@@ -211,11 +211,15 @@ def http_ok(url: str, timeout: float = 4.0) -> bool:
         return False
 
 
-def wait_http(url: str, seconds: int) -> bool:
+def wait_http(url: str, seconds: int, label: str = "") -> bool:
     deadline = time.time() + seconds
+    n = 0
     while time.time() < deadline:
-        if http_ok(url, 3):
+        if http_ok(url, 2):
             return True
+        n += 1
+        if label:
+            say("  waiting %s (%ss)" % (label, n * 2))
         time.sleep(2)
     return False
 
@@ -936,9 +940,10 @@ def start_detached(name: str, port: int = 0, required: bool = False) -> int:
         startupinfo = subprocess.STARTUPINFO()
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         startupinfo.wShowWindow = 0
+    proc = None
     try:
         logf = open(log, "a", encoding="utf-8", errors="replace")
-        subprocess.Popen(
+        proc = subprocess.Popen(
             [exe, str(runner), "--name", name],
             cwd=str(ROOT),
             stdin=subprocess.DEVNULL,
@@ -950,12 +955,24 @@ def start_detached(name: str, port: int = 0, required: bool = False) -> int:
         )
     except OSError:
         starter = ROOT / "scripts" / "start-genesis-svc.cmd"
-        subprocess.run([str(CMD_EXE), "/d", "/c", str(starter), name], cwd=str(ROOT))
+        subprocess.run([str(CMD_EXE), "/d", "/c", str(starter), name], cwd=str(ROOT), timeout=15)
+    pid = int(proc.pid) if proc is not None and proc.pid else 0
+    if pid > 0:
+        time.sleep(0.4)
+        if proc is not None and proc.poll() is not None:
+            pid = 0
+        else:
+            try:
+                with log.open("a", encoding="utf-8", errors="replace") as f:
+                    f.write("start pid=%s\n" % pid)
+            except OSError:
+                pass
+            ok("%-12s PID %s" % (name, pid))
+            log_line(name, "started", pid_value=str(pid), command="run_genesis_service.py --name " + name)
+            HEALTH[name] = "STARTED"
+            return pid
     time.sleep(0.8)
     pid = pid_from_log(name)
-    if pid <= 0:
-        time.sleep(1)
-        pid = pid_from_log(name)
     if pid > 0:
         ok("%-12s PID %s" % (name, pid))
         log_line(name, "started", pid_value=str(pid), command="run_genesis_service.py --name " + name)
@@ -1102,7 +1119,7 @@ def main() -> int:
         time.sleep(3)
         procs["api"] = start_detached("api", port=8010, required=True)
         time.sleep(2)
-        procs["sentinel"] = start_detached("sentinel", required=True)
+        procs["sentinel"] = start_detached("sentinel")
         time.sleep(1)
         procs["discord"] = start_detached("discord")
         time.sleep(1)
@@ -1116,8 +1133,8 @@ def main() -> int:
         write_pid_file(procs)
 
         step("[health] real endpoints (not process-exists)")
-        el_ok = wait_http("http://127.0.0.1:8002/health", 40)
-        api_ok = wait_http("http://127.0.0.1:8010/health", 75)
+        el_ok = wait_http("http://127.0.0.1:8002/health", 30, "event-log")
+        api_ok = wait_http("http://127.0.0.1:8010/health", 45, "api")
         if api_ok:
             HEALTH["BACKEND"] = "UP"
             ok("BACKEND  http://127.0.0.1:8010/health")
@@ -1129,7 +1146,7 @@ def main() -> int:
         else:
             warn("event-log not ready - see logs\\event-log.log")
 
-        web_ok = wait_http("http://127.0.0.1:3000/operator", 90)
+        web_ok = wait_http("http://127.0.0.1:3000/operator", 60, "operator")
         if web_ok:
             HEALTH["FRONTEND"] = "UP"
             ok("FRONTEND http://127.0.0.1:3000/operator")
