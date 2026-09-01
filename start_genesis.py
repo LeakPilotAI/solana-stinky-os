@@ -29,6 +29,13 @@ SERVICES = (
     "maintain",
 )
 
+GENESIS_CONTAINERS = (
+    "stinky-postgres",
+    "stinky-redis",
+    "stinky-minio",
+    "stinky-minio-init",
+)
+
 
 def script_root() -> Path:
     return Path(__file__).resolve().parent
@@ -453,18 +460,51 @@ def stop_owned_instance() -> None:
         if owner > 0:
             maybe_kill(owner)
 
-    docker = DOCKER or find_docker()
-    if docker and (ROOT / "docker-compose.yml").is_file():
-        say("  docker compose stop (volumes kept, Docker Desktop stays up)")
-        subprocess.run(
-            [docker, "compose", "-f", str(ROOT / "docker-compose.yml"), "stop"],
-            cwd=str(ROOT),
-            capture_output=True,
-        )
-        log_line("docker-compose", "stopped", reason="genesis compose project only")
+    stop_genesis_containers()
     time.sleep(2)
     ok("previous Genesis instance stopped")
     log_line("launcher", "STOPPED")
+
+
+def stop_genesis_containers() -> None:
+    """Stop only named Genesis containers. Never ATLAS, never Docker Desktop, volumes kept."""
+    docker = DOCKER or find_docker()
+    if not docker:
+        say("  docker.exe not found, skip container stop")
+        log_line("docker-compose", "skipped", reason="docker.exe not found")
+        return
+    compose = ROOT / "docker-compose.yml"
+    if compose.is_file():
+        say("  docker compose stop (Genesis project only, volumes kept)")
+        subprocess.run(
+            [
+                docker,
+                "compose",
+                "-f",
+                str(compose),
+                "--project-directory",
+                str(ROOT),
+                "stop",
+            ],
+            cwd=str(ROOT),
+            capture_output=True,
+            timeout=90,
+        )
+    say("  docker stop " + " ".join(GENESIS_CONTAINERS))
+    try:
+        r = subprocess.run(
+            [docker, "stop", "--time", "10", *GENESIS_CONTAINERS],
+            capture_output=True,
+            timeout=90,
+            text=True,
+        )
+        out = ((r.stdout or "") + (r.stderr or "")).strip()
+        if out:
+            for line in out.splitlines()[:8]:
+                say("    " + line)
+    except (subprocess.SubprocessError, OSError) as exc:
+        say("  docker stop: %s" % exc)
+    log_line("docker-compose", "stopped", reason="genesis containers only")
 
 
 def clean_broken_dists() -> None:
