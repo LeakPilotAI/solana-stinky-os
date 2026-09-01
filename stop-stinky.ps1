@@ -154,7 +154,7 @@ if ($docker) {
     & $docker compose -p project-genesis -f "$root\docker-compose.yml" --project-directory $root stop 2>$null
   }
   Write-Host "  docker stop $($genesisContainers -join ' ')"
-  & $docker stop --time 10 @genesisContainers 2>$null
+  & $docker stop --timeout 10 @genesisContainers 2>$null
   Write-StartupLog "docker-compose" "stopped" "genesis containers only"
 } else {
   Write-Host "  docker.exe not found, skip container stop" -ForegroundColor DarkGray
