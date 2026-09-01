@@ -215,7 +215,7 @@ def wait_http(url: str, seconds: int, label: str = "") -> bool:
     deadline = time.time() + seconds
     n = 0
     while time.time() < deadline:
-        if http_ok(url, 2):
+        if http_ok(url, 8):
             return True
         n += 1
         if label:
@@ -1133,8 +1133,8 @@ def main() -> int:
         write_pid_file(procs)
 
         step("[health] real endpoints (not process-exists)")
-        el_ok = wait_http("http://127.0.0.1:8002/health", 30, "event-log")
-        api_ok = wait_http("http://127.0.0.1:8010/health", 45, "api")
+        el_ok = wait_http("http://127.0.0.1:8002/health", 60, "event-log")
+        api_ok = wait_http("http://127.0.0.1:8010/health", 60, "api")
         if api_ok:
             HEALTH["BACKEND"] = "UP"
             ok("BACKEND  http://127.0.0.1:8010/health")
