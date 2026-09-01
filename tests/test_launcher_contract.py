@@ -212,6 +212,8 @@ def test_static_service_runner_is_allowlisted():
     assert "run_supervised" in t
     assert "run_job_with_retry" in t
     assert "watchdog_tick" in t
+    assert "watchdog restart" not in t
+    assert "already healthy, not starting another copy" in t
     assert "foreach ($port in 8002, 8010, 3000, 8001)" not in t
     assert "(8001," not in t
     assert "stinky-postgres" in t

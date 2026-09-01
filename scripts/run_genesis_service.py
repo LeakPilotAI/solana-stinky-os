@@ -148,11 +148,23 @@ def main() -> int:
             return int(proc.wait())
 
     def run_supervised(cmd: list[str], cwd: Path | None = None) -> int:
-        """Long-running services: if Windows/Docker drops the NIC, restart. Do not exit the OS."""
+        """Restart on crash. If another copy is already healthy, stop looping."""
         delay = 5
         last = 0
+        healthy_url = core_url(name)
         while True:
             last = run(cmd, cwd)
+            if healthy_url and http_ok(healthy_url):
+                msg = "[%s] %s exited %s but port is healthy, not spawning another\n" % (
+                    datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    name,
+                    last,
+                )
+                sys.stdout.write(msg)
+                sys.stdout.flush()
+                with log.open("a", encoding="utf-8", errors="replace") as f:
+                    f.write(msg)
+                return 0
             msg = "[%s] %s exited %s, restart in %ss\n" % (
                 datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 name,
@@ -201,7 +213,7 @@ def main() -> int:
     def http_ok(url: str, timeout: float = 2.5) -> bool:
         try:
             with urllib.request.urlopen(url, timeout=timeout) as resp:
-                return 200 <= int(resp.status) < 500
+                return 200 <= int(resp.status) < 600
         except Exception:
             return False
 
@@ -220,46 +232,41 @@ def main() -> int:
                 return int(parts[-1])
         return 0
 
+    def core_url(svc_name: str) -> str | None:
+        for n, _port, url in CORE_HEALTH:
+            if n == svc_name:
+                return url
+        return None
+
     def watchdog_tick() -> None:
-        """Keep Genesis docker + core HTTP up. Never ATLAS compose or Docker Desktop."""
+        """Keep Genesis docker containers up. Never spawn extra app processes. Never ATLAS."""
         docker = find_docker_bin()
         compose = root / "docker-compose.yml"
-        if docker and compose.is_file():
-            subprocess.run(
-                [docker, "compose", "-f", str(compose), "--project-directory", str(root), "up", "-d"],
-                cwd=str(root),
-                capture_output=True,
-                timeout=90,
-            )
-            subprocess.run(
-                [docker, "start", *GENESIS_CONTAINERS],
-                capture_output=True,
-                timeout=60,
-            )
-        svc = root / "scripts" / "start-genesis-svc.cmd"
-        for svc_name, port, url in CORE_HEALTH:
-            if http_ok(url):
-                continue
-            pid = listen_pid(port)
-            if pid > 0:
-                subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, timeout=10)
-                time.sleep(1)
-            if svc.is_file():
-                msg = "[%s] watchdog restart %s (health miss on %s)\n" % (
-                    datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    svc_name,
-                    url,
-                )
-                sys.stdout.write(msg)
-                sys.stdout.flush()
-                with log.open("a", encoding="utf-8", errors="replace") as f:
-                    f.write(msg)
-                subprocess.run(
-                    ["cmd.exe", "/c", str(svc), svc_name],
-                    cwd=str(root),
-                    capture_output=True,
-                    timeout=20,
-                )
+        if not docker or not compose.is_file():
+            return
+        subprocess.run(
+            [docker, "compose", "-f", str(compose), "--project-directory", str(root), "up", "-d"],
+            cwd=str(root),
+            capture_output=True,
+            timeout=90,
+        )
+        subprocess.run(
+            [docker, "start", *GENESIS_CONTAINERS],
+            capture_output=True,
+            timeout=60,
+        )
+
+    url_now = core_url(name)
+    if url_now and http_ok(url_now):
+        msg = "[%s] %s already healthy, not starting another copy\n" % (
+            datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            name,
+        )
+        sys.stdout.write(msg)
+        sys.stdout.flush()
+        with log.open("a", encoding="utf-8", errors="replace") as f:
+            f.write(msg)
+        return 0
 
     code = 0
     try:
