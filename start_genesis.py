@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -714,47 +715,81 @@ def ensure_docker() -> None:
         except (subprocess.TimeoutExpired, OSError):
             return ""
 
+    def tcp_open(port: int, timeout: float = 1.5) -> bool:
+        s = socket.socket()
+        s.settimeout(timeout)
+        try:
+            s.connect(("127.0.0.1", port))
+            return True
+        except OSError:
+            return False
+        finally:
+            try:
+                s.close()
+            except OSError:
+                pass
+
+    def redis_ready() -> bool:
+        if tcp_open(6380):
+            return True
+        out = dockerexec(["stinky-redis", "redis-cli", "ping"], timeout=3)
+        if "PONG" in out.upper():
+            return True
+        try:
+            lg = subprocess.run(
+                [docker, "logs", "--tail", "20", "stinky-redis"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            blob = ((lg.stdout or "") + (lg.stderr or "")).lower()
+            if "ready to accept connections" in blob:
+                return True
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        return False
+
+    def reset_redis_transport() -> None:
+        warn("resetting Redis transport dump (Postgres kept, ATLAS not touched)")
+        subprocess.run([docker, "rm", "-f", "stinky-redis"], capture_output=True, timeout=30)
+        for vol in ("project-genesis_redis-data", "genesis_redis-data"):
+            subprocess.run([docker, "volume", "rm", "-f", vol], capture_output=True, timeout=30)
+        subprocess.run(
+            [
+                docker,
+                "compose",
+                "-p",
+                "project-genesis",
+                "-f",
+                str(ROOT / "docker-compose.yml"),
+                "up",
+                "-d",
+                "redis",
+            ],
+            cwd=str(ROOT),
+            capture_output=True,
+            timeout=60,
+        )
+
     pg_ok = False
     rd_ok = False
-    say("  waiting for Postgres/Redis (8s ping timeout, will not hang)")
-    for i in range(15):
-        pg_out = dockerexec(["stinky-postgres", "pg_isready", "-U", "stinky", "-d", "stinky"])
-        rd_out = dockerexec(["stinky-redis", "redis-cli", "ping"])
+    say("  waiting for Postgres/Redis (will not hang)")
+    for i in range(12):
+        pg_out = dockerexec(["stinky-postgres", "pg_isready", "-U", "stinky", "-d", "stinky"], timeout=5)
         if "accepting" in pg_out:
             pg_ok = True
-        if "PONG" in rd_out:
-            rd_ok = True
+        rd_ok = redis_ready()
         if pg_ok and rd_ok:
             break
-        say("  wait %s/15  postgres=%s redis=%s" % (i + 1, "ok" if pg_ok else "…", "ok" if rd_ok else "…"))
+        say("  wait %s/12  postgres=%s redis=%s" % (i + 1, "ok" if pg_ok else "…", "ok" if rd_ok else "…"))
         time.sleep(2)
     if pg_ok and not rd_ok:
-        warn("Redis not PONG - recreating stinky-redis only (volumes kept, ATLAS not touched)")
-        try:
-            subprocess.run(
-                [
-                    docker,
-                    "compose",
-                    "-p",
-                    "project-genesis",
-                    "-f",
-                    str(ROOT / "docker-compose.yml"),
-                    "up",
-                    "-d",
-                    "--force-recreate",
-                    "redis",
-                ],
-                cwd=str(ROOT),
-                capture_output=True,
-                timeout=60,
-            )
-        except subprocess.TimeoutExpired:
-            warn("redis recreate timed out")
-        for i in range(10):
-            if "PONG" in dockerexec(["stinky-redis", "redis-cli", "ping"]):
-                rd_ok = True
+        reset_redis_transport()
+        for i in range(12):
+            rd_ok = redis_ready()
+            if rd_ok:
                 break
-            say("  redis retry %s/10" % (i + 1))
+            say("  redis after reset %s/12" % (i + 1))
             time.sleep(2)
     if pg_ok:
         HEALTH["DATABASE"] = "CONNECTED"
