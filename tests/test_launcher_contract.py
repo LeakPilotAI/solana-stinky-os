@@ -229,6 +229,11 @@ def test_static_service_runner_is_allowlisted():
     assert "run_supervised" in t
     assert "run_job_with_retry" in t
     assert "watchdog_tick" in t
+    assert "WATCH_CONTAINERS" in t
+    assert "hidden_run" in t
+    chunk = t[t.find("def watchdog_tick") : t.find("url_now")]
+    assert "compose\", \"-p\"" not in chunk
+    assert '"up", "-d"' not in chunk
     assert "watchdog restart" not in t
     assert "already healthy, not starting another copy" in t
     assert "foreach ($port in 8002, 8010, 3000, 8001)" not in t

@@ -30,6 +30,12 @@ GENESIS_CONTAINERS = (
     "stinky-minio-init",
 )
 
+WATCH_CONTAINERS = (
+    "stinky-postgres",
+    "stinky-redis",
+    "stinky-minio",
+)
+
 CORE_HEALTH = (
     ("event-log", 8002, "http://127.0.0.1:8002/health"),
     ("api", 8010, "http://127.0.0.1:8010/health"),
@@ -248,23 +254,34 @@ def main() -> int:
                 return url
         return None
 
+    def hidden_run(cmd: list[str], timeout: int = 40) -> None:
+        flags = 0
+        startupinfo = None
+        if os.name == "nt":
+            flags = 0x08000000
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = 0
+        try:
+            subprocess.run(
+                cmd,
+                capture_output=True,
+                timeout=timeout,
+                creationflags=flags,
+                startupinfo=startupinfo,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+
     def watchdog_tick() -> None:
-        """Keep Genesis docker containers up. Never spawn extra app processes. Never ATLAS."""
+        """If Postgres/Redis/MinIO were stopped, start them. No compose up. No consoles. Never ATLAS.
+
+        project-genesis compose up is only at desktop start.
+        """
         docker = find_docker_bin()
-        compose = root / "docker-compose.yml"
-        if not docker or not compose.is_file():
+        if not docker:
             return
-        subprocess.run(
-            [docker, "compose", "-p", "project-genesis", "-f", str(compose), "--project-directory", str(root), "up", "-d"],
-            cwd=str(root),
-            capture_output=True,
-            timeout=90,
-        )
-        subprocess.run(
-            [docker, "start", *GENESIS_CONTAINERS],
-            capture_output=True,
-            timeout=60,
-        )
+        hidden_run([docker, "start", *WATCH_CONTAINERS], timeout=40)
 
     url_now = core_url(name)
     if url_now and http_ok(url_now):
@@ -314,7 +331,7 @@ def main() -> int:
                     run_job_with_retry([py, "-m", "post_migration.cli", "learn-success"])
                     run_job_with_retry([py, "-m", "post_migration.cli", "recompute-performance"])
                     next_job = time.time() + 21600
-                time.sleep(30)
+                time.sleep(60)
     finally:
         with log.open("a", encoding="utf-8", errors="replace") as f:
             f.write(
