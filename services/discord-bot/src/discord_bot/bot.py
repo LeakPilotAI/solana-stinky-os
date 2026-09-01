@@ -74,7 +74,7 @@ intel = app_commands.Group(name="stinky", description="Stinky OS intelligence co
 alerts_group = app_commands.Group(name="alerts", description="High-potential migration alert controls")
 
 
-@alerts_group.command(name="subscribe", description="DM me only high-potential runners (migration + $25k 5m vol)")
+@alerts_group.command(name="subscribe", description="DM me only when Gate 1 hits ($150k / 5m). Not a buy.")
 async def subscribe(interaction: discord.Interaction) -> None:
     bot: StinkyBot = interaction.client  # type: ignore[assignment]
     await bot.store.subscribe(interaction.user.id, str(interaction.user))
@@ -83,8 +83,8 @@ async def subscribe(interaction: discord.Interaction) -> None:
         description=(
             "You will receive **DMs only** when a coin:\n"
             "1. Just **migrated** out of bond (not a create)\n"
-            "2. Hits **≥ $25,000** in 5‑minute volume\n\n"
-            "Quiet migrations and pre-bond launches are ignored."
+            "2. Hits **Gate 1: ≥ $150,000** in 5-minute volume (clamp $200k)\n\n"
+            "Green online is not an alert. Empty nights are valid. Not a buy."
         ),
         color=0x00C853,
     )
