@@ -612,6 +612,18 @@ def ensure_dotenv() -> None:
 def ensure_venv(skip_install: bool) -> None:
     if skip_install and VENV_PY.is_file():
         return
+    if VENV_PY.is_file():
+        try:
+            r = subprocess.run(
+                [str(VENV_PY), "-c", "import stinky_core, event_log, stinky_api"],
+                capture_output=True,
+                timeout=10,
+            )
+            if r.returncode == 0:
+                ok("python packages already installed")
+                return
+        except (subprocess.TimeoutExpired, OSError):
+            pass
     step("[deps] Python venv + editable installs")
     clean_broken_dists()
     if not VENV_PY.is_file():
@@ -658,7 +670,7 @@ def ensure_docker() -> None:
     if not docker:
         fail("Docker", "DOWN", "docker.exe not found after PATH restore", next_step="Install Docker Desktop, start it, then double-click Genesis again.")
         raise RuntimeError("Docker is not running.")
-    info = subprocess.run([docker, "info"], capture_output=True)
+    info = subprocess.run([docker, "info"], capture_output=True, timeout=20)
     if info.returncode != 0:
         dd = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Docker" / "Docker" / "Docker Desktop.exe"
         if dd.is_file():
@@ -666,10 +678,10 @@ def ensure_docker() -> None:
             subprocess.Popen([str(dd)], cwd=str(dd.parent))
         for _ in range(40):
             time.sleep(3)
-            info = subprocess.run([docker, "info"], capture_output=True)
+            info = subprocess.run([docker, "info"], capture_output=True, timeout=20)
             if info.returncode == 0:
                 break
-    info = subprocess.run([docker, "info"], capture_output=True)
+    info = subprocess.run([docker, "info"], capture_output=True, timeout=20)
     if info.returncode != 0:
         fail("Docker", "DOWN", "Docker is not running", next_step="Start Docker Desktop and double-click Genesis again.")
         raise RuntimeError("Docker is not running.")
@@ -683,58 +695,66 @@ def ensure_docker() -> None:
             str(ROOT / "docker-compose.yml"),
             "up",
             "-d",
-            "--force-recreate",
-            "--remove-orphans",
         ],
         cwd=str(ROOT),
+        timeout=120,
     )
-    say("  docker compose up -d --force-recreate exit %d" % (up.returncode or 0))
-    log_line("docker", "started", command=docker + " compose up -d --force-recreate")
+    say("  docker compose up -d exit %d" % (up.returncode or 0))
+    log_line("docker", "started", command=docker + " compose up -d")
+
+    def dockerexec(args: list[str], timeout: int = 8) -> str:
+        try:
+            r = subprocess.run(
+                [docker, "exec", *args],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            return ((r.stdout or "") + (r.stderr or ""))
+        except (subprocess.TimeoutExpired, OSError):
+            return ""
+
     pg_ok = False
     rd_ok = False
-
-    def ping_redis() -> bool:
-        rd = subprocess.run(
-            [docker, "exec", "stinky-redis", "redis-cli", "ping"],
-            capture_output=True,
-            text=True,
-        )
-        return "PONG" in ((rd.stdout or "") + (rd.stderr or ""))
-
-    for _ in range(45):
-        pg = subprocess.run(
-            [docker, "exec", "stinky-postgres", "pg_isready", "-U", "stinky", "-d", "stinky"],
-            capture_output=True,
-            text=True,
-        )
-        if "accepting" in ((pg.stdout or "") + (pg.stderr or "")):
+    say("  waiting for Postgres/Redis (8s ping timeout, will not hang)")
+    for i in range(15):
+        pg_out = dockerexec(["stinky-postgres", "pg_isready", "-U", "stinky", "-d", "stinky"])
+        rd_out = dockerexec(["stinky-redis", "redis-cli", "ping"])
+        if "accepting" in pg_out:
             pg_ok = True
-        rd_ok = ping_redis()
+        if "PONG" in rd_out:
+            rd_ok = True
         if pg_ok and rd_ok:
             break
+        say("  wait %s/15  postgres=%s redis=%s" % (i + 1, "ok" if pg_ok else "…", "ok" if rd_ok else "…"))
         time.sleep(2)
     if pg_ok and not rd_ok:
-        warn("Redis not PONG yet - recreating stinky-redis (volumes kept, ATLAS not touched)")
-        subprocess.run(
-            [
-                docker,
-                "compose",
-                "-p",
-                "project-genesis",
-                "-f",
-                str(ROOT / "docker-compose.yml"),
-                "up",
-                "-d",
-                "--force-recreate",
-                "redis",
-            ],
-            cwd=str(ROOT),
-            capture_output=True,
-        )
-        for _ in range(20):
-            rd_ok = ping_redis()
-            if rd_ok:
+        warn("Redis not PONG - recreating stinky-redis only (volumes kept, ATLAS not touched)")
+        try:
+            subprocess.run(
+                [
+                    docker,
+                    "compose",
+                    "-p",
+                    "project-genesis",
+                    "-f",
+                    str(ROOT / "docker-compose.yml"),
+                    "up",
+                    "-d",
+                    "--force-recreate",
+                    "redis",
+                ],
+                cwd=str(ROOT),
+                capture_output=True,
+                timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            warn("redis recreate timed out")
+        for i in range(10):
+            if "PONG" in dockerexec(["stinky-redis", "redis-cli", "ping"]):
+                rd_ok = True
                 break
+            say("  redis retry %s/10" % (i + 1))
             time.sleep(2)
     if pg_ok:
         HEALTH["DATABASE"] = "CONNECTED"
@@ -747,14 +767,18 @@ def ensure_docker() -> None:
         ok("Redis PONG (host 6380)")
     else:
         HEALTH["REDIS"] = "DOWN"
-        lg = subprocess.run(
-            [docker, "logs", "--tail", "30", "stinky-redis"],
-            capture_output=True,
-            text=True,
-        )
-        raw = ((lg.stdout or "") + (lg.stderr or "")).strip().replace("\n", " | ")
-        if raw:
-            say("  redis logs: " + raw[:400])
+        try:
+            lg = subprocess.run(
+                [docker, "logs", "--tail", "30", "stinky-redis"],
+                capture_output=True,
+                text=True,
+                timeout=8,
+            )
+            raw = ((lg.stdout or "") + (lg.stderr or "")).strip().replace("\n", " | ")
+            if raw:
+                say("  redis logs: " + raw[:400])
+        except (subprocess.TimeoutExpired, OSError):
+            pass
         fail("REDIS", "DOWN", "redis-cli ping did not return PONG", next_step="Wait for Docker, then retry from VS Code.")
     log_line("postgres", HEALTH["DATABASE"], command="pg_isready -U stinky -d stinky")
     log_line("redis", HEALTH["REDIS"], command="redis-cli ping")
@@ -802,6 +826,7 @@ def persistence_smoke() -> None:
         input=sql,
         text=True,
         capture_output=True,
+        timeout=20,
     )
     raw = (r.stdout or "") + (r.stderr or "")
     if "ok" in raw:
