@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 import time
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,6 +21,19 @@ NAMES = (
     "entities",
     "web",
     "maintain",
+)
+
+GENESIS_CONTAINERS = (
+    "stinky-postgres",
+    "stinky-redis",
+    "stinky-minio",
+    "stinky-minio-init",
+)
+
+CORE_HEALTH = (
+    ("event-log", 8002, "http://127.0.0.1:8002/health"),
+    ("api", 8010, "http://127.0.0.1:8010/health"),
+    ("web", 3000, "http://127.0.0.1:3000/operator"),
 )
 
 
@@ -174,6 +189,78 @@ def main() -> int:
                 delay = min(delay * 2, 60)
         return last
 
+    def find_docker_bin() -> str | None:
+        import shutil
+
+        hit = shutil.which("docker") or shutil.which("docker.exe")
+        if hit:
+            return hit
+        p = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Docker" / "Docker" / "resources" / "bin" / "docker.exe"
+        return str(p) if p.is_file() else None
+
+    def http_ok(url: str, timeout: float = 2.5) -> bool:
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as resp:
+                return 200 <= int(resp.status) < 500
+        except Exception:
+            return False
+
+    def listen_pid(port: int) -> int:
+        try:
+            out = subprocess.check_output(["netstat", "-ano"], text=True, errors="replace", timeout=8)
+        except (subprocess.SubprocessError, OSError):
+            return 0
+        for line in out.splitlines():
+            if "LISTENING" not in line.upper():
+                continue
+            if not re.search(r":%d(\s|$)" % port, line):
+                continue
+            parts = line.split()
+            if parts and parts[-1].isdigit():
+                return int(parts[-1])
+        return 0
+
+    def watchdog_tick() -> None:
+        """Keep Genesis docker + core HTTP up. Never ATLAS compose or Docker Desktop."""
+        docker = find_docker_bin()
+        compose = root / "docker-compose.yml"
+        if docker and compose.is_file():
+            subprocess.run(
+                [docker, "compose", "-f", str(compose), "--project-directory", str(root), "up", "-d"],
+                cwd=str(root),
+                capture_output=True,
+                timeout=90,
+            )
+            subprocess.run(
+                [docker, "start", *GENESIS_CONTAINERS],
+                capture_output=True,
+                timeout=60,
+            )
+        svc = root / "scripts" / "start-genesis-svc.cmd"
+        for svc_name, port, url in CORE_HEALTH:
+            if http_ok(url):
+                continue
+            pid = listen_pid(port)
+            if pid > 0:
+                subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, timeout=10)
+                time.sleep(1)
+            if svc.is_file():
+                msg = "[%s] watchdog restart %s (health miss on %s)\n" % (
+                    datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    svc_name,
+                    url,
+                )
+                sys.stdout.write(msg)
+                sys.stdout.flush()
+                with log.open("a", encoding="utf-8", errors="replace") as f:
+                    f.write(msg)
+                subprocess.run(
+                    ["cmd.exe", "/c", str(svc), svc_name],
+                    cwd=str(root),
+                    capture_output=True,
+                    timeout=20,
+                )
+
     code = 0
     try:
         if name == "event-log":
@@ -192,10 +279,25 @@ def main() -> int:
             npm = find_npm() or "npm"
             code = run_supervised([npm, "run", "dev", "--", "-p", "3000", "-H", "127.0.0.1"], cwd=root / "apps" / "web")
         elif name == "maintain":
+            next_job = 0.0
             while True:
-                run_job_with_retry([py, "-m", "post_migration.cli", "learn-success"])
-                run_job_with_retry([py, "-m", "post_migration.cli", "recompute-performance"])
-                time.sleep(21600)
+                try:
+                    watchdog_tick()
+                except Exception as exc:
+                    msg = "[%s] watchdog error %s\n" % (
+                        datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        str(exc)[:200],
+                    )
+                    sys.stdout.write(msg)
+                    sys.stdout.flush()
+                    with log.open("a", encoding="utf-8", errors="replace") as f:
+                        f.write(msg)
+                now = time.time()
+                if now >= next_job:
+                    run_job_with_retry([py, "-m", "post_migration.cli", "learn-success"])
+                    run_job_with_retry([py, "-m", "post_migration.cli", "recompute-performance"])
+                    next_job = time.time() + 21600
+                time.sleep(30)
     finally:
         with log.open("a", encoding="utf-8", errors="replace") as f:
             f.write(

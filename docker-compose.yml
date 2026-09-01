@@ -24,6 +24,16 @@ services:
   redis:
     image: redis:7-alpine
     container_name: stinky-redis
+    command:
+      [
+        "redis-server",
+        "--save",
+        "",
+        "--appendonly",
+        "no",
+        "--stop-writes-on-bgsave-error",
+        "no",
+      ]
     ports:
       - "6380:6379"   # host 6380 → container 6379
     volumes:

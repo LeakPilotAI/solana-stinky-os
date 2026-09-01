@@ -61,6 +61,12 @@ class StinkyBot(commands.Bot):
     async def on_ready(self) -> None:
         logger.info("discord.ready", user=str(self.user), id=self.user.id if self.user else None)
 
+    async def on_disconnect(self) -> None:
+        logger.warning("discord.disconnected")
+
+    async def on_resumed(self) -> None:
+        logger.info("discord.resumed")
+
     async def close(self) -> None:
         if self.alerter:
             await self.alerter.stop()
