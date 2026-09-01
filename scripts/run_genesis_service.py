@@ -132,33 +132,69 @@ def main() -> int:
                 f.flush()
             return int(proc.wait())
 
+    def run_supervised(cmd: list[str], cwd: Path | None = None) -> int:
+        """Long-running services: if Windows/Docker drops the NIC, restart. Do not exit the OS."""
+        delay = 5
+        last = 0
+        while True:
+            last = run(cmd, cwd)
+            msg = "[%s] %s exited %s, restart in %ss\n" % (
+                datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                name,
+                last,
+                delay,
+            )
+            sys.stdout.write(msg)
+            sys.stdout.flush()
+            with log.open("a", encoding="utf-8", errors="replace") as f:
+                f.write(msg)
+            time.sleep(delay)
+            delay = min(delay * 2, 60)
+
+    def run_job_with_retry(cmd: list[str], attempts: int = 3) -> int:
+        delay = 15
+        last = 1
+        for i in range(1, attempts + 1):
+            last = run(cmd)
+            if last == 0:
+                return 0
+            msg = "[%s] maintain job failed exit=%s attempt=%s/%s, retry in %ss\n" % (
+                datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                last,
+                i,
+                attempts,
+                delay,
+            )
+            sys.stdout.write(msg)
+            sys.stdout.flush()
+            with log.open("a", encoding="utf-8", errors="replace") as f:
+                f.write(msg)
+            if i < attempts:
+                time.sleep(delay)
+                delay = min(delay * 2, 60)
+        return last
+
     code = 0
     try:
         if name == "event-log":
-            code = run([py, "-m", "uvicorn", "event_log.api:app", "--port", "8002", "--host", "127.0.0.1"])
+            code = run_supervised([py, "-m", "uvicorn", "event_log.api:app", "--port", "8002", "--host", "127.0.0.1"])
         elif name == "api":
-            code = run([py, "-m", "stinky_api.cli"])
+            code = run_supervised([py, "-m", "stinky_api.cli"])
         elif name == "sentinel":
-            code = run([py, "-m", "sentinel.cli"])
+            code = run_supervised([py, "-m", "sentinel.cli"])
         elif name == "discord":
-            code = run([py, "-m", "discord_bot.cli"])
+            code = run_supervised([py, "-m", "discord_bot.cli"])
         elif name == "collector":
-            code = run([py, "-m", "post_migration.cli"])
+            code = run_supervised([py, "-m", "post_migration.cli"])
         elif name == "entities":
-            code = run([py, "-m", "entity_resolver.cli"])
+            code = run_supervised([py, "-m", "entity_resolver.cli"])
         elif name == "web":
             npm = find_npm() or "npm"
-            code = run([npm, "run", "dev", "--", "-p", "3000", "-H", "127.0.0.1"], cwd=root / "apps" / "web")
+            code = run_supervised([npm, "run", "dev", "--", "-p", "3000", "-H", "127.0.0.1"], cwd=root / "apps" / "web")
         elif name == "maintain":
             while True:
-                try:
-                    run([py, "-m", "post_migration.cli", "learn-success"])
-                except Exception:
-                    pass
-                try:
-                    run([py, "-m", "post_migration.cli", "recompute-performance"])
-                except Exception:
-                    pass
+                run_job_with_retry([py, "-m", "post_migration.cli", "learn-success"])
+                run_job_with_retry([py, "-m", "post_migration.cli", "recompute-performance"])
                 time.sleep(21600)
     finally:
         with log.open("a", encoding="utf-8", errors="replace") as f:
