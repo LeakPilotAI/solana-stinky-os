@@ -206,7 +206,11 @@ def test_static_service_runner_is_allowlisted():
         assert name in t
     assert "run_supervised" in t
     assert "run_job_with_retry" in t
-    assert "urllib.request" not in t
+    assert "watchdog_tick" in t
+    assert "foreach ($port in 8002, 8010, 3000, 8001)" not in t
+    assert "(8001," not in t
+    assert "stinky-postgres" in t
+    assert "http://127.0.0.1:8002/health" in t
     assert "main.zip" not in t
     s = read("stop-stinky.ps1")
     assert "run-genesis-service" in s or "run_genesis_service" in s

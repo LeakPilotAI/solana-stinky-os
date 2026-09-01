@@ -40,7 +40,7 @@ def main() -> None:
         channel_id=settings.discord_alert_channel_id,
     )
     bot = StinkyBot()
-    bot.run(settings.discord_token, log_handler=None)
+    bot.run(settings.discord_token, log_handler=None, reconnect=True)
 
 
 if __name__ == "__main__":
