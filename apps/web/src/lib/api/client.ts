@@ -40,7 +40,7 @@ async function getJson<T>(
 }
 
 export const api = {
-  health: () => getJson<SystemHealth>("/health", { timeoutMs: 4_000 }),
+  health: () => getJson<SystemHealth>("/health", { timeoutMs: 8_000 }),
   commandCenter: () =>
     getJson<CommandCenterData>("/v1/command-center", { timeoutMs: 20_000 }),
   runners: (limit = 50, minFeesSol = 0, minVolumeM5 = 150000) =>

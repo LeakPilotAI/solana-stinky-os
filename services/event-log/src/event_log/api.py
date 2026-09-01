@@ -29,35 +29,27 @@ transport = RedisStreamsTransport(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Redis may still be loading RDB after docker compose start (BusyLoadingError).
-    last_err: Exception | None = None
-    for attempt in range(1, 31):
-        try:
-            await transport.connect()
-            last_err = None
-            break
-        except Exception as exc:
-            last_err = exc
-            msg = str(exc).lower()
-            retryable = (
-                "loading" in msg
-                or "busy" in msg
-                or "refused" in msg
-                or "connect" in msg
-                or "timed out" in msg
-                or "timeout" in msg
-            )
-            logger.warning(
-                "event_log.redis_connect_retry",
-                attempt=attempt,
-                error=f"{type(exc).__name__}: {exc}"[:200],
-            )
-            if not retryable or attempt >= 30:
-                raise
-            await asyncio.sleep(2)
-    if last_err is not None:
-        raise last_err
-    logger.info("event_log.started", service=settings.service_name)
+    # Serve /health immediately. Redis connect in the background so start
+    # does not sit on a 60s lifespan and paint Events red.
+    async def _connect() -> None:
+        last_err: Exception | None = None
+        for attempt in range(1, 31):
+            try:
+                await transport.connect()
+                logger.info("event_log.started", service=settings.service_name)
+                return
+            except Exception as exc:
+                last_err = exc
+                logger.warning(
+                    "event_log.redis_connect_retry",
+                    attempt=attempt,
+                    error=f"{type(exc).__name__}: {exc}"[:200],
+                )
+                await asyncio.sleep(2)
+        if last_err is not None:
+            logger.error("event_log.redis_connect_gave_up", error=str(last_err)[:200])
+
+    asyncio.create_task(_connect())
     yield
     await transport.close()
     logger.info("event_log.stopped")
