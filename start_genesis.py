@@ -674,37 +674,74 @@ def ensure_docker() -> None:
         fail("Docker", "DOWN", "Docker is not running", next_step="Start Docker Desktop and double-click Genesis again.")
         raise RuntimeError("Docker is not running.")
     up = subprocess.run(
-        [docker, "compose", "-p", "project-genesis", "-f", str(ROOT / "docker-compose.yml"), "up", "-d"],
+        [
+            docker,
+            "compose",
+            "-p",
+            "project-genesis",
+            "-f",
+            str(ROOT / "docker-compose.yml"),
+            "up",
+            "-d",
+            "--force-recreate",
+            "--remove-orphans",
+        ],
         cwd=str(ROOT),
     )
-    say("  docker compose up -d exit %d" % (up.returncode or 0))
-    log_line("docker", "started", command=docker + " compose up -d")
+    say("  docker compose up -d --force-recreate exit %d" % (up.returncode or 0))
+    log_line("docker", "started", command=docker + " compose up -d --force-recreate")
     pg_ok = False
     rd_ok = False
-    for _ in range(40):
-        pg = subprocess.run(
-            [docker, "exec", "stinky-postgres", "pg_isready", "-U", "stinky", "-d", "stinky"],
-            capture_output=True,
-            text=True,
-        )
+
+    def ping_redis() -> bool:
         rd = subprocess.run(
             [docker, "exec", "stinky-redis", "redis-cli", "ping"],
             capture_output=True,
             text=True,
         )
+        return "PONG" in ((rd.stdout or "") + (rd.stderr or ""))
+
+    for _ in range(45):
+        pg = subprocess.run(
+            [docker, "exec", "stinky-postgres", "pg_isready", "-U", "stinky", "-d", "stinky"],
+            capture_output=True,
+            text=True,
+        )
         if "accepting" in ((pg.stdout or "") + (pg.stderr or "")):
             pg_ok = True
-        if "PONG" in ((rd.stdout or "") + (rd.stderr or "")):
-            rd_ok = True
+        rd_ok = ping_redis()
         if pg_ok and rd_ok:
             break
         time.sleep(2)
+    if pg_ok and not rd_ok:
+        warn("Redis not PONG yet - recreating stinky-redis (volumes kept, ATLAS not touched)")
+        subprocess.run(
+            [
+                docker,
+                "compose",
+                "-p",
+                "project-genesis",
+                "-f",
+                str(ROOT / "docker-compose.yml"),
+                "up",
+                "-d",
+                "--force-recreate",
+                "redis",
+            ],
+            cwd=str(ROOT),
+            capture_output=True,
+        )
+        for _ in range(20):
+            rd_ok = ping_redis()
+            if rd_ok:
+                break
+            time.sleep(2)
     if pg_ok:
         HEALTH["DATABASE"] = "CONNECTED"
         ok("Postgres ready (host 5433)")
     else:
         HEALTH["DATABASE"] = "DOWN"
-        fail("DATABASE", "DOWN", "pg_isready did not report accepting connections", next_step="Wait for Docker, then double-click Genesis again.")
+        fail("DATABASE", "DOWN", "pg_isready did not report accepting connections", next_step="Wait for Docker, then retry from VS Code.")
     if rd_ok:
         HEALTH["REDIS"] = "CONNECTED"
         ok("Redis PONG (host 6380)")
@@ -718,7 +755,7 @@ def ensure_docker() -> None:
         raw = ((lg.stdout or "") + (lg.stderr or "")).strip().replace("\n", " | ")
         if raw:
             say("  redis logs: " + raw[:400])
-        fail("REDIS", "DOWN", "redis-cli ping did not return PONG", next_step="Wait for Docker, then retry start_genesis.py from VS Code.")
+        fail("REDIS", "DOWN", "redis-cli ping did not return PONG", next_step="Wait for Docker, then retry from VS Code.")
     log_line("postgres", HEALTH["DATABASE"], command="pg_isready -U stinky -d stinky")
     log_line("redis", HEALTH["REDIS"], command="redis-cli ping")
 
