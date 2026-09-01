@@ -1,11 +1,15 @@
 # Stinky OS – local infrastructure
-# Host ports offset from 5432 / 6379 / 8000 so other local stacks can keep those.
-# Usage: docker compose up -d
+# Host ports offset from 5432 / 6379 / 8000 so ATLAS can keep those.
+# Project name is pinned in start/stop as project-genesis. Never start atlas / leakpilotai from here.
+# CPU/RAM caps so Genesis + ATLAS can share Docker Desktop.
+# Usage: docker compose -p project-genesis up -d
 
 services:
   postgres:
     image: timescale/timescaledb:latest-pg16
     container_name: stinky-postgres
+    mem_limit: 1536m
+    cpus: "1.0"
     environment:
       POSTGRES_USER: stinky
       POSTGRES_PASSWORD: stinky
@@ -24,6 +28,8 @@ services:
   redis:
     image: redis:7-alpine
     container_name: stinky-redis
+    mem_limit: 512m
+    cpus: "0.50"
     command:
       [
         "redis-server",
@@ -33,6 +39,10 @@ services:
         "no",
         "--stop-writes-on-bgsave-error",
         "no",
+        "--maxmemory",
+        "384mb",
+        "--maxmemory-policy",
+        "noeviction",
       ]
     ports:
       - "6380:6379"   # host 6380 → container 6379
@@ -47,6 +57,8 @@ services:
   minio:
     image: minio/minio:latest
     container_name: stinky-minio
+    mem_limit: 256m
+    cpus: "0.25"
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -65,6 +77,8 @@ services:
   minio-init:
     image: minio/mc:latest
     container_name: stinky-minio-init
+    mem_limit: 128m
+    cpus: "0.25"
     depends_on:
       minio:
         condition: service_started

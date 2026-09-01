@@ -480,6 +480,8 @@ def stop_genesis_containers() -> None:
             [
                 docker,
                 "compose",
+                "-p",
+                "project-genesis",
                 "-f",
                 str(compose),
                 "--project-directory",
@@ -671,7 +673,10 @@ def ensure_docker() -> None:
     if info.returncode != 0:
         fail("Docker", "DOWN", "Docker is not running", next_step="Start Docker Desktop and double-click Genesis again.")
         raise RuntimeError("Docker is not running.")
-    up = subprocess.run([docker, "compose", "-f", str(ROOT / "docker-compose.yml"), "up", "-d"], cwd=str(ROOT))
+    up = subprocess.run(
+        [docker, "compose", "-p", "project-genesis", "-f", str(ROOT / "docker-compose.yml"), "up", "-d"],
+        cwd=str(ROOT),
+    )
     say("  docker compose up -d exit %d" % (up.returncode or 0))
     log_line("docker", "started", command=docker + " compose up -d")
     pg_ok = False

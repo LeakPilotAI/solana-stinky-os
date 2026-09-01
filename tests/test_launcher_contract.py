@@ -111,7 +111,22 @@ def test_stop_is_genesis_owned_only():
     assert "stinky-postgres" in t
     assert "stinky-redis" in t
     assert "docker stop" in t
-    assert "5432" not in t.split("docker stop")[-1][:400]
+    assert "-p project-genesis" in t
+    assert "-p atlas" not in t
+
+
+def test_compose_is_capped_and_not_atlas():
+    y = read("docker-compose.yml")
+    assert "mem_limit" in y
+    assert "5433:5432" in y
+    assert "6380:6379" in y
+    assert "8001" not in y
+    t = read("start_genesis.py")
+    assert "project-genesis" in t
+    assert "-p atlas" not in t
+    w = read("scripts/run_genesis_service.py")
+    assert "project-genesis" in w
+    assert "-p atlas" not in w
 
 
 def test_gate1_unchanged_in_admission():
