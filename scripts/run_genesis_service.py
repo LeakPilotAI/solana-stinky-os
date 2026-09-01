@@ -255,7 +255,7 @@ def main() -> int:
         if not docker or not compose.is_file():
             return
         subprocess.run(
-            [docker, "compose", "-f", str(compose), "--project-directory", str(root), "up", "-d"],
+            [docker, "compose", "-p", "project-genesis", "-f", str(compose), "--project-directory", str(root), "up", "-d"],
             cwd=str(root),
             capture_output=True,
             timeout=90,

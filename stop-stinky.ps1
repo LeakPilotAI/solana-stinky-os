@@ -151,7 +151,7 @@ elseif (Test-Path -LiteralPath (Join-Path $env:ProgramFiles "Docker\Docker\resou
 }
 if ($docker) {
   if (Test-Path -LiteralPath (Join-Path $root "docker-compose.yml")) {
-    & $docker compose -f "$root\docker-compose.yml" --project-directory $root stop 2>$null
+    & $docker compose -p project-genesis -f "$root\docker-compose.yml" --project-directory $root stop 2>$null
   }
   Write-Host "  docker stop $($genesisContainers -join ' ')"
   & $docker stop --time 10 @genesisContainers 2>$null
