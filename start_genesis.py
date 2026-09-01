@@ -495,7 +495,7 @@ def stop_genesis_containers() -> None:
     say("  docker stop " + " ".join(GENESIS_CONTAINERS))
     try:
         r = subprocess.run(
-            [docker, "stop", "--time", "10", *GENESIS_CONTAINERS],
+            [docker, "stop", "--timeout", "10", *GENESIS_CONTAINERS],
             capture_output=True,
             timeout=90,
             text=True,
@@ -710,7 +710,15 @@ def ensure_docker() -> None:
         ok("Redis PONG (host 6380)")
     else:
         HEALTH["REDIS"] = "DOWN"
-        fail("REDIS", "DOWN", "redis-cli ping did not return PONG", next_step="Wait for Docker, then double-click Genesis again.")
+        lg = subprocess.run(
+            [docker, "logs", "--tail", "30", "stinky-redis"],
+            capture_output=True,
+            text=True,
+        )
+        raw = ((lg.stdout or "") + (lg.stderr or "")).strip().replace("\n", " | ")
+        if raw:
+            say("  redis logs: " + raw[:400])
+        fail("REDIS", "DOWN", "redis-cli ping did not return PONG", next_step="Wait for Docker, then retry start_genesis.py from VS Code.")
     log_line("postgres", HEALTH["DATABASE"], command="pg_isready -U stinky -d stinky")
     log_line("redis", HEALTH["REDIS"], command="redis-cli ping")
 
