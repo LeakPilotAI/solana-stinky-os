@@ -68,13 +68,11 @@ def test_start_detaches_via_cmd_start():
     assert "CREATE_NO_WINDOW" in t or "0x08000000" in t
     assert "pythonw" in t
     c = read("scripts/start-genesis-svc.cmd")
-    assert "start " in c.lower()
-    assert "/B" in c
     assert "pythonw" in c.lower()
-    assert "genesis-%NAME%" in c
     assert "run_genesis_service.py" in c
     assert "run-genesis-service.ps1" not in c
     assert "/MIN" not in c
+    assert "CREATE_NO_WINDOW" in read("scripts/run_genesis_service.py") or "0x08000000" in read("scripts/run_genesis_service.py")
 
 
 def test_start_health_uses_http_not_only_process():

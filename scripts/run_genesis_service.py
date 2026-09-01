@@ -130,6 +130,13 @@ def main() -> int:
         f.write(stamp + "\n")
 
     def run(cmd: list[str], cwd: Path | None = None) -> int:
+        flags = 0
+        startupinfo = None
+        if os.name == "nt":
+            flags = 0x08000000 | 0x00000200  # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = 0
         with log.open("a", encoding="utf-8", errors="replace") as f:
             proc = subprocess.Popen(
                 cmd,
@@ -137,7 +144,10 @@ def main() -> int:
                 env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
                 text=True,
+                creationflags=flags,
+                startupinfo=startupinfo,
             )
             assert proc.stdout is not None
             for line in proc.stdout:
