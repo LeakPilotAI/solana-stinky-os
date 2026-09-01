@@ -806,8 +806,35 @@ def start_detached(name: str, port: int = 0, required: bool = False) -> int:
         else:
             warn("%-12s %s" % (name, reason))
         return 0
-    # Detached via scripts\start-genesis-svc.cmd (cmd START). Breaks away from the Explorer job.
-    subprocess.run([str(CMD_EXE), "/d", "/c", str(starter), name], cwd=str(ROOT))
+    # Hidden pythonw + CREATE_BREAKAWAY_FROM_JOB so Explorer cannot kill children
+    # and no extra consoles appear. scripts\start-genesis-svc.cmd (cmd START /B)
+    # is the watchdog path only.
+    runner = ROOT / "scripts" / "run_genesis_service.py"
+    pyw = ROOT / ".venv" / "Scripts" / "pythonw.exe"
+    pye = ROOT / ".venv" / "Scripts" / "python.exe"
+    exe = str(pyw if pyw.is_file() else pye if pye.is_file() else sys.executable)
+    env = os.environ.copy()
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUNBUFFERED"] = "1"
+    env["STINKY_ROOT"] = str(ROOT)
+    flags = 0
+    if os.name == "nt":
+        flags = 0x08000000 | 0x00000200 | 0x01000000  # CREATE_NO_WINDOW | NEW_PROCESS_GROUP | BREAKAWAY_FROM_JOB
+    try:
+        logf = open(log, "a", encoding="utf-8", errors="replace")
+        subprocess.Popen(
+            [exe, str(runner), "--name", name],
+            cwd=str(ROOT),
+            stdin=subprocess.DEVNULL,
+            stdout=logf,
+            stderr=subprocess.STDOUT,
+            env=env,
+            creationflags=flags,
+        )
+    except OSError:
+        starter = ROOT / "scripts" / "start-genesis-svc.cmd"
+        subprocess.run([str(CMD_EXE), "/d", "/c", str(starter), name], cwd=str(ROOT))
     time.sleep(0.8)
     pid = pid_from_log(name)
     if pid <= 0:
