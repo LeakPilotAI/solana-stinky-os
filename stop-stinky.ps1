@@ -141,20 +141,24 @@ foreach ($port in 8002, 8010, 3000) {
 }
 
 Start-Sleep 2
-if (Test-Path -LiteralPath (Join-Path $root "docker-compose.yml")) {
-  Write-Host "Stopping Genesis containers (volumes kept, Docker Desktop not quit)..." -ForegroundColor Yellow
-  $docker = $null
-  $dc = Get-Command docker -ErrorAction SilentlyContinue
-  if ($dc -and $dc.Source) { $docker = [string]$dc.Source }
-  elseif (Test-Path -LiteralPath (Join-Path $env:ProgramFiles "Docker\Docker\resources\bin\docker.exe")) {
-    $docker = Join-Path $env:ProgramFiles "Docker\Docker\resources\bin\docker.exe"
+$genesisContainers = @("stinky-postgres", "stinky-redis", "stinky-minio", "stinky-minio-init")
+Write-Host "Stopping Genesis containers (volumes kept, Docker Desktop not quit, ATLAS not targeted)..." -ForegroundColor Yellow
+$docker = $null
+$dc = Get-Command docker -ErrorAction SilentlyContinue
+if ($dc -and $dc.Source) { $docker = [string]$dc.Source }
+elseif (Test-Path -LiteralPath (Join-Path $env:ProgramFiles "Docker\Docker\resources\bin\docker.exe")) {
+  $docker = Join-Path $env:ProgramFiles "Docker\Docker\resources\bin\docker.exe"
+}
+if ($docker) {
+  if (Test-Path -LiteralPath (Join-Path $root "docker-compose.yml")) {
+    & $docker compose -f "$root\docker-compose.yml" --project-directory $root stop 2>$null
   }
-  if ($docker) {
-    & $docker compose -f "$root\docker-compose.yml" stop 2>$null
-  } else {
-    docker compose -f "$root\docker-compose.yml" stop 2>$null
-  }
-  Write-StartupLog "docker-compose" "stopped" "genesis compose project only"
+  Write-Host "  docker stop $($genesisContainers -join ' ')"
+  & $docker stop --time 10 @genesisContainers 2>$null
+  Write-StartupLog "docker-compose" "stopped" "genesis containers only"
+} else {
+  Write-Host "  docker.exe not found, skip container stop" -ForegroundColor DarkGray
+  Write-StartupLog "docker-compose" "skipped" "docker.exe not found"
 }
 Write-Host "STOPPED." -ForegroundColor Green
 Write-StartupLog "launcher" "STOPPED"

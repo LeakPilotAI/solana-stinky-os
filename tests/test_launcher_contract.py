@@ -105,6 +105,10 @@ def test_stop_is_genesis_owned_only():
     assert "not Genesis-owned" in t
     assert "docker compose" in t
     assert "Docker Desktop" in t
+    assert "stinky-postgres" in t
+    assert "stinky-redis" in t
+    assert "docker stop" in t
+    assert "5432" not in t.split("docker stop")[-1][:400]
 
 
 def test_gate1_unchanged_in_admission():
@@ -143,6 +147,10 @@ def test_default_start_stops_then_starts():
     assert "utf-8-sig" in t
     assert "configure_stdio" in t
     assert "clean_broken_dists" in t
+    assert "stop_genesis_containers" in t
+    assert "stinky-postgres" in t
+    assert "stinky-minio" in t
+    assert "docker stop" in t
 
 
 def test_sql_migrations_have_no_bom():
