@@ -818,9 +818,14 @@ def start_detached(name: str, port: int = 0, required: bool = False) -> int:
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUNBUFFERED"] = "1"
     env["STINKY_ROOT"] = str(ROOT)
+    env["BROWSER"] = "none"
     flags = 0
+    startupinfo = None
     if os.name == "nt":
         flags = 0x08000000 | 0x00000200 | 0x01000000  # CREATE_NO_WINDOW | NEW_PROCESS_GROUP | BREAKAWAY_FROM_JOB
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0
     try:
         logf = open(log, "a", encoding="utf-8", errors="replace")
         subprocess.Popen(
@@ -831,6 +836,7 @@ def start_detached(name: str, port: int = 0, required: bool = False) -> int:
             stderr=subprocess.STDOUT,
             env=env,
             creationflags=flags,
+            startupinfo=startupinfo,
         )
     except OSError:
         starter = ROOT / "scripts" / "start-genesis-svc.cmd"

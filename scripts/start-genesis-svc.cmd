@@ -15,10 +15,11 @@ if not exist "%PY%" (
 set PYTHONUTF8=1
 set PYTHONIOENCODING=utf-8
 set PYTHONUNBUFFERED=1
-rem pythonw + START /B: no extra consoles. Breaks away from the Explorer job.
+rem No `start` — Windows Terminal turns every START into a new window.
+rem pythonw has no console. Watchdog/desktop must not pile cmd windows.
 if exist "%PYW%" (
-  start "genesis-%NAME%" /B "%PYW%" "%~dp0run_genesis_service.py" --name "%NAME%"
+  "%PYW%" "%~dp0run_genesis_service.py" --name "%NAME%"
 ) else (
-  start "genesis-%NAME%" /B "%PY%" "%~dp0run_genesis_service.py" --name "%NAME%"
+  "%PY%" "%~dp0run_genesis_service.py" --name "%NAME%"
 )
 exit /b 0
