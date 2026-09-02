@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -11,6 +12,17 @@ import time
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+
+_SCRIPTS = Path(__file__).resolve().parent
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+from genesis_runtime import (  # noqa: E402
+    MAX_RESTARTS,
+    record_restart,
+    should_restart,
+    system_state,
+    write_state,
+)
 
 NAMES = (
     "event-log",
@@ -81,7 +93,32 @@ def restore_search_path() -> None:
     os.environ["PATH"] = path
 
 
+def find_node() -> str | None:
+    import shutil
+
+    hit = shutil.which("node") or shutil.which("node.exe")
+    if hit:
+        return hit
+    pf = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+    la = Path(os.environ.get("LOCALAPPDATA", ""))
+    for p in (pf / "nodejs" / "node.exe", la / "Programs" / "nodejs" / "node.exe"):
+        if p.is_file():
+            return str(p)
+    return None
+
+
 def find_npm() -> str | None:
+    import shutil
+
+    hit = shutil.which("npm") or shutil.which("npm.cmd")
+    if hit:
+        return hit
+    pf = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+    la = Path(os.environ.get("LOCALAPPDATA", ""))
+    for p in (pf / "nodejs" / "npm.cmd", la / "Programs" / "nodejs" / "npm.cmd"):
+        if p.is_file():
+            return str(p)
+    return None
     import shutil
 
     hit = shutil.which("npm") or shutil.which("npm.cmd")
@@ -164,9 +201,10 @@ def main() -> int:
             return int(proc.wait())
 
     def run_supervised(cmd: list[str], cwd: Path | None = None) -> int:
-        """Restart on crash. If another copy is already healthy, stop looping."""
+        """Restart on crash with a cap. Never storm. If port is already healthy, stop."""
         delay = 5
         last = 0
+        history: list[float] = []
         healthy_url = core_url(name)
         while True:
             last = run(cmd, cwd)
@@ -181,16 +219,32 @@ def main() -> int:
                 with log.open("a", encoding="utf-8", errors="replace") as f:
                     f.write(msg)
                 return 0
-            msg = "[%s] %s exited %s, restart in %ss\n" % (
+            history = record_restart(history)
+            ok_restart, phase = should_restart(history)
+            if not ok_restart:
+                msg = "[%s] %s FAILED after %s restarts in 15m, not looping\n" % (
+                    datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    name,
+                    MAX_RESTARTS,
+                )
+                sys.stdout.write(msg)
+                sys.stdout.flush()
+                with log.open("a", encoding="utf-8", errors="replace") as f:
+                    f.write(msg)
+                dump_runtime("FAILED")
+                return last or 1
+            msg = "[%s] %s exited %s, %s, restart in %ss\n" % (
                 datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 name,
                 last,
+                phase,
                 delay,
             )
             sys.stdout.write(msg)
             sys.stdout.flush()
             with log.open("a", encoding="utf-8", errors="replace") as f:
                 f.write(msg)
+            dump_runtime(phase)
             time.sleep(delay)
             delay = min(delay * 2, 60)
 
@@ -225,6 +279,22 @@ def main() -> int:
             return hit
         p = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Docker" / "Docker" / "resources" / "bin" / "docker.exe"
         return str(p) if p.is_file() else None
+
+    def dump_runtime(phase: str = "") -> None:
+        core: dict[str, str] = {}
+        for n, _port, url in CORE_HEALTH:
+            core[n] = "UP" if http_ok(url, 3.0) else "DOWN"
+        payload = {
+            "as_of": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "system": phase or system_state(core),
+            "services": core,
+            "watch": list(WATCH_CONTAINERS),
+            "note": "HTTP health only. UNKNOWN is not UP. Gate 1 is not here.",
+        }
+        try:
+            write_state(log_dir / "runtime-state.json", payload)
+        except OSError:
+            pass
 
     def http_ok(url: str, timeout: float = 2.5) -> bool:
         try:
@@ -310,13 +380,25 @@ def main() -> int:
         elif name == "entities":
             code = run_supervised([py, "-m", "entity_resolver.cli"])
         elif name == "web":
-            npm = find_npm() or "npm"
-            code = run_supervised([npm, "run", "dev", "--", "-p", "3000", "-H", "127.0.0.1"], cwd=root / "apps" / "web")
+            node = find_node()
+            nxt = root / "apps" / "web" / "node_modules" / "next" / "dist" / "bin" / "next"
+            if node and nxt.is_file():
+                code = run_supervised(
+                    [node, str(nxt), "dev", "-p", "3000", "-H", "127.0.0.1"],
+                    cwd=root / "apps" / "web",
+                )
+            else:
+                npm = find_npm() or "npm"
+                code = run_supervised(
+                    [npm, "run", "dev", "--", "-p", "3000", "-H", "127.0.0.1"],
+                    cwd=root / "apps" / "web",
+                )
         elif name == "maintain":
             next_job = 0.0
             while True:
                 try:
                     watchdog_tick()
+                    dump_runtime()
                 except Exception as exc:
                     msg = "[%s] watchdog error %s\n" % (
                         datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),

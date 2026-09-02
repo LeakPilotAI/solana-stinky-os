@@ -31,6 +31,7 @@ from post_migration.trade_parser import (
 logger = structlog.get_logger(__name__)
 
 DEX_URL = "https://api.dexscreener.com/latest/dex/tokens/{mint}"
+_DEX_COOLDOWN_UNTIL = 0.0
 PUMP_V2_TRADES = "https://swap-api.pump.fun/v2/coins/{mint}/trades"
 HELIUS_HISTORY = (
     "https://api-mainnet.helius-rpc.com/v0/addresses/{address}/transactions"
@@ -387,8 +388,16 @@ class ChainClient:
         return trades
 
     async def fetch_market_snapshot(self, mint: str) -> MarketSnapshot | None:
+        global _DEX_COOLDOWN_UNTIL
+        now = time.monotonic()
+        if now < _DEX_COOLDOWN_UNTIL:
+            return None
         try:
             resp = await self._http.get(DEX_URL.format(mint=mint))
+            if resp.status_code == 429:
+                _DEX_COOLDOWN_UNTIL = time.monotonic() + 60.0
+                logger.warning("chain.dex_429", mint=mint[:12], cooldown_sec=60)
+                return None
             if resp.status_code != 200:
                 return None
             data = resp.json()
