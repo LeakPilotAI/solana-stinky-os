@@ -227,6 +227,11 @@ def test_static_service_runner_is_allowlisted():
     for name in ("event-log", "api", "sentinel", "discord", "collector", "entities", "web", "maintain"):
         assert name in t
     assert "run_supervised" in t
+    assert "MAX_RESTARTS" in t
+    assert "FAILED after" in t
+    assert "find_node" in t
+    assert "runtime-state.json" in t
+    assert "genesis_runtime" in t
     assert "run_job_with_retry" in t
     assert "watchdog_tick" in t
     assert "WATCH_CONTAINERS" in t

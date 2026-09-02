@@ -180,17 +180,22 @@ class DexScreenerClient:
     def __init__(self) -> None:
         self._http = httpx.AsyncClient(timeout=12.0)
         self.last_probe: dict[str, Any] | None = None
+        self._cooldown_until = 0.0
 
     async def close(self) -> None:
         await self._http.aclose()
 
     async def fetch_volume(self, mint: str) -> VolumeSnapshot | None:
         url = DEXSCREENER_TOKEN_URL.format(mint=mint)
+        now = time.monotonic()
+        if now < self._cooldown_until:
+            return None
         t0 = time.monotonic()
         try:
             resp = await self._http.get(url)
             ms = round((time.monotonic() - t0) * 1000, 1)
             if resp.status_code == 429:
+                self._cooldown_until = time.monotonic() + 60.0
                 self.last_probe = {
                     "provider": "dexscreener",
                     "ok": False,
@@ -201,7 +206,7 @@ class DexScreenerClient:
                     "source": "dexscreener",
                     "at": datetime.now(timezone.utc).isoformat(),
                 }
-                logger.debug("dexscreener.http_error", status=429, mint=mint)
+                logger.warning("dexscreener.http_429", mint=mint[:12], cooldown_sec=60)
                 return None
             if resp.status_code != 200:
                 self.last_probe = {

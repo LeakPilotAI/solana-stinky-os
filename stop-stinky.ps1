@@ -162,4 +162,8 @@ if ($docker) {
 }
 Write-Host "STOPPED." -ForegroundColor Green
 Write-StartupLog "launcher" "STOPPED"
+$state = Join-Path $root "logs\runtime-state.json"
+try {
+  '{"system":"STOPPED","note":"Stop Genesis. Volumes kept."}' | Set-Content -LiteralPath $state -Encoding ascii
+} catch {}
 exit 0
