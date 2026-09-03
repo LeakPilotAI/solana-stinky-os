@@ -164,6 +164,20 @@ export interface CommandCenterData {
     message: string;
     items: unknown[];
   };
+  synthesis?: {
+    version?: string;
+    investigations?: Array<{
+      mint?: string;
+      lifecycle?: string;
+      quality?: string;
+      volume_m5_usd?: number | null;
+      quality_state?: string;
+      outcome?: string;
+      links?: Record<string, string>;
+    }>;
+    empty_note?: string | null;
+    note?: string;
+  };
 }
 
 export interface SearchResult {

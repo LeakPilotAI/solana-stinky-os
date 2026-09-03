@@ -281,6 +281,41 @@ export function CommandCenter() {
         )}
       </section>
 
+      <section className="rounded-xl border border-terminal-border bg-[#0a0e0a] px-3 py-2">
+        <div className="mb-1 flex items-center justify-between">
+          <h2 className="text-[10px] font-semibold uppercase tracking-wider text-terminal-muted">
+            Synthesis
+          </h2>
+          <Link href="/investigations" className="text-[10px] text-terminal-muted hover:text-terminal-accent">
+            Case files →
+          </Link>
+        </div>
+        <p className="mb-1 text-[10px] text-terminal-dim">
+          One investigation identity. Evidence on the token page. Not a buy.
+        </p>
+        {!(data.synthesis?.investigations || []).length ? (
+          <p className="py-3 text-center text-[12px] text-terminal-muted">
+            {data.synthesis?.empty_note || "NO ACTIVE INVESTIGATIONS"}
+          </p>
+        ) : (
+          <ul className="divide-y divide-terminal-border">
+            {(data.synthesis?.investigations || []).slice(0, 6).map((row, i) => {
+              const mint = String(row.mint || "");
+              return (
+                <li key={`${mint}-syn-${i}`} className="flex items-center justify-between gap-2 py-1.5 text-[11px]">
+                  <Link href={mint ? `/tokens/${mint}` : "/investigations"} className="font-mono hover:text-terminal-accent">
+                    {shortAddr(mint, 4)}
+                  </Link>
+                  <span className="uppercase text-terminal-muted">{row.lifecycle || "UNKNOWN"}</span>
+                  <span className="text-terminal-dim">{row.quality_state || "UNKNOWN"}</span>
+                  <span className="text-terminal-dim">{row.outcome || "UNKNOWN"}</span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
+
       {/* ── ALERT PRECISION (measured outcomes) ── */}
       {(data as any).pipeline?.available && (
         <div className="rounded border border-terminal-border bg-terminal-panel/80 px-3 py-2 text-2xs">
