@@ -186,17 +186,15 @@ class RedisStreamsTransport(EventTransport):
             logger.debug("consumer_group.exists", stream=stream, group=group)
 
     async def health_check(self) -> bool:
+        """Fast, non-destructive. Never drop the live client from a probe."""
+        if self._redis is None:
+            return False
+
         async def _ping() -> bool:
-            if self._redis is None:
-                await self.connect()
             pong = await self._client().ping()
             return bool(pong)
 
         try:
-            return bool(await asyncio.wait_for(_ping(), timeout=1.5))
+            return bool(await asyncio.wait_for(_ping(), timeout=0.4))
         except Exception:
-            await self._reset()
-            try:
-                return bool(await asyncio.wait_for(_ping(), timeout=1.5))
-            except Exception:
-                return False
+            return False

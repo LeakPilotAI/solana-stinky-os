@@ -17,6 +17,14 @@ from post_migration.models import MarketSnapshot, ObservedTrade, WalletPerforman
 
 logger = structlog.get_logger(__name__)
 
+# High-frequency ticks already live in wallet_trades / market_snapshots.
+# HTTP ingest of each one fills `events`, stalls event-log, then /health.
+_SKIP_HTTP = {
+    EventType.POST_MIGRATION_BUY,
+    EventType.POST_MIGRATION_SELL,
+    EventType.POST_MIGRATION_MARKET_SNAPSHOT,
+}
+
 
 class EventPublisher:
     def __init__(self) -> None:
@@ -25,7 +33,7 @@ class EventPublisher:
             default_stream=settings.event_stream,
         )
         self._connected = False
-        self._http = httpx.AsyncClient(timeout=15.0)
+        self._http = httpx.AsyncClient(timeout=2.0)
 
     async def connect(self) -> None:
         try:
@@ -49,7 +57,7 @@ class EventPublisher:
                 logger.error("publisher.redis_failed", error=str(exc))
                 metrics.inc("errors")
 
-        if settings.event_log_url:
+        if settings.event_log_url and event.event_type not in _SKIP_HTTP:
             try:
                 body = {
                     "event_type": event.event_type.value,
