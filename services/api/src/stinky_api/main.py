@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
@@ -587,20 +588,28 @@ async def operator_trace(mint: str, session: Annotated[AsyncSession, Depends(get
     }
 
 
+_HEALTH_CACHE: dict = {"at": 0.0, "body": None}
+
+
 @app.get("/health")
 async def health(session: Annotated[AsyncSession, Depends(get_session)]) -> dict:
     from sqlalchemy import text
+    import time as _time
+
+    cached = _HEALTH_CACHE.get("body")
+    if cached and (_time.monotonic() - float(_HEALTH_CACHE.get("at") or 0)) < 5.0:
+        return cached
 
     db_ok = False
     try:
-        await session.execute(text("SELECT 1"))
+        await asyncio.wait_for(session.execute(text("SELECT 1")), timeout=1.0)
         db_ok = True
     except Exception:
         db_ok = False
 
     event_log = "unknown"
     try:
-        async with httpx.AsyncClient(timeout=4.0) as client:
+        async with httpx.AsyncClient(timeout=0.6) as client:
             r = await client.get(f"{settings.event_log_url.rstrip('/')}/health")
             if r.status_code >= 300:
                 event_log = "degraded"
@@ -615,13 +624,16 @@ async def health(session: Annotated[AsyncSession, Depends(get_session)]) -> dict
         event_log = "down"
 
     status = "ok" if db_ok else "degraded"
-    return {
+    out = {
         "status": status,
         "service": settings.service_name,
         "database": db_ok,
         "event_log": event_log,
         "live": db_ok,
     }
+    _HEALTH_CACHE["at"] = _time.monotonic()
+    _HEALTH_CACHE["body"] = out
+    return out
 
 
 
@@ -864,7 +876,10 @@ async def command_center() -> dict:
                 ("alerts", "SELECT COUNT(*)::int FROM events WHERE event_type='alert.candidate'"),
             ):
                 try:
-                    out[key] = (await session.execute(text(sql))).scalar() or 0
+                    out[key] = await asyncio.wait_for(
+                        session.execute(text(sql)), timeout=2.0
+                    )
+                    out[key] = out[key].scalar() or 0
                 except Exception:
                     out[key] = 0
             return out
@@ -876,7 +891,7 @@ async def command_center() -> dict:
                 await session.execute(
                     text(
                         """
-                        SELECT DISTINCT ON (payload->>'mint')
+                        SELECT
                           payload->>'mint' AS mint,
                           payload->>'name' AS name,
                           payload->>'symbol' AS symbol,
@@ -895,15 +910,21 @@ async def command_center() -> dict:
                         FROM events
                         WHERE event_type = 'alert.candidate'
                           AND payload->>'mint' IS NOT NULL
-                        ORDER BY payload->>'mint', occurred_at DESC
+                        ORDER BY occurred_at DESC
+                        LIMIT 200
                         """
                     )
                 )
             ).mappings().all()
             out = []
+            seen: set[str] = set()
             min_fees = 1.0
             for r in rows:
                 d = dict(r)
+                mint = str(d.get("mint") or "")
+                if not mint or mint in seen:
+                    continue
+                seen.add(mint)
                 fees = d.get("global_fees_paid_sol")
                 if fees is None:
                     fees = d.get("fees_sol")
