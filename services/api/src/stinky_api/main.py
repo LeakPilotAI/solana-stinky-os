@@ -1128,9 +1128,64 @@ async def command_center() -> dict:
             "message": "open Patterns page for full discovery",
         },
         "alert_precision": alert_precision,
+        "synthesis": {
+            "version": "intel-v2.0.0-coordination",
+            "investigations": [
+                {
+                    "mint": a.get("mint"),
+                    "lifecycle": "UNKNOWN",
+                    "quality": "LIVE",
+                    "volume_m5_usd": a.get("volume_m5_usd"),
+                    "quality_state": "UNKNOWN",
+                    "outcome": "UNKNOWN",
+                    "links": {"token": "/tokens/%s" % a.get("mint"), "investigations": "/investigations"},
+                    "calibrated_probability": False,
+                }
+                for a in (alerts or [])[:8]
+                if a.get("mint")
+            ],
+            "empty_note": (
+                None
+                if any(a.get("mint") for a in (alerts or []))
+                else "NO ACTIVE INVESTIGATIONS"
+            ),
+            "note": "Desk synthesis from stored alerts. Full case file on the token page. Not a buy.",
+            "calibrated_probability": False,
+        },
     }
 
 
+
+
+@app.get("/v1/coordination")
+async def coordination_list(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    limit: int = Query(20, ge=1, le=50),
+    as_of: str | None = None,
+) -> dict:
+    """Canonical investigation list. Empty is empty. Does not invent LIVE."""
+    from stinky_core.coordination import list_investigations
+
+    mem, loaded, source = await _book_memory({}, session)
+    out = list_investigations(mem, as_of=as_of, quality="LIVE", limit=limit)
+    out["source"] = source
+    out["hydrated"] = loaded
+    return out
+
+
+@app.get("/v1/coordination/{mint}")
+async def coordination_case(
+    mint: str,
+    session: Annotated[AsyncSession, Depends(get_session)] = None,
+) -> dict:
+    """One coordinated case file. SIMULATION never served as LIVE."""
+    from stinky_core.coordination import assemble_investigation
+
+    mem, loaded, source = await _book_memory({}, session)
+    out = assemble_investigation(mem, mint, quality="LIVE")
+    out["source"] = source
+    out["hydrated"] = loaded
+    return out
 
 
 @app.get("/v1/trending")

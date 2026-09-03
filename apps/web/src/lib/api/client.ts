@@ -185,6 +185,15 @@ export const api = {
       `/v1/operator/trace/${encodeURIComponent(mint)}`,
       { timeoutMs: 8_000 }
     ),
+  coordination: (limit = 20) =>
+    getJson<Record<string, unknown>>(`/v1/coordination?limit=${limit}`, {
+      timeoutMs: 12_000,
+    }),
+  coordinationCase: (mint: string) =>
+    getJson<Record<string, unknown>>(
+      `/v1/coordination/${encodeURIComponent(mint)}`,
+      { timeoutMs: 12_000 }
+    ),
 };
 
 async function postJson<T>(path: string, body?: unknown): Promise<T> {

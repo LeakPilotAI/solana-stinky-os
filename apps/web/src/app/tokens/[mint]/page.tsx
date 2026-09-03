@@ -12,6 +12,7 @@ export default function TokenPage() {
   const [happened, setHappened] = useState<Record<string, unknown> | null>(null);
   const [recipe, setRecipe] = useState<Record<string, unknown> | null>(null);
   const [quality, setQuality] = useState<Record<string, unknown> | null>(null);
+  const [coord, setCoord] = useState<Record<string, unknown> | null>(null);
 
   useEffect(() => {
     if (!mint) return;
@@ -25,6 +26,7 @@ export default function TokenPage() {
         setQuality(rows.find((s) => s.mint === mint) || rows[0] || null);
       })
       .catch(() => setQuality(null));
+    api.coordinationCase(mint).then(setCoord).catch(() => setCoord(null));
   }, [mint]);
 
   if (!data) {
@@ -61,6 +63,30 @@ export default function TokenPage() {
 
   return (
     <div className="space-y-4 p-4">
+      {coord && coord.empty !== true && (
+        <div className="panel p-4 text-[11px]">
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-terminal-muted">
+            Coordinated case
+          </div>
+          <p className="mt-1 text-terminal-dim">
+            {String(coord.lifecycle || "UNKNOWN")} · quality {String(coord.quality || "UNKNOWN")} · id{" "}
+            <span className="font-mono">{String(coord.investigation_id || "—")}</span>
+          </p>
+          <p className="mt-1 text-terminal-muted">
+            Unknowns:{" "}
+            {Array.isArray(coord.unknowns) && coord.unknowns.length
+              ? (coord.unknowns as string[]).join(", ")
+              : "none recorded"}
+            . Not a buy. calibrated_probability false.
+          </p>
+          <div className="mt-2 flex flex-wrap gap-3 text-[10px]">
+            <a className="text-terminal-accent hover:underline" href="/investigations">Investigations</a>
+            <a className="text-terminal-accent hover:underline" href="/observations">Observations</a>
+            <a className="text-terminal-accent hover:underline" href="/dips">Quality</a>
+            <a className="text-terminal-accent hover:underline" href="/wallets">Wallets</a>
+          </div>
+        </div>
+      )}
       <div className="panel p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
