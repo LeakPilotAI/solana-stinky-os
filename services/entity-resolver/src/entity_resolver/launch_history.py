@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
 from uuid import UUID
 
 from sqlalchemy import text
@@ -13,7 +12,7 @@ from entity_resolver.config import settings
 
 
 class LaunchHistoryStore:
-    """Persist one row per observed launch without double-counting retries."""
+    """Persist launch observations and later attach measured outcomes."""
 
     def __init__(self, database_url: str | None = None) -> None:
         self._engine = create_async_engine(
@@ -51,11 +50,7 @@ class LaunchHistoryStore:
         mint: str | None = None,
         observed_at: datetime | None = None,
     ) -> bool:
-        """Record a launch and increment its entity count exactly once.
-
-        Returns True only when a new launch row was inserted. Both event id and
-        deployer/mint identity are protected by database uniqueness constraints.
-        """
+        """Record a launch and increment its entity count exactly once."""
         observed = observed_at or datetime.now(timezone.utc)
         async with self._sessions() as session:
             row = (
@@ -94,5 +89,55 @@ class LaunchHistoryStore:
                 ),
                 {"eid": entity_id},
             )
+            await session.commit()
+            return True
+
+    async def record_outcome(
+        self,
+        *,
+        mint: str,
+        status: str,
+        metadata: dict[str, object] | None = None,
+        observed_at: datetime | None = None,
+    ) -> bool:
+        """Attach an observed lifecycle outcome to a known launch.
+
+        Returns True only when a matching launch exists and its stored outcome
+        changes. Unknown mints are deliberately ignored so missing evidence is
+        never converted into a fabricated developer outcome.
+        """
+        if not mint or not status:
+            return False
+        observed = observed_at or datetime.now(timezone.utc)
+        import orjson
+
+        async with self._sessions() as session:
+            result = await session.execute(
+                text(
+                    """
+                    UPDATE entity_launches
+                    SET outcome_status = :status,
+                        outcome_meta = CAST(:metadata AS jsonb),
+                        created_at = created_at
+                    WHERE mint = :mint
+                      AND (
+                          outcome_status IS DISTINCT FROM :status
+                          OR outcome_meta IS DISTINCT FROM CAST(:metadata AS jsonb)
+                      )
+                    RETURNING id
+                    """
+                ),
+                {
+                    "status": status,
+                    "metadata": orjson.dumps(
+                        {**(metadata or {}), "observed_at": observed.isoformat()}
+                    ).decode(),
+                    "mint": mint,
+                },
+            )
+            row = result.first()
+            if not row:
+                await session.rollback()
+                return False
             await session.commit()
             return True

@@ -55,3 +55,30 @@ def test_event_timestamp_defaults_to_utc_when_missing() -> None:
     result = EntityService._event_timestamp({"payload": {}})
 
     assert result.tzinfo == timezone.utc
+
+
+def test_outcome_payload_requires_measured_status() -> None:
+    assert EntityService._outcome_payload({"payload": {"mint": "MINT"}}) == (
+        "MINT",
+        None,
+        {},
+    )
+
+
+def test_outcome_payload_preserves_completion_evidence() -> None:
+    result = EntityService._outcome_payload(
+        {
+            "payload": {
+                "mint": "MINT",
+                "outcome_status": "completed",
+                "peak_multiple": 3.2,
+                "drawdown_pct": -41.0,
+            }
+        }
+    )
+
+    assert result == (
+        "MINT",
+        "completed",
+        {"outcome_status": "completed", "peak_multiple": 3.2, "drawdown_pct": -41.0},
+    )
