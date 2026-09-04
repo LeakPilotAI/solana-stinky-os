@@ -27,9 +27,11 @@ class EntityService:
         self._redis = redis.from_url(
             settings.redis_url,
             decode_responses=True,
-            socket_connect_timeout=10,
-            socket_timeout=None,
+            socket_connect_timeout=3,
+            socket_timeout=5,
+            retry_on_timeout=False,
             health_check_interval=30,
+            socket_keepalive=True,
         )
         try:
             await self._redis.xgroup_create(
@@ -59,6 +61,7 @@ class EntityService:
         assert self._redis is not None
         consumer = f"entity-{id(self)}"
         last_batch = asyncio.get_event_loop().time()
+        backoff = 1.0
         while self._running:
             try:
                 rows = await self._redis.xreadgroup(
@@ -68,6 +71,7 @@ class EntityService:
                     count=20,
                     block=5000,
                 )
+                backoff = 1.0
                 if rows:
                     for _stream, messages in rows:
                         for msg_id, fields in messages:
@@ -78,8 +82,9 @@ class EntityService:
                     await self._resolver.run_batch()
                     last_batch = now
             except Exception as exc:
-                logger.warning("entity_service.loop_error", error=str(exc))
-                await asyncio.sleep(2)
+                logger.warning("entity_service.loop_error", error=str(exc)[:240], backoff=backoff)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 30.0)
 
     async def _handle(self, msg_id: str, fields: dict[str, str]) -> None:
         assert self._redis is not None

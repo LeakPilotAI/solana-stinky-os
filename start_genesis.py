@@ -804,6 +804,16 @@ def ensure_docker() -> None:
     if rd_ok:
         HEALTH["REDIS"] = "CONNECTED"
         ok("Redis PONG (host 6380)")
+        # Stop the hourly RDB fork that OOMs the 512m cap around T+3600.
+        dockerexec(["stinky-redis", "redis-cli", "CONFIG", "SET", "save", ""], timeout=5)
+        dockerexec(["stinky-redis", "redis-cli", "CONFIG", "SET", "maxmemory", "384mb"], timeout=5)
+        dockerexec(["stinky-redis", "redis-cli", "XTRIM", "stinky.events", "MAXLEN", "~", "20000"], timeout=8)
+        for i in range(8):
+            info = dockerexec(["stinky-redis", "redis-cli", "INFO", "persistence"], timeout=4)
+            if "loading:1" not in info.lower():
+                break
+            say("  redis still LOADING dump %s/8" % (i + 1))
+            time.sleep(2)
     else:
         HEALTH["REDIS"] = "DOWN"
         try:

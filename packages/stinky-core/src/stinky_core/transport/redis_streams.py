@@ -25,13 +25,12 @@ class RedisStreamsTransport(EventTransport):
         self,
         redis_url: str = "redis://localhost:6379/0",
         default_stream: str = "stinky.events",
-        maxlen: int = 10_000_000,
+        maxlen: int = 20_000,
     ) -> None:
         self._redis_url = redis_url
         self._default_stream = default_stream
         self._maxlen = maxlen
         self._redis: Redis | None = None
-        self._since_trim = 0
 
     def _new_client(self) -> Redis:
         return Redis.from_url(
@@ -78,13 +77,13 @@ class RedisStreamsTransport(EventTransport):
             try:
                 if self._redis is None:
                     await self.connect()
-                kwargs: dict[str, Any] = {}
-                self._since_trim += 1
-                if self._since_trim >= 200:
-                    kwargs = {"maxlen": self._maxlen, "approximate": True}
-                    self._since_trim = 0
                 message_id: bytes = await asyncio.wait_for(
-                    self._client().xadd(target, {"data": envelope.to_bytes()}, **kwargs),
+                    self._client().xadd(
+                        target,
+                        {"data": envelope.to_bytes()},
+                        maxlen=self._maxlen,
+                        approximate=True,
+                    ),
                     timeout=4,
                 )
                 mid = message_id.decode() if isinstance(message_id, bytes) else str(message_id)
@@ -103,9 +102,10 @@ class RedisStreamsTransport(EventTransport):
                     attempt=attempt,
                     error=f"{type(exc).__name__}: {exc}"[:200],
                 )
-                await self._reset()
                 if attempt < 3:
-                    await asyncio.sleep(0.25 * attempt)
+                    await asyncio.sleep(0.4 * (2 ** (attempt - 1)))
+                    # Recreate only after a real transport failure, never from health.
+                    await self._reset()
         assert last_exc is not None
         raise last_exc
 

@@ -589,21 +589,32 @@ async def operator_trace(mint: str, session: Annotated[AsyncSession, Depends(get
 
 
 _HEALTH_CACHE: dict = {"at": 0.0, "body": None}
+_CC_CACHE: dict = {"at": 0.0, "body": None}
+_CC_LOCK = asyncio.Lock()
 
 
 @app.get("/health")
-async def health(session: Annotated[AsyncSession, Depends(get_session)]) -> dict:
+async def health() -> dict:
     from sqlalchemy import text
     import time as _time
+    from stinky_api.db import engine
 
     cached = _HEALTH_CACHE.get("body")
     if cached and (_time.monotonic() - float(_HEALTH_CACHE.get("at") or 0)) < 5.0:
         return cached
 
     db_ok = False
+    pool_checkedout = None
     try:
-        await asyncio.wait_for(session.execute(text("SELECT 1")), timeout=1.0)
-        db_ok = True
+        sync_pool = getattr(getattr(engine, "sync_engine", None), "pool", None)
+        if sync_pool is not None and hasattr(sync_pool, "checkedout"):
+            pool_checkedout = int(sync_pool.checkedout())
+    except Exception:
+        pool_checkedout = None
+    try:
+        async with engine.connect() as conn:
+            await asyncio.wait_for(conn.execute(text("SELECT 1")), timeout=0.8)
+            db_ok = True
     except Exception:
         db_ok = False
 
@@ -630,6 +641,7 @@ async def health(session: Annotated[AsyncSession, Depends(get_session)]) -> dict
         "database": db_ok,
         "event_log": event_log,
         "live": db_ok,
+        "pool_checkedout": pool_checkedout,
     }
     _HEALTH_CACHE["at"] = _time.monotonic()
     _HEALTH_CACHE["body"] = out
@@ -844,17 +856,23 @@ async def _trending_m5(
 
 @app.get("/v1/command-center")
 async def command_center() -> dict:
-    """Home feed ? each section uses its own DB session so one timeout cannot poison the rest."""
-    import asyncio
+    """Home feed. Coalesced. Sections must not cancel in-flight SQL (leaks pool)."""
+    import time as _time
     from sqlalchemy import text
     from stinky_api.db import SessionLocal
 
+    now = _time.monotonic()
+    cached = _CC_CACHE.get("body")
+    if cached and now - float(_CC_CACHE.get("at") or 0) < 8.0:
+        return cached
+    if _CC_LOCK.locked() and cached:
+        return cached
+
     async def _safe(label: str, coro_factory, default, timeout: float = 4.0):
+        # Do not wait_for-cancel a session-holding coroutine.
+        # statement_timeout inside the session fails the query instead.
         try:
-            return await asyncio.wait_for(coro_factory(), timeout=timeout)
-        except asyncio.TimeoutError:
-            logger.warning("command_center.section_failed", section=label, error="timeout")
-            return default
+            return await coro_factory()
         except Exception as exc:
             logger.warning(
                 "command_center.section_failed",
@@ -863,8 +881,15 @@ async def command_center() -> dict:
             )
             return default
 
+    async def _prep(session):
+        try:
+            await session.execute(text("SET LOCAL statement_timeout = '2500'"))
+        except Exception:
+            pass
+
     async def _counts():
         async with SessionLocal() as session:
+            await _prep(session)
             out: dict = {}
             for key, sql in (
                 ("migrations", "SELECT COUNT(*)::int FROM events WHERE event_type='token.migrated'"),
@@ -876,10 +901,7 @@ async def command_center() -> dict:
                 ("alerts", "SELECT COUNT(*)::int FROM events WHERE event_type='alert.candidate'"),
             ):
                 try:
-                    out[key] = await asyncio.wait_for(
-                        session.execute(text(sql)), timeout=2.0
-                    )
-                    out[key] = out[key].scalar() or 0
+                    out[key] = (await session.execute(text(sql))).scalar() or 0
                 except Exception:
                     out[key] = 0
             return out
@@ -887,6 +909,7 @@ async def command_center() -> dict:
     async def _runners():
         """Opportunity runners from fee-gated alert.candidate only (no live HTTP)."""
         async with SessionLocal() as session:
+            await _prep(session)
             rows = (
                 await session.execute(
                     text(
@@ -958,6 +981,7 @@ async def command_center() -> dict:
 
     async def _alerts():
         async with SessionLocal() as session:
+            await _prep(session)
             rows = (
                 await session.execute(
                     text(
@@ -990,6 +1014,7 @@ async def command_center() -> dict:
 
     async def _entities():
         async with SessionLocal() as session:
+            await _prep(session)
             rows = (
                 await session.execute(
                     text(
@@ -1007,6 +1032,7 @@ async def command_center() -> dict:
 
     async def _wallets():
         async with SessionLocal() as session:
+            await _prep(session)
             rows = (
                 await session.execute(
                     text(
@@ -1025,6 +1051,7 @@ async def command_center() -> dict:
 
     async def _pipeline():
         async with SessionLocal() as session:
+            await _prep(session)
             stats = {}
             for key, sql in (
                 ("migration_tracks", "SELECT COUNT(*)::int FROM migration_tracks"),
@@ -1045,6 +1072,7 @@ async def command_center() -> dict:
 
     async def _precision():
         async with SessionLocal() as session:
+            await _prep(session)
             try:
                 rows = (
                     await session.execute(
@@ -1072,89 +1100,95 @@ async def command_center() -> dict:
                 "held": counts.get("held", 0) + counts.get("mid", 0),
             }
 
-    # Run independent sections concurrently (each has own session)
-    c, runners, alerts, entities, wallets, pipeline, alert_precision, trending = await asyncio.gather(
-        _safe("counts", _counts, {}, 6.0),
-        _safe("runners", _runners, [], 6.0),
-        _safe("alerts", _alerts, [], 6.0),
-        _safe("entities", _entities, [], 6.0),
-        _safe("wallets", _wallets, [], 6.0),
-        _safe("pipeline", _pipeline, {"available": False, "tables": {}}, 6.0),
-        _safe("alert_precision", _precision, {"available": False, "counts": {}}, 6.0),
-        _safe("trending", lambda: _trending_m5(min_volume_usd=150_000.0, min_fees_sol=1.0, limit=25), [], 8.0),
-    )
-
-    opportunity = []
-    for a in alerts or []:
-        score = a.get("stinky_score")
-        try:
-            if score is None or float(score) < 55:
-                continue
-        except (TypeError, ValueError):
-            continue
-        opportunity.append(
-            {
-                "mint": a.get("mint"),
-                "name": a.get("name"),
-                "symbol": a.get("symbol"),
-                "score": a.get("stinky_score"),
-                "confidence": a.get("confidence"),
-                "volume_m5_usd": a.get("volume_m5_usd"),
-                "meaningful_buyer_count": a.get("meaningful_buyer_count"),
-            }
+    # Coalesce overlapping polls. Never cancel in-flight SQL.
+    async with _CC_LOCK:
+        now = _time.monotonic()
+        cached = _CC_CACHE.get("body")
+        if cached and now - float(_CC_CACHE.get("at") or 0) < 8.0:
+            return cached
+        c, runners, alerts, entities, wallets, pipeline, alert_precision, trending = await asyncio.gather(
+            _safe("counts", _counts, {}, 6.0),
+            _safe("runners", _runners, [], 6.0),
+            _safe("alerts", _alerts, [], 6.0),
+            _safe("entities", _entities, [], 6.0),
+            _safe("wallets", _wallets, [], 6.0),
+            _safe("pipeline", _pipeline, {"available": False, "tables": {}}, 6.0),
+            _safe("alert_precision", _precision, {"available": False, "counts": {}}, 6.0),
+            _safe("trending", lambda: _trending_m5(min_volume_usd=150_000.0, min_fees_sol=1.0, limit=25), [], 8.0),
         )
 
-    return {
-        "status": "live",
-        "counts": c or {},
-        "pipeline": pipeline,
-        "runners": runners or [],
-        "alerts": alerts or [],
-        "entities": entities or [],
-        "smart_wallets": wallets or [],
-        "launches": [],
-        "opportunity_queue": opportunity[:12],
-        "trending": {
-            "available": True,
-            "min_volume_m5_usd": 150000,
-            "engine": "trending-v1.0.0-volume-first",
-            "message": "Gate 1: latest measured 5m volume >= $150k. Investigation trigger, not a buy signal. Fees optional evidence.",
-            "items": trending or [],
-            "count": len(trending or []),
-        },
-        "patterns": {
-            "available": True,
-            "items": [],
-            "message": "open Patterns page for full discovery",
-        },
-        "alert_precision": alert_precision,
-        "synthesis": {
-            "version": "intel-v2.0.0-coordination",
-            "investigations": [
+        opportunity = []
+        for a in alerts or []:
+            score = a.get("stinky_score")
+            try:
+                if score is None or float(score) < 55:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            opportunity.append(
                 {
                     "mint": a.get("mint"),
-                    "lifecycle": "UNKNOWN",
-                    "quality": "LIVE",
+                    "name": a.get("name"),
+                    "symbol": a.get("symbol"),
+                    "score": a.get("stinky_score"),
+                    "confidence": a.get("confidence"),
                     "volume_m5_usd": a.get("volume_m5_usd"),
-                    "quality_state": "UNKNOWN",
-                    "outcome": "UNKNOWN",
-                    "links": {"token": "/tokens/%s" % a.get("mint"), "investigations": "/investigations"},
-                    "calibrated_probability": False,
+                    "meaningful_buyer_count": a.get("meaningful_buyer_count"),
                 }
-                for a in (alerts or [])[:8]
-                if a.get("mint")
-            ],
-            "empty_note": (
-                None
-                if any(a.get("mint") for a in (alerts or []))
-                else "NO ACTIVE INVESTIGATIONS"
-            ),
-            "note": "Desk synthesis from stored alerts. Full case file on the token page. Not a buy.",
-            "calibrated_probability": False,
-        },
-    }
+            )
 
-
+        body = {
+            "status": "live",
+            "counts": c or {},
+            "pipeline": pipeline,
+            "runners": runners or [],
+            "alerts": alerts or [],
+            "entities": entities or [],
+            "smart_wallets": wallets or [],
+            "launches": [],
+            "opportunity_queue": opportunity[:12],
+            "trending": {
+                "available": True,
+                "min_volume_m5_usd": 150000,
+                "engine": "trending-v1.0.0-volume-first",
+                "message": "Gate 1: latest measured 5m volume >= $150k. Investigation trigger, not a buy signal. Fees optional evidence.",
+                "items": trending or [],
+                "count": len(trending or []),
+            },
+            "patterns": {
+                "available": True,
+                "items": [],
+                "message": "open Patterns page for full discovery",
+            },
+            "alert_precision": alert_precision,
+            "synthesis": {
+                "version": "intel-v2.0.0-coordination",
+                "investigations": [
+                    {
+                        "mint": a.get("mint"),
+                        "lifecycle": "UNKNOWN",
+                        "quality": "LIVE",
+                        "volume_m5_usd": a.get("volume_m5_usd"),
+                        "quality_state": "UNKNOWN",
+                        "outcome": "UNKNOWN",
+                        "links": {"token": "/tokens/%s" % a.get("mint"), "investigations": "/investigations"},
+                        "calibrated_probability": False,
+                    }
+                    for a in (alerts or [])[:8]
+                    if a.get("mint")
+                ],
+                "empty_note": (
+                    None
+                    if any(a.get("mint") for a in (alerts or []))
+                    else "NO ACTIVE INVESTIGATIONS"
+                ),
+                "note": "Desk synthesis from stored alerts. Full case file on the token page. Not a buy.",
+                "calibrated_probability": False,
+            },
+        }
+        _CC_CACHE["at"] = _time.monotonic()
+        _CC_CACHE["body"] = body
+        return body
 
 
 @app.get("/v1/coordination")
