@@ -1,9 +1,11 @@
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 
 from entity_resolver.resolver import EntityResolver
+from entity_resolver.service import EntityService
 
 
 @pytest.mark.asyncio
@@ -40,3 +42,16 @@ async def test_launch_observation_increments_launch_count() -> None:
         confidence=0.85,
     )
     store.bump_launch_count.assert_awaited_once_with(entity_id)
+
+
+def test_event_timestamp_preserves_timezone_and_precision() -> None:
+    observed = "2026-09-04T12:34:56.123456+00:00"
+    result = EntityService._event_timestamp({"observed_at": observed, "payload": {}})
+
+    assert result == datetime(2026, 9, 4, 12, 34, 56, 123456, tzinfo=timezone.utc)
+
+
+def test_event_timestamp_defaults_to_utc_when_missing() -> None:
+    result = EntityService._event_timestamp({"payload": {}})
+
+    assert result.tzinfo == timezone.utc
