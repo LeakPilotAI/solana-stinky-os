@@ -27,9 +27,9 @@ T0 = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
 MINT = "CoordMintAAAAAAAAAAAAAAAAAAAAAAAAAAAApump"
 
 
-def test_gate1_frozen():
+def test_gate1_33k_contract():
     assert_gate1_frozen()
-    assert GATE1_VOLUME_5M_USD == 150_000.0
+    assert GATE1_VOLUME_5M_USD == 33_000.0
     assert GATE1_VOLUME_CALIBRATION_MAX_USD == 200_000.0
     assert clamp_gate1_volume(250_000) == 200_000.0
 
@@ -115,7 +115,7 @@ def test_simulation_is_not_live_and_pipeline_connects():
     assert sim["t1800"]["quality"] == QUALITY_SIMULATION
     assert sim["t0"]["quality"] == QUALITY_SIMULATION
     assert sim["gate_eligible"] is True
-    assert sim["gate1_usd"] == 150_000.0
+    assert sim["gate1_usd"] == 33_000.0
     assert sim["investigation_id"]
     assert sim["t1800"]["investigation_id"] == sim["t0"]["investigation_id"]
     assert sim["t1800"]["links"]["token"].startswith("/tokens/")

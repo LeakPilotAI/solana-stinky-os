@@ -1,6 +1,6 @@
 """Operator observability. SIMULATION unless labeled otherwise.
 
-Does not lower Gate 1. Does not invent a live $150k print.
+Does not lower Gate 1. Does not invent a live $33k print.
 """
 
 from __future__ import annotations
@@ -42,13 +42,13 @@ MINT = "OpMintAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAApump"
 T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
-def test_gate1_still_150k():
-    assert GATE1_VOLUME_5M_USD == 150_000
+def test_gate1_is_33k():
+    assert GATE1_VOLUME_5M_USD == 33_000
     assert GATE1_VOLUME_CALIBRATION_MAX_USD == 200_000
     assert INTEL_VERSION.startswith("intel-v1.11") or INTEL_VERSION.startswith("intel-v1.10")
-    d = evaluate_gate1({"mint": MINT, "protocol": "pumpswap", "volume_usd": 150_000, "migrated": True})
+    d = evaluate_gate1({"mint": MINT, "protocol": "pumpswap", "volume_usd": 33_000, "migrated": True})
     assert d.eligible is True
-    d = evaluate_gate1({"mint": MINT, "protocol": "pumpswap", "volume_usd": 149_999, "migrated": True})
+    d = evaluate_gate1({"mint": MINT, "protocol": "pumpswap", "volume_usd": 32_999, "migrated": True})
     assert d.eligible is False
 
 
@@ -221,7 +221,7 @@ def test_operator_desk_empty_is_empty():
     assert desk["investigations"] == []
     assert desk["database"]["status"] == "UNKNOWN"
     assert desk["providers"]["dexscreener"]["status"] == "UNKNOWN"
-    assert desk["gate_status"]["threshold_usd"] == 150_000
+    assert desk["gate_status"]["threshold_usd"] == 33_000
     assert desk["gate_status"]["clamp_usd"] == 200_000
     assert desk["gate_status"]["live_gate1"] == "UNKNOWN"
     assert desk["last_observation"]["kind"] == "UNKNOWN"

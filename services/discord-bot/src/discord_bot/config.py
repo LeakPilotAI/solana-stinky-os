@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     event_stream: str = "stinky.events"
     discord_consumer_group: str = "discord-bot"
 
-    volume_threshold_usd: float = 150_000.0
+    volume_threshold_usd: float = 33_000.0
     alert_min_score: float = 55.0
     alert_min_meaningful_buyers: int = 3
 

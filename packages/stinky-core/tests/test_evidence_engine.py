@@ -37,9 +37,9 @@ FP_RICH = book_fingerprint(
 )
 
 
-def test_gate1_unchanged():
-    assert GATE1_VOLUME_5M_USD == 150_000
-    d = evaluate_gate1({"mint": MINT_A, "protocol": "pumpswap", "volume_usd": 149_999, "migrated": True})
+def test_gate1_33k_contract():
+    assert GATE1_VOLUME_5M_USD == 33_000
+    d = evaluate_gate1({"mint": MINT_A, "protocol": "pumpswap", "volume_usd": 32_999.99, "migrated": True})
     assert d.eligible is False
     d = evaluate_gate1({"mint": MINT_A, "protocol": "pumpswap", "volume_usd": 150_000, "migrated": True})
     assert d.eligible is True

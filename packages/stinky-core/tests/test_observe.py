@@ -20,12 +20,12 @@ W = "HumanWallet1111111111111111111111111111111"
 T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
-def test_gate1_unchanged_and_clamp():
-    assert GATE1_VOLUME_5M_USD == 150_000
+def test_gate1_33k_and_clamp():
+    assert GATE1_VOLUME_5M_USD == 33_000
     assert clamp_gate1_volume(250_000) == 200_000
     d = evaluate_gate1({"mint": MINT_A, "protocol": "pumpswap", "volume_usd": 150_000, "migrated": True})
     assert d.eligible is True
-    d = evaluate_gate1({"mint": MINT_A, "protocol": "pumpswap", "volume_usd": 149_999, "migrated": True})
+    d = evaluate_gate1({"mint": MINT_A, "protocol": "pumpswap", "volume_usd": 32_999.99, "migrated": True})
     assert d.eligible is False
 
 

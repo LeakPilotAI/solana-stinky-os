@@ -26,7 +26,7 @@ Filtering happens **before** scoring. A Stinky Score of 99 cannot override a fai
 | Protocol allowlist | pump + listed launchpads; deny raydium/meteora/orca/pumpAmm | Yes | PROTOCOL_DISABLED / PROTOCOL_UNKNOWN |
 | Valid mint | non-empty | Yes | INVALID_MINT |
 | Migrated tab | migrated | Yes | NOT_MIGRATED |
-| 5m volume | ≥ **$150,000** (configurable up to $200,000; higher config is clamped) | Yes | VOLUME_BELOW_MIN / VOLUME_UNKNOWN |
+| 5m volume | ≥ **$33,000** (configurable up to $200,000; higher config is clamped) | Yes | VOLUME_BELOW_MIN / VOLUME_UNKNOWN |
 
 `FilterConfig.min_volume_usd` and `evaluate_gate1(min_volume_usd=…)` never
 silently honor a threshold above $200,000.

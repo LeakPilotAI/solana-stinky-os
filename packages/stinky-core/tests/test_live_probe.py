@@ -1,7 +1,7 @@
 """LIVE DexScreener probe. Does not lower Gate 1. Does not invent a $150k print.
 
 If DexScreener is unreachable: status UNKNOWN, test still passes.
-If no pair ≥ $150k 5m: LIVE GATE-1: NOT OBSERVED — that is not a failure.
+If no pair ≥ $33k 5m: LIVE GATE-1: NOT OBSERVED — that is not a failure.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ URL = "https://api.dexscreener.com/latest/dex/search?q=pumpswap"
 
 
 def test_live_gate1_not_fabricated():
-    assert GATE1_VOLUME_5M_USD == 150_000
+    assert GATE1_VOLUME_5M_USD == 33_000
     req = urllib.request.Request(URL, headers={"Accept": "application/json", "User-Agent": "StinkyOS/operator-v1.1.0"})
     try:
         with urllib.request.urlopen(req, timeout=8) as resp:
@@ -45,4 +45,4 @@ def test_live_gate1_not_fabricated():
             observed += 1
     # Do not assert observed > 0. NOT OBSERVED is success.
     assert observed >= 0
-    assert GATE1_VOLUME_5M_USD == 150_000
+    assert GATE1_VOLUME_5M_USD == 33_000

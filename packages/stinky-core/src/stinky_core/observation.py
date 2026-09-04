@@ -29,7 +29,7 @@ WATCH_STOP_REASONS = frozenset(
 def watch_tick_decision(*, investigated: bool, gate_ok: bool, reason: str | None) -> str:
     """Live watch action for one DexScreener poll.
 
-    After Gate 1, keep recording ticks even if 5m volume falls below $150k.
+    After Gate 1, keep recording ticks even if 5m volume falls below $33k.
     Quality cannot observe deterioration without those ticks.
     Returns: stop | wait | investigate | tick
     """

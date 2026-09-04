@@ -23,8 +23,8 @@ MINT = "MintAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAApump"
 T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
-def test_gate1_unchanged():
-    assert GATE1_VOLUME_5M_USD == 150_000
+def test_gate1_33k_contract():
+    assert GATE1_VOLUME_5M_USD == 33_000
     d = evaluate_gate1({"mint": MINT, "protocol": "pumpswap", "volume_usd": 150_000, "migrated": True})
     assert d.eligible is True
 

@@ -254,7 +254,7 @@ EligibilityResult = FilterDecision
 
 
 def clamp_gate1_volume(v: float | None) -> float:
-    """Default 150k. Configurable up to 200k. Invalid → default. Never fabricate."""
+    """Default 33k. Configurable up to 200k. Invalid → default. Never fabricate."""
     if v is None:
         return GATE1_VOLUME_5M_USD
     try:

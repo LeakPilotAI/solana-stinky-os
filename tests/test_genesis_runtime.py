@@ -50,9 +50,9 @@ def test_system_state_failed_cores():
     assert mod.system_state({"event-log": "DOWN", "api": "DOWN", "web": "DOWN"}) == "FAILED"
 
 
-def test_gate1_untouched_by_runtime_helper():
+def test_runtime_helper_does_not_hardcode_gate1_threshold():
     t = (ROOT / "packages/stinky-core/src/stinky_core/admission.py").read_text(encoding="utf-8")
-    assert "GATE1_VOLUME_5M_USD = 150_000.0" in t
+    assert "GATE1_VOLUME_5M_USD = 33_000.0" in t
     rt = (ROOT / "scripts/genesis_runtime.py").read_text(encoding="utf-8")
-    assert "150_000" not in rt
-    assert "150000" not in rt
+    assert "33_000" not in rt
+    assert "33000" not in rt

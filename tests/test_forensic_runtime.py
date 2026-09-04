@@ -65,7 +65,7 @@ def test_entity_reconnect_is_bounded():
 
 def test_gate1_untouched():
     t = read("packages/stinky-core/src/stinky_core/admission.py")
-    assert "GATE1_VOLUME_5M_USD = 150_000.0" in t
+    assert "GATE1_VOLUME_5M_USD = 33_000.0" in t
     assert "GATE1_VOLUME_CALIBRATION_MAX_USD = 200_000.0" in t
 
 

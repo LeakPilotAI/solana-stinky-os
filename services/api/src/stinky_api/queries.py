@@ -170,7 +170,7 @@ async def recent_migrations(
     limit: int = 25,
     *,
     min_fees_sol: float = 0.0,
-    min_volume_m5_usd: float = 150_000.0,
+    min_volume_m5_usd: float = 33_000.0,
     pump_only: bool = True,
     enrich_fees: bool = False,
 ) -> list[dict]:

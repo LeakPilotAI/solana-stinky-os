@@ -28,19 +28,19 @@ HUMAN = "HumanWallet1111111111111111111111111111111"
 
 
 def _mkt(**kw):
-    d = dict(mint=MINT, protocol="pumpswap", volume_usd=150_000.0, migrated=True, tab="migrated")
+    d = dict(mint=MINT, protocol="pumpswap", volume_usd=33_000.0, migrated=True, tab="migrated")
     d.update(kw)
     return d
 
 
-def test_gate_boundary_149999():
-    d = evaluate_gate1(_mkt(volume_usd=149_999))
+def test_gate_boundary_32999():
+    d = evaluate_gate1(_mkt(volume_usd=32_999))
     assert d.eligible is False
     assert d.rejection_reason == ReasonCode.VOLUME_BELOW_MIN
 
 
-def test_gate_boundary_150000():
-    d = evaluate_gate1(_mkt(volume_usd=150_000))
+def test_gate_boundary_33000():
+    d = evaluate_gate1(_mkt(volume_usd=33_000))
     assert d.eligible is True
 
 
@@ -323,4 +323,4 @@ def test_alert_evidence_complete_fields():
 
 
 def test_gate1_threshold_unchanged():
-    assert GATE1_VOLUME_5M_USD == 150_000.0
+    assert GATE1_VOLUME_5M_USD == 33_000.0

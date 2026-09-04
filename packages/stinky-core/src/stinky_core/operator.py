@@ -670,11 +670,11 @@ def operator_desk(
         "live_data_status": providers["dexscreener"]["status"],
         "migration_watch_status": providers["solana_ws"]["status"],
         "gate_status": {
-            "threshold_usd": 150_000,
+            "threshold_usd": 33_000,
             "clamp_usd": 200_000,
             "live_gate1_count": counted if live_gate1_count is not None or db_row.get("connected") is True else None,
             "live_gate1": gate_label,
-            "note": "Gate 1 is $150k 5m. Do not lower. NOT OBSERVED is not a failure.",
+            "note": "Gate 1 is $33k 5m. Do not lower. NOT OBSERVED is not a failure.",
         },
         "last_observation": last_obs,
         "next_observation": nxt,

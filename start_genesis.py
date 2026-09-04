@@ -1,6 +1,10 @@
 # start_genesis.py - desktop start for Genesis. Not PowerShell (Defender AMSI).
-# Start-Stinky-OS.cmd runs this file. Gate 1 stays 150k / 200k clamp.
+# Start-Stinky-OS.cmd runs this file. Gate 1 is $33k / 5m, clamp $200k.
 from __future__ import annotations
+
+# Current Gate 1 investigation threshold. Not a buy signal.
+GATE1_VOLUME_5M_USD = 33_000.0
+GATE1_VOLUME_CALIBRATION_MAX_USD = 200_000.0
 
 import argparse
 import json
@@ -1097,7 +1101,7 @@ def main() -> int:
     say("  GENESIS  intel-v1.11.0-operator")
     say("  " + str(ROOT))
     say("  python %s  cwd=%s" % (sys.version.split()[0], os.getcwd()))
-    say("  Gate 1 = 150k USD / 5m  clamp 200k  (not a buy)")
+    say("  Gate 1 = 33k USD / 5m  clamp 200k  (not a buy)")
     say("  Closing this window does NOT stop Genesis.")
     for n in ("git", "docker", "py", "python", "npm"):
         src = which_exe(n)
@@ -1202,7 +1206,7 @@ def main() -> int:
         say("  Operator:  http://127.0.0.1:3000/operator")
         say("  Command:   http://127.0.0.1:3000/command-center")
         say("  Stop:      double-click  Stop Genesis  on the desktop")
-        say("  LIVE GATE-1 is NOT OBSERVED until a real 150k USD / 5m print.")
+        say("  LIVE GATE-1 is NOT OBSERVED until a real 33k USD / 5m print.")
         say("  Log: " + str(STARTUP_LOG))
         say("")
         log_line("launcher", "READY")

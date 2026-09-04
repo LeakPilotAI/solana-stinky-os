@@ -1,7 +1,7 @@
 ﻿"""Volume watch + Gate 1 investigation funnel.
 
 Early snapshots persist at the observation threshold.
-Gate 1 ($150k 5m, configurable to $200k) starts deep inspection.
+Gate 1 ($33k 5m, configurable to $200k) starts deep inspection.
 ALERT_CANDIDATE is emitted only after inspection + intelligence, never on volume alone.
 FeeResolver is optional evidence after Gate 1 â€” unknown fees do not reject.
 """

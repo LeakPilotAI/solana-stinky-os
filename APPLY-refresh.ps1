@@ -54,7 +54,7 @@ if (Test-Path -LiteralPath (Join-Path $here "docker-compose.yml")) {
 
 Write-Host ""
 Write-Host "  GENESIS refresh -> $root" -ForegroundColor Cyan
-Write-Host "  .env is kept. Gate 1 stays 150k USD." -ForegroundColor DarkGray
+Write-Host "  .env is kept. Gate 1 is $33k / 5m, clamp $200k." -ForegroundColor DarkGray
 Write-Host ""
 
 New-Item -ItemType Directory -Force -Path (Split-Path $root) | Out-Null

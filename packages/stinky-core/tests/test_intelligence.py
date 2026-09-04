@@ -215,5 +215,5 @@ def test_volume_only_insufficient_intelligence():
     assert inv.score.components.get("volume_component") == 0
 
 
-def test_gate1_constant():
-    assert GATE1_VOLUME_5M_USD == 150_000.0
+def test_gate1_33k_contract():
+    assert GATE1_VOLUME_5M_USD == 33_000.0

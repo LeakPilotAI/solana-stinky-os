@@ -56,14 +56,14 @@ $envFile = Join-Path $dst ".env"
 if (Test-Path $envFile) {
   $c = Get-Content $envFile -Raw
   if ($c -match "STINKY_GATE1_VOLUME_5M_USD=") {
-    $c = $c -replace "STINKY_GATE1_VOLUME_5M_USD=\S+", "STINKY_GATE1_VOLUME_5M_USD=150000"
+    $c = $c -replace "STINKY_GATE1_VOLUME_5M_USD=\S+", "STINKY_GATE1_VOLUME_5M_USD=33000"
   } else {
-    $c = $c.TrimEnd() + "`r`nSTINKY_GATE1_VOLUME_5M_USD=150000`r`n"
+    $c = $c.TrimEnd() + "`r`nSTINKY_GATE1_VOLUME_5M_USD=33000`r`n"
   }
   if ($c -match "STINKY_MIN_VOLUME_USD=") {
-    $c = $c -replace "STINKY_MIN_VOLUME_USD=\S+", "STINKY_MIN_VOLUME_USD=150000"
+    $c = $c -replace "STINKY_MIN_VOLUME_USD=\S+", "STINKY_MIN_VOLUME_USD=33000"
   } else {
-    $c = $c.TrimEnd() + "`r`nSTINKY_MIN_VOLUME_USD=150000`r`n"
+    $c = $c.TrimEnd() + "`r`nSTINKY_MIN_VOLUME_USD=33000`r`n"
   }
   if ($c -match "STINKY_FILTER_VERSION=") {
     $c = $c -replace "STINKY_FILTER_VERSION=\S+", "STINKY_FILTER_VERSION=volume-first-v1.0.0"
@@ -74,7 +74,7 @@ if (Test-Path $envFile) {
     $c = $c -replace "STINKY_ENABLE_HELIUS=\S+", "STINKY_ENABLE_HELIUS=false"
   }
   Set-Content -Path $envFile -Value $c -NoNewline
-  Write-Host "OK .env Gate 1 150k (no secrets added)" -ForegroundColor Green
+  Write-Host "OK .env Gate 1 33k (no secrets added)" -ForegroundColor Green
 }
 
 Write-Host "DONE volume-first-v1.0.0" -ForegroundColor Green

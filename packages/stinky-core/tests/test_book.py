@@ -28,11 +28,11 @@ def _buyers(*ws):
     return [{"wallet": w, "sol_spent": 0.2} for w in ws]
 
 
-def test_gate1_unchanged():
-    assert GATE1_VOLUME_5M_USD == 150_000
+def test_gate1_33k_contract():
+    assert GATE1_VOLUME_5M_USD == 33_000
     d = evaluate_gate1({"mint": MINT_A, "protocol": "pumpswap", "volume_usd": 150_000, "migrated": True})
     assert d.eligible is True
-    d2 = evaluate_gate1({"mint": MINT_A, "protocol": "pumpswap", "volume_usd": 149_999, "migrated": True})
+    d2 = evaluate_gate1({"mint": MINT_A, "protocol": "pumpswap", "volume_usd": 32_999.99, "migrated": True})
     assert d2.eligible is False
 
 

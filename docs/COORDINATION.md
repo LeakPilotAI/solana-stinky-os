@@ -7,7 +7,7 @@ Assembler, not a second brain. Not a buy.
 ```
 DexScreener / Solana WS
   → Sentinel (MigrationWatcher, HighVolumeDiscovery, VolumeMonitor)
-  → Gate 1 ($150k / 5m, clamp $200k)
+  → Gate 1 ($33k / 5m, clamp $200k)
   → intelligence_investigations (correlation_id)
   → market_observations (ticks T+0 … T+1800)
   → quality_states

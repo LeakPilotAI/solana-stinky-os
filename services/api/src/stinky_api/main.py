@@ -1,4 +1,4 @@
-﻿"""Stinky OS Intelligence API ? FastAPI entrypoint."""
+"""Stinky OS Intelligence API ? FastAPI entrypoint."""
 
 from __future__ import annotations
 
@@ -653,7 +653,7 @@ async def health() -> dict:
 
 async def _trending_m5(
     *,
-    min_volume_usd: float = 150_000.0,
+    min_volume_usd: float = 33_000.0,
     min_fees_sol: float = 1.0,
     limit: int = 30,
 ) -> list[dict]:
@@ -1114,7 +1114,7 @@ async def command_center() -> dict:
             _safe("wallets", _wallets, [], 6.0),
             _safe("pipeline", _pipeline, {"available": False, "tables": {}}, 6.0),
             _safe("alert_precision", _precision, {"available": False, "counts": {}}, 6.0),
-            _safe("trending", lambda: _trending_m5(min_volume_usd=150_000.0, min_fees_sol=1.0, limit=25), [], 8.0),
+            _safe("trending", lambda: _trending_m5(min_volume_usd=33_000.0, min_fees_sol=1.0, limit=25), [], 8.0),
         )
 
         opportunity = []
@@ -1149,9 +1149,9 @@ async def command_center() -> dict:
             "opportunity_queue": opportunity[:12],
             "trending": {
                 "available": True,
-                "min_volume_m5_usd": 150000,
+                "min_volume_m5_usd": 33000,
                 "engine": "trending-v1.0.0-volume-first",
-                "message": "Gate 1: latest measured 5m volume >= $150k. Investigation trigger, not a buy signal. Fees optional evidence.",
+                "message": "Gate 1: latest measured 5m volume >= $33k. Investigation trigger, not a buy signal. Fees optional evidence.",
                 "items": trending or [],
                 "count": len(trending or []),
             },
@@ -1224,11 +1224,11 @@ async def coordination_case(
 
 @app.get("/v1/trending")
 async def trending(
-    min_volume_usd: float = Query(150_000.0, ge=0.0),
+    min_volume_usd: float = Query(33_000.0, ge=0.0),
     min_fees_sol: float = Query(1.0, ge=0.0),
     limit: int = Query(30, ge=1, le=100),
 ) -> dict:
-    """Trending by measured 5m volume â€” Gate 1 investigation trigger."""
+    """Trending by measured 5m volume — Gate 1 investigation trigger."""
     items = await _trending_m5(
         min_volume_usd=min_volume_usd,
         min_fees_sol=min_fees_sol,
@@ -1248,11 +1248,11 @@ async def runners(
     session: Annotated[AsyncSession, Depends(get_session)],
     limit: int = Query(50, ge=1, le=200),
     min_fees_sol: float = Query(1.0, ge=0.0),
-    min_volume_m5_usd: float = Query(150_000.0, ge=0.0),
+    min_volume_m5_usd: float = Query(33_000.0, ge=0.0),
     enrich_fees: bool = Query(False),
     pump_only: bool = Query(True),
 ) -> dict:
-    """Live runners: Gate 1 volume-first (5m >= $150k). Fees are optional evidence."""
+    """Live runners: Gate 1 volume-first (5m >= $33k). Fees are optional evidence."""
     items = await queries.recent_migrations(
         session,
         limit=limit,

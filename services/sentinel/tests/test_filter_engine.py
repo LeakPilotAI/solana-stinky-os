@@ -25,7 +25,7 @@ def _base(**overrides):
         "global_fees_sol": None,
         "global_fees_verified": None,
         "liquidity_usd": 50.0,
-        "volume_usd": 150_000.0,
+        "volume_usd": 33_000.0,
         "market_cap_usd": 50_000.0,
         "twitter": "https://x.com/someproject",
         "migrated": True,
@@ -36,13 +36,13 @@ def _base(**overrides):
 
 
 def test_gate1_volume_149999_reject():
-    d = evaluate_gate1(_base(volume_usd=149_999))
+    d = evaluate_gate1(_base(volume_usd=32_999))
     assert d.accepted is False
     assert d.rejection_reason == ReasonCode.VOLUME_BELOW_MIN
 
 
-def test_gate1_volume_150000_pass():
-    d = evaluate_gate1(_base(volume_usd=150_000))
+def test_gate1_volume_33000_pass():
+    d = evaluate_gate1(_base(volume_usd=33_000))
     assert d.accepted is True
     assert d.eligible is True
 
@@ -101,14 +101,14 @@ def test_score_cannot_override_volume_gate():
     assert d.rejection_reason == ReasonCode.VOLUME_BELOW_MIN
 
 
-def test_volume_99999_reject():
-    d = evaluate_admission(**_base(volume_usd=99_999))
+def test_volume_32999_reject():
+    d = evaluate_admission(**_base(volume_usd=32_999))
     assert d.accepted is False
     assert d.rejection_reason == ReasonCode.VOLUME_BELOW_MIN
 
 
-def test_volume_100000_below_gate1():
-    d = evaluate_admission(**_base(volume_usd=100_000))
+def test_volume_32999_below_gate1():
+    d = evaluate_admission(**_base(volume_usd=32_999))
     assert d.accepted is False
     assert d.rejection_reason == ReasonCode.VOLUME_BELOW_MIN
 
@@ -176,7 +176,7 @@ def test_allowed_protocols_pass_gate():
 def test_optional_fees_floor_still_one():
     assert DEFAULT_MIN_GLOBAL_FEES_SOL == 1.0
     assert _engine().config.min_global_fees_sol == 1.0
-    assert GATE1_VOLUME_5M_USD == 150_000.0
+    assert GATE1_VOLUME_5M_USD == 33_000.0
 
 
 def test_filter_version():

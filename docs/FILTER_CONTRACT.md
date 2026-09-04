@@ -3,7 +3,7 @@
 Canonical market-quality gate. Do not mutate thresholds in place; introduce a
 new versioned profile if strategy changes.
 
-**Rule:** 5-minute volume ≥ $150,000 (configurable up to $200,000) is the
+**Rule:** 5-minute volume ≥ $33,000 (configurable up to $200,000) is the
 investigation trigger. Configuration above $200,000 is clamped, never honored.
 Unknown `global_fees_sol` does **not** reject Gate 1.
 Never treat missing fee data as zero. Never substitute volume for fees.
@@ -16,7 +16,7 @@ Public API: `evaluate_market(market) -> EligibilityResult`
 
 Profile: `FILTER_VERSION=volume-first-v1.0.0`
 Inspect: `inspect-v1.1.0-harden`  Intel: `intel-v1.1.0-harden`
-Env: `STINKY_GATE1_VOLUME_5M_USD=150000` (max 200000)
+Env: `STINKY_GATE1_VOLUME_5M_USD=33000` (max 200000)
 
 ## Gate 1
 
@@ -25,7 +25,7 @@ Env: `STINKY_GATE1_VOLUME_5M_USD=150000` (max 200000)
 | protocol | allowlist | see lists | str | DexScreener `dexId` | PROTOCOL_DISABLED / PROTOCOL_UNKNOWN |
 | mint | non-empty | — | str | chain / DexScreener | INVALID_MINT |
 | migrated | = | migrated | — | tab | NOT_MIGRATED |
-| volume | >= | **150000** | USD | DexScreener 5m volume (`volume.m5`) | VOLUME_BELOW_MIN / VOLUME_UNKNOWN |
+| volume | >= | **33000** | USD | DexScreener 5m volume (`volume.m5`) | VOLUME_BELOW_MIN / VOLUME_UNKNOWN |
 
 ## Optional evidence (not admission)
 

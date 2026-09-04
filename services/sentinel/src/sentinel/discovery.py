@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 try:
     from stinky_core.admission import GATE1_VOLUME_5M_USD, clamp_gate1_volume
 except ImportError:
-    GATE1_VOLUME_5M_USD = 150_000.0
+    GATE1_VOLUME_5M_USD = 33_000.0
 
     def clamp_gate1_volume(v):
         return float(v) if v else GATE1_VOLUME_5M_USD

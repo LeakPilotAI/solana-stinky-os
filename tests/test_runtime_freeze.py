@@ -43,7 +43,7 @@ def test_command_center_runners_are_bounded():
     assert "DISTINCT ON (payload->>'mint')" not in t
 
 
-def test_gate1_still_150k():
+def test_gate1_is_33k():
     t = read("packages/stinky-core/src/stinky_core/admission.py")
-    assert "GATE1_VOLUME_5M_USD = 150_000.0" in t
+    assert "GATE1_VOLUME_5M_USD = 33_000.0" in t
     assert "GATE1_VOLUME_CALIBRATION_MAX_USD = 200_000.0" in t

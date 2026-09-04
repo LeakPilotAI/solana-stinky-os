@@ -10,7 +10,7 @@ def _q(**kw) -> QualifyResult:
     base = {
         "mint": "Abc1234567890Abc1234567890Abc123pump",
         "dex_id": "pumpswap",
-        "volume_m5_usd": 150_000.0,
+        "volume_m5_usd": 33_000.0,
         "global_fees_paid_sol": None,
         "global_fees_verified": None,
     }
@@ -18,18 +18,18 @@ def _q(**kw) -> QualifyResult:
     return qualify_fresh_pump_migration(**base)
 
 
-def test_default_volume_is_150k():
-    assert GATE1_VOLUME_5M_USD == 150_000.0
+def test_default_volume_is_33k():
+    assert GATE1_VOLUME_5M_USD == 33_000.0
 
 
-def test_volume_below_reject():
-    r = _q(volume_m5_usd=149_999)
+def test_volume_below_33k_reject():
+    r = _q(volume_m5_usd=32_999)
     assert r.accepted is False
     assert r.reason == ReasonCode.VOLUME_BELOW_MIN
 
 
-def test_volume_150k_pass():
-    r = _q(volume_m5_usd=150_000)
+def test_volume_33k_pass():
+    r = _q(volume_m5_usd=33_000)
     assert r.accepted is True
     assert r.reason == "ok"
 

@@ -1,6 +1,6 @@
 """Launcher reliability contracts. Does not start Windows services.
 
-Gate 1 must remain $150,000 / $200,000 clamp. This file only reads source.
+Gate 1 must remain $33,000 / $200,000 clamp. This file only reads source.
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ def test_start_writes_startup_log_and_redacts_secrets():
     assert "startup.log" in t
     assert "def redact" in t
     assert "API_KEY" in t and "TOKEN" in t and "PASSWORD" in t
-    assert "150k" in t or "150_000" in t or "150000" in t
+    assert "33_000.0" in t or "33_000" in t or "33000" in t
 
 
 def test_start_detaches_via_cmd_start():
@@ -135,7 +135,7 @@ def test_compose_is_capped_and_not_atlas():
 
 def test_gate1_unchanged_in_admission():
     t = read("packages/stinky-core/src/stinky_core/admission.py")
-    assert "GATE1_VOLUME_5M_USD = 150_000.0" in t
+    assert "GATE1_VOLUME_5M_USD = 33_000.0" in t
     assert "GATE1_VOLUME_CALIBRATION_MAX_USD = 200_000.0" in t
 
 

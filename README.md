@@ -2,7 +2,7 @@
 
 Solana speculative-asset intelligence. Evidence first. Fail closed.
 
-Gate 1 is **$150k / 5m volume**, clamp **$200k**. That is an investigation trigger, not a buy.
+Gate 1 is **$33k / 5m volume**, clamp **$200k**. That is an investigation trigger, not a buy.
 
 ---
 

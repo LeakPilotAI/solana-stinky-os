@@ -2,7 +2,7 @@
 
 Canonical identity is correlation_id (mint + gate1_at). Evidence quality is
 LIVE | FIXTURE | SIMULATION | HISTORICAL. UNKNOWN stays UNKNOWN.
-No ML. No trading. Gate 1 stays $150k / 5m, clamp $200k.
+No ML. No trading. Gate 1 is $33k / 5m, clamp $200k.
 """
 
 from __future__ import annotations
@@ -385,6 +385,6 @@ def run_simulation() -> dict[str, Any]:
 
 
 def assert_gate1_frozen() -> None:
-    assert GATE1_VOLUME_5M_USD == 150_000.0
+    assert GATE1_VOLUME_5M_USD == 33_000.0
     assert GATE1_VOLUME_CALIBRATION_MAX_USD == 200_000.0
     assert clamp_gate1_volume(250_000) == 200_000.0
