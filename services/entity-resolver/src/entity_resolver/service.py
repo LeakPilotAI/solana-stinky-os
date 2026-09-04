@@ -112,7 +112,7 @@ class EntityService:
         elif et == "token.migrated":
             creator = payload.get("creator") or payload.get("deployer")
             if creator:
-                await self._resolver.on_deployer_observed(creator)
+                await self._resolver.ensure_deployer_observed(creator)
 
         await self._redis.xack(
             settings.event_stream,
