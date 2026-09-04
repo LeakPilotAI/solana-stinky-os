@@ -1,4 +1,4 @@
-"""Stinky OS Intelligence API ? FastAPI entrypoint."""
+﻿"""Stinky OS Intelligence API ? FastAPI entrypoint."""
 
 from __future__ import annotations
 
@@ -1078,16 +1078,16 @@ async def command_center() -> dict:
                     await session.execute(
                         text(
                             """
-                            SELECT outcome, COUNT(*)::int AS n
-                            FROM alert_outcomes
-                            GROUP BY outcome
+                            SELECT label, COUNT(*)::int AS n
+             FROM alert_outcomes
+             GROUP BY label
                             """
                         )
                     )
                 ).mappings().all()
             except Exception:
                 return {"available": False, "counts": {}, "message": "no alert_outcomes"}
-            counts = {r["outcome"]: r["n"] for r in rows}
+            counts = {r["label"]: r["n"] for r in rows}
             total = sum(counts.values()) or 0
             runners = counts.get("runner", 0) + counts.get("mega_runner", 0)
             return {
@@ -1228,7 +1228,7 @@ async def trending(
     min_fees_sol: float = Query(1.0, ge=0.0),
     limit: int = Query(30, ge=1, le=100),
 ) -> dict:
-    """Trending by measured 5m volume — Gate 1 investigation trigger."""
+    """Trending by measured 5m volume â€” Gate 1 investigation trigger."""
     items = await _trending_m5(
         min_volume_usd=min_volume_usd,
         min_fees_sol=min_fees_sol,
@@ -1739,4 +1739,6 @@ async def watchlist_remove(
     )
     await session.commit()
     return {"ok": True, "kind": kind, "address": address}
+
+
 

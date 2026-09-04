@@ -28,7 +28,7 @@ class EntityService:
             settings.redis_url,
             decode_responses=True,
             socket_connect_timeout=3,
-            socket_timeout=5,
+            socket_timeout=10,
             retry_on_timeout=False,
             health_check_interval=30,
             socket_keepalive=True,
@@ -87,34 +87,35 @@ class EntityService:
                 backoff = min(backoff * 2, 30.0)
 
     async def _handle(self, msg_id: str, fields: dict[str, str]) -> None:
+        """Process one stream event and ACK only after successful processing."""
         assert self._redis is not None
-        try:
-            raw = fields.get("data") or fields.get("payload") or ""
-            if not raw:
-                for v in fields.values():
-                    if isinstance(v, str) and v.startswith("{"):
-                        raw = v
-                        break
-            if raw:
-                event = json.loads(raw)
-                et = event.get("event_type") or event.get("type")
-                payload = event.get("payload") or {}
-                if et == "token.launch":
-                    deployer = payload.get("deployer")
-                    if deployer:
-                        await self._resolver.on_deployer_observed(deployer)
-                elif et == "token.migrated":
-                    creator = payload.get("creator") or payload.get("deployer")
-                    if creator:
-                        await self._resolver.on_deployer_observed(creator)
-            await self._redis.xack(
-                settings.event_stream, settings.entity_consumer_group, msg_id
-            )
-        except Exception as exc:
-            logger.error("entity_service.handle_failed", error=str(exc))
-            try:
-                await self._redis.xack(
-                    settings.event_stream, settings.entity_consumer_group, msg_id
-                )
-            except Exception:
-                pass
+
+        raw = fields.get("data") or fields.get("payload") or ""
+        if not raw:
+            for value in fields.values():
+                if isinstance(value, str) and value.startswith("{"):
+                    raw = value
+                    break
+
+        if not raw:
+            raise ValueError(f"event {msg_id} has no JSON payload")
+
+        event = json.loads(raw)
+        et = event.get("event_type") or event.get("type")
+        payload = event.get("payload") or {}
+
+        if et == "token.launch":
+            deployer = payload.get("deployer")
+            if deployer:
+                await self._resolver.on_deployer_observed(deployer)
+
+        elif et == "token.migrated":
+            creator = payload.get("creator") or payload.get("deployer")
+            if creator:
+                await self._resolver.on_deployer_observed(creator)
+
+        await self._redis.xack(
+            settings.event_stream,
+            settings.entity_consumer_group,
+            msg_id,
+        )

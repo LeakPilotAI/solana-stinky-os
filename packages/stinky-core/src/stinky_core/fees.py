@@ -1,8 +1,8 @@
-"""Authoritative global-fee resolver.
+﻿"""Authoritative global-fee resolver.
 
 NEVER approximates fees from volume, liquidity, mcap, or a guessed bps.
 NEVER treats creator-only fields as global_fees_sol.
-UNKNOWN observations are optional evidence — they do NOT fail Gate 1
+UNKNOWN observations are optional evidence â€” they do NOT fail Gate 1
 on the volume-first profile.
 
 Sources (in order), all explicit:
@@ -11,7 +11,7 @@ Sources (in order), all explicit:
      (lower bound of protocol fees; sufficient to PASS if >= 1 SOL)
 
 Creator-vault balances are per-creator unclaimed remainder, not per-mint
-all-time fees — they are not used.
+all-time fees â€” they are not used.
 
 Resolver version: fee-resolver-v1.0.0
 """
@@ -165,7 +165,7 @@ class FeeObservation:
         return asdict(self)
 
     def as_admission_fields(self) -> dict[str, Any]:
-        """Fields the canonical gate consumes. Unverified → null fees."""
+        """Fields the canonical gate consumes. Unverified â†’ null fees."""
         verified = bool(self.fees_verified and self.fees_status == FeeStatus.VERIFIED)
         return {
             "global_fees_sol": self.global_fees_sol if verified else None,
@@ -191,7 +191,9 @@ class FeeObservation:
             "global_fees_sol": self.global_fees_sol if self.fees_verified else None,
             "source": self.fees_source,
             "verified": bool(self.fees_verified and self.fees_status == FeeStatus.VERIFIED),
-            "observed_at": self.fees_observed_at,
+            "observed_at": datetime.fromisoformat(
+                self.fees_observed_at.replace("Z", "+00:00")
+            ),
             "resolver_version": self.resolver_version,
             "fees_status": self.fees_status,
             "fees_error": self.fees_error,
@@ -227,7 +229,7 @@ def coerce_fees_verified(raw: Any) -> bool | None:
 
 
 def parse_explicit_fee_number(val: Any) -> float | None:
-    """Parse an explicit fee field. Negative / NaN / Inf / malformed → None."""
+    """Parse an explicit fee field. Negative / NaN / Inf / malformed â†’ None."""
     if val is None or val is True or val is False:
         return None
     if isinstance(val, str) and not val.strip():
@@ -711,7 +713,7 @@ class FeeResolver:
 
         scan_complete = (not has_more) and errors == 0 and parsed >= len(trades)
         # Lower bound < 1 SOL cannot prove the gate either way unless we captured
-        # protocol+creator all-time. Protocol-only shortfall → UNKNOWN.
+        # protocol+creator all-time. Protocol-only shortfall â†’ UNKNOWN.
         return unknown_observation(
             mint,
             protocol=protocol,
@@ -783,3 +785,4 @@ def _log(event: str, mint: str, protocol: str | None, obs: FeeObservation, t0: f
         )
     except Exception:
         pass
+

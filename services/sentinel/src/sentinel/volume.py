@@ -1,9 +1,9 @@
-"""Volume watch + Gate 1 investigation funnel.
+﻿"""Volume watch + Gate 1 investigation funnel.
 
 Early snapshots persist at the observation threshold.
 Gate 1 ($150k 5m, configurable to $200k) starts deep inspection.
 ALERT_CANDIDATE is emitted only after inspection + intelligence, never on volume alone.
-FeeResolver is optional evidence after Gate 1 — unknown fees do not reject.
+FeeResolver is optional evidence after Gate 1 â€” unknown fees do not reject.
 """
 
 from __future__ import annotations
@@ -146,7 +146,7 @@ async def resolve_global_fees(
 
 
 async def fetch_pump_fees_sol(client: httpx.AsyncClient, mint: str) -> float | None:
-    """Verified global fees only. Unknown / unverified → None. Never a guess.
+    """Verified global fees only. Unknown / unverified â†’ None. Never a guess.
 
     `client` is unused; kept so existing call sites stay compatible.
     """
@@ -885,9 +885,11 @@ class VolumeMonitor:
             import json
             from stinky_core.memory import MEMORY_INSERT_DECISION
 
+            decision_timestamp = datetime.now(timezone.utc)
+
             compact = {
                 "mint": inv.mint,
-                "decision_timestamp": datetime.now(timezone.utc).isoformat(),
+                "decision_timestamp": decision_timestamp,
                 "protocol": snap.dex_id,
                 "volume_m5_usd": snap.volume_m5_usd,
                 "pipeline_status": inv.pipeline_status,
@@ -1000,6 +1002,11 @@ class VolumeMonitor:
                 MEMORY_INSERT_WALLET_OBS,
             )
             import json
+            from stinky_core.memory import _parse_ts
+
+            observed_at_dt = _parse_ts(observed_at)
+            if observed_at_dt is None:
+                raise ValueError(f"invalid observed_at timestamp: {observed_at!r}")
             async with self._sessions() as session:
                 for b in buyers or []:
                     w = str(b.get("wallet") or b.get("userAddress") or "").strip()
@@ -1015,7 +1022,7 @@ class VolumeMonitor:
                         {
                             "wallet": w,
                             "mint": mint,
-                            "observed_at": observed_at,
+                            "observed_at": observed_at_dt,
                             "role": "early_buyer",
                             "sol_spent": spent_f,
                             "source": "observed",
@@ -1032,7 +1039,7 @@ class VolumeMonitor:
                         {
                             "creator": creator,
                             "mint": mint,
-                            "observed_at": observed_at,
+                            "observed_at": observed_at_dt,
                             "migrated": True,
                             "source": "observed",
                         },
@@ -1043,7 +1050,7 @@ class VolumeMonitor:
                         {
                             "fingerprint": fingerprint,
                             "mint": mint,
-                            "observed_at": observed_at,
+                            "observed_at": observed_at_dt,
                             "features": json.dumps(features or {}),
                         },
                     )
@@ -1051,7 +1058,7 @@ class VolumeMonitor:
                     text(MEMORY_INSERT_MARKET_OBS),
                     {
                         "mint": mint,
-                        "observed_at": observed_at,
+                        "observed_at": observed_at_dt,
                         "volume_m5_usd": volume_m5_usd,
                         "price_usd": price_usd,
                         "liquidity_usd": liquidity_usd,
@@ -1071,8 +1078,8 @@ class VolumeMonitor:
                         text(MEMORY_INSERT_INVESTIGATION),
                         {
                             "mint": rec.get("mint") or mint,
-                            "gate1_at": rec.get("gate1_at") or observed_at,
-                            "discovered_at": rec.get("discovered_at") or rec.get("gate1_at") or observed_at,
+                            "gate1_at": _parse_ts(rec.get("gate1_at")) or observed_at_dt,
+                            "discovered_at": _parse_ts(rec.get("discovered_at")) or _parse_ts(rec.get("gate1_at")) or observed_at_dt,
                             "protocol": rec.get("protocol"),
                             "volume_5m_at_gate": rec.get("volume_5m_at_gate"),
                             "liquidity_at_gate": rec.get("liquidity_at_gate"),
@@ -1125,7 +1132,7 @@ class VolumeMonitor:
                         await self._trace(
                             mint=mint,
                             kind="quality",
-                            message=f"{st.get('previous_state')} → {st.get('state')}",
+                            message=f"{st.get('previous_state')} â†’ {st.get('state')}",
                             extra={
                                 "state": st.get("state"),
                                 "previous_state": st.get("previous_state"),
@@ -1743,3 +1750,6 @@ class VolumeMonitor:
             producer="sentinel-volume",
         )
         await self._publisher.publish_raw_event(alert_event, kind="alert")
+
+
+
