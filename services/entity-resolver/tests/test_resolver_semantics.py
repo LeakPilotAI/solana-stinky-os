@@ -82,3 +82,22 @@ def test_outcome_payload_preserves_completion_evidence() -> None:
         "completed",
         {"outcome_status": "completed", "peak_multiple": 3.2, "drawdown_pct": -41.0},
     )
+
+
+def test_completion_event_type_is_itself_measured_status() -> None:
+    result = EntityService._outcome_payload(
+        {
+            "event_type": "post_migration.tracking_completed",
+            "payload": {
+                "mint": "MINT",
+                "wallets_touched": 4,
+                "trades_seen": 12,
+            },
+        }
+    )
+
+    assert result == (
+        "MINT",
+        "completed",
+        {"wallets_touched": 4, "trades_seen": 12},
+    )
