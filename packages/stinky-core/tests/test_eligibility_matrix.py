@@ -48,18 +48,22 @@ def setup_function() -> None:
     filter_stats.reset()
 
 
-def test_gate1_volume_149999_reject():
-    d = evaluate_gate1(_base(volume_usd=149_999))
+def test_gate1_volume_32999_99_reject():
+    d = evaluate_gate1(_base(volume_usd=32_999.99))
     assert d.eligible is False
     assert d.rejection_reason == ReasonCode.VOLUME_BELOW_MIN
 
 
-def test_gate1_volume_150000_pass():
-    d = evaluate_gate1(_base(volume_usd=150_000))
+def test_gate1_volume_33000_pass():
+    d = evaluate_gate1(_base(volume_usd=33_000.00))
     assert d.eligible is True
     assert d.filter_version == FILTER_VERSION
-    assert GATE1_VOLUME_5M_USD == DEFAULT_MIN_VOLUME_USD == 150_000.0
+    assert GATE1_VOLUME_5M_USD == DEFAULT_MIN_VOLUME_USD == 33_000.0
 
+
+def test_gate1_volume_33000_01_pass():
+    d = evaluate_gate1(_base(volume_usd=33_000.01))
+    assert d.eligible is True
 
 def test_gate1_volume_200000_pass():
     d = evaluate_gate1(_base(volume_usd=200_000))

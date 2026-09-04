@@ -61,8 +61,8 @@ class Settings(BaseSettings):
     # Gate 1 — investigation trigger (not a buy signal)
     filter_version: str = "volume-first-v1.0.0"
     min_liquidity_usd: float = 8.0
-    min_volume_usd: float = 150_000.0
-    gate1_volume_5m_usd: float = 150_000.0
+    min_volume_usd: float = 33_000.0
+    gate1_volume_5m_usd: float = 33_000.0
     min_market_cap_usd: float = 31_333.0
     require_at_least_one_social: bool = False
 
