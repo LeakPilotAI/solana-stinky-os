@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timezone
 
 import redis.asyncio as redis
 import structlog
 
 from entity_resolver.config import settings
+from entity_resolver.launch_history import LaunchHistoryStore
 from entity_resolver.resolver import EntityResolver
 from entity_resolver.store import EntityStore
 
@@ -18,12 +20,14 @@ logger = structlog.get_logger(__name__)
 class EntityService:
     def __init__(self) -> None:
         self._store = EntityStore()
+        self._launch_history = LaunchHistoryStore()
         self._resolver = EntityResolver(self._store)
         self._redis: redis.Redis | None = None
         self._running = False
 
     async def start(self) -> None:
         await self._store.ensure_schema()
+        await self._launch_history.ensure_schema()
         self._redis = redis.from_url(
             settings.redis_url,
             decode_responses=True,
@@ -54,6 +58,7 @@ class EntityService:
         self._running = False
         if self._redis:
             await self._redis.aclose()
+        await self._launch_history.close()
         await self._resolver.close()
 
     async def run_forever(self) -> None:
@@ -86,6 +91,21 @@ class EntityService:
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
 
+    @staticmethod
+    def _event_timestamp(event: dict[str, object]) -> datetime:
+        payload = event.get("payload") or {}
+        value = event.get("occurred_at") or event.get("observed_at")
+        if isinstance(payload, dict):
+            value = value or payload.get("occurred_at") or payload.get("observed_at")
+        if isinstance(value, datetime):
+            return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(float(value), tz=timezone.utc)
+        if isinstance(value, str) and value.strip():
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc)
+
     async def _handle(self, msg_id: str, fields: dict[str, str]) -> None:
         """Process one stream event and ACK only after successful processing."""
         assert self._redis is not None
@@ -107,7 +127,19 @@ class EntityService:
         if et == "token.launch":
             deployer = payload.get("deployer")
             if deployer:
-                await self._resolver.on_deployer_observed(deployer)
+                entity_id = await self._resolver.ensure_deployer_observed(deployer)
+                mint = payload.get("mint") or payload.get("token") or payload.get("address")
+                inserted = await self._launch_history.record_launch(
+                    entity_id=entity_id,
+                    deployer_wallet=deployer,
+                    event_id=msg_id,
+                    mint=mint,
+                    observed_at=self._event_timestamp(event),
+                )
+                if inserted:
+                    logger.info("entity.launch_recorded", entity_id=entity_id, deployer=deployer, mint=mint)
+                else:
+                    logger.debug("entity.launch_duplicate", event_id=msg_id, deployer=deployer, mint=mint)
 
         elif et == "token.migrated":
             creator = payload.get("creator") or payload.get("deployer")
