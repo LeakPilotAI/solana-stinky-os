@@ -122,3 +122,23 @@ async def test_list_entity_launches_uses_entity_id_and_default_limit() -> None:
 
     assert result == rows
     assert session.params == {"eid": entity_id, "limit": 100}
+
+
+@pytest.mark.asyncio
+async def test_deployer_history_summary_returns_evidence_counts() -> None:
+    row = {
+        "launch_count": 6,
+        "outcomes_known": 4,
+        "completed_count": 4,
+        "outcomes_unknown": 2,
+        "first_launch_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+        "last_launch_at": datetime(2026, 9, 4, tzinfo=timezone.utc),
+    }
+    session = _Session(row)
+    store = LaunchHistoryStore.__new__(LaunchHistoryStore)
+    store._sessions = _Sessions(session)
+
+    result = await store.get_deployer_history_summary(deployer_wallet="DEPLOYER")
+
+    assert result == {"deployer_wallet": "DEPLOYER", **row}
+    assert session.params == {"wallet": "DEPLOYER"}
