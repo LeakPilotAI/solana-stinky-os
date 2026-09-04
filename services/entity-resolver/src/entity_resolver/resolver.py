@@ -2,7 +2,7 @@
 
 Rules (v0.2 co-buy clusters):
 1. Every deployer wallet becomes (or joins) an entity.
-2. Launch count on that entity is tracked from events.
+2. Launch count on that entity is tracked from launch events only.
 3. Early buyers that co-appear on ≥ N mints are linked with tiered confidence.
 4. Never invent links without an explicit reason string.
 5. Auto-merge two entities only when shared early mints ≥ auto_merge_min_shared and confidence ≥ auto_merge_min_confidence (safe, auditable).
@@ -91,13 +91,11 @@ class EntityResolver:
             if ea and eb:
                 if ea["entity_id"] == eb["entity_id"]:
                     continue
-                # Safe auto-merge only with strong evidence (shared >= threshold)
                 if (
                     settings.auto_merge_enabled
                     and shared >= settings.auto_merge_min_shared
                     and conf >= settings.auto_merge_min_confidence
                 ):
-                    # Survivor = more launches, then more wallets, then stable id order
                     la = int(ea.get("launch_count") or 0)
                     lb = int(eb.get("launch_count") or 0)
                     wa = int(ea.get("wallet_count") or 0)
@@ -119,7 +117,7 @@ class EntityResolver:
                         },
                     )
                     if ok:
-                        stats["entity_merges"] = stats.get("entity_merges", 0) + 1
+                        stats["entity_merges"] += 1
                         stats["strong_links"] += 1
                         logger.info(
                             "entity.merged",
@@ -193,7 +191,6 @@ class EntityResolver:
                 else:
                     stats["co_buy_skipped"] += 1
             else:
-                # neither has entity — create cluster for A, link B
                 eid = await self._store.create_entity(
                     primary_wallet=a,
                     entity_type="trader",
@@ -228,8 +225,21 @@ class EntityResolver:
         logger.info("entity.batch_complete", **stats)
         return stats
 
+    async def ensure_deployer_observed(self, deployer: str) -> str:
+        """Ensure a deployer entity exists without counting a launch.
+
+        Used by migration observations because a migration confirms the creator
+        identity but is not itself a new launch.
+        """
+        eid = await self._store.ensure_wallet_entity(
+            deployer,
+            entity_type="deployer",
+            confidence=settings.deployer_link_confidence,
+        )
+        return str(eid)
+
     async def on_deployer_observed(self, deployer: str) -> str:
-        """Ensure deployer has an entity; return entity_id as str."""
+        """Record one deployer launch observation and return its entity id."""
         eid = await self._store.ensure_wallet_entity(
             deployer,
             entity_type="deployer",
