@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import text
@@ -91,6 +92,58 @@ class LaunchHistoryStore:
             )
             await session.commit()
             return True
+
+    async def list_entity_launches(
+        self,
+        *,
+        entity_id: UUID,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Return persistent launch and measured-outcome evidence for an entity."""
+        bounded_limit = max(1, min(limit, 500))
+        async with self._sessions() as session:
+            rows = (
+                await session.execute(
+                    text(
+                        """
+                        SELECT id, entity_id, deployer_wallet, mint, event_id,
+                               observed_at, outcome_status, outcome_meta, created_at
+                        FROM entity_launches
+                        WHERE entity_id = :eid
+                        ORDER BY observed_at DESC, id DESC
+                        LIMIT :limit
+                        """
+                    ),
+                    {"eid": entity_id, "limit": bounded_limit},
+                )
+            ).mappings().all()
+            return [dict(row) for row in rows]
+
+    async def list_deployer_launches(
+        self,
+        *,
+        deployer_wallet: str,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Return persistent launch and measured-outcome evidence for a deployer wallet."""
+        bounded_limit = max(1, min(limit, 500))
+        async with self._sessions() as session:
+            rows = (
+                await session.execute(
+                    text(
+                        """
+                        SELECT id, entity_id, deployer_wallet, mint, event_id,
+                               observed_at, outcome_status, outcome_meta, created_at
+                        FROM entity_launches
+                        WHERE deployer_wallet = :wallet
+                        ORDER BY observed_at DESC, id DESC
+                        LIMIT :limit
+                        """
+                    ),
+                    {"wallet": deployer_wallet, "limit": bounded_limit},
+                )
+            ).mappings().all()
+            return [dict(row) for row in rows]
 
     async def record_outcome(
         self,
