@@ -106,6 +106,21 @@ class EntityService:
             return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
         return datetime.now(timezone.utc)
 
+    @staticmethod
+    def _outcome_payload(event: dict[str, object]) -> tuple[str | None, str | None, dict[str, object]]:
+        """Extract a measured completion status without inventing one."""
+        payload = event.get("payload") or {}
+        if not isinstance(payload, dict):
+            return None, None, {}
+        mint = payload.get("mint")
+        if not isinstance(mint, str) or not mint:
+            return None, None, {}
+        status = payload.get("outcome_status") or payload.get("status") or payload.get("outcome")
+        if not isinstance(status, str) or not status:
+            return mint, None, {}
+        metadata = {k: v for k, v in payload.items() if k != "mint"}
+        return mint, status, metadata
+
     async def _handle(self, msg_id: str, fields: dict[str, str]) -> None:
         """Process one stream event and ACK only after successful processing."""
         assert self._redis is not None
@@ -145,6 +160,18 @@ class EntityService:
             creator = payload.get("creator") or payload.get("deployer")
             if creator:
                 await self._resolver.ensure_deployer_observed(creator)
+
+        elif et == "post_migration.tracking_completed":
+            mint, status, metadata = self._outcome_payload(event)
+            if mint and status:
+                updated = await self._launch_history.record_outcome(
+                    mint=mint,
+                    status=status,
+                    metadata=metadata,
+                    observed_at=self._event_timestamp(event),
+                )
+                if updated:
+                    logger.info("entity.launch_outcome_recorded", mint=mint, status=status)
 
         await self._redis.xack(
             settings.event_stream,
