@@ -145,6 +145,45 @@ class LaunchHistoryStore:
             ).mappings().all()
             return [dict(row) for row in rows]
 
+    async def get_deployer_history_summary(
+        self,
+        *,
+        deployer_wallet: str,
+    ) -> dict[str, Any]:
+        """Return evidence counts and temporal bounds without inventing outcomes."""
+        async with self._sessions() as session:
+            row = (
+                await session.execute(
+                    text(
+                        """
+                        SELECT
+                            COUNT(*)::int AS launch_count,
+                            COUNT(*) FILTER (WHERE outcome_status IS NOT NULL)::int AS outcomes_known,
+                            COUNT(*) FILTER (WHERE outcome_status = 'completed')::int AS completed_count,
+                            COUNT(*) FILTER (WHERE outcome_status IS NULL)::int AS outcomes_unknown,
+                            MIN(observed_at) AS first_launch_at,
+                            MAX(observed_at) AS last_launch_at
+                        FROM entity_launches
+                        WHERE deployer_wallet = :wallet
+                        """
+                    ),
+                    {"wallet": deployer_wallet},
+                )
+            ).mappings().first()
+            if not row:
+                return {
+                    "deployer_wallet": deployer_wallet,
+                    "launch_count": 0,
+                    "outcomes_known": 0,
+                    "completed_count": 0,
+                    "outcomes_unknown": 0,
+                    "first_launch_at": None,
+                    "last_launch_at": None,
+                }
+            result = dict(row)
+            result["deployer_wallet"] = deployer_wallet
+            return result
+
     async def record_outcome(
         self,
         *,
