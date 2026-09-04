@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from uuid import uuid4
 
 import pytest
 
@@ -11,6 +12,12 @@ class _Result:
 
     def first(self):
         return self._row
+
+    def mappings(self):
+        return self
+
+    def all(self):
+        return self._row or []
 
 
 class _Session:
@@ -78,3 +85,40 @@ async def test_record_outcome_does_not_create_unknown_history() -> None:
     assert result is False
     assert session.committed is False
     assert session.rolled_back is True
+
+
+@pytest.mark.asyncio
+async def test_list_deployer_launches_returns_history_and_bounds_limit() -> None:
+    rows = [
+        {
+            "id": 1,
+            "mint": "MINT1",
+            "outcome_status": "completed",
+            "outcome_meta": {"peak_multiple": 2.0},
+        }
+    ]
+    session = _Session(rows)
+    store = LaunchHistoryStore.__new__(LaunchHistoryStore)
+    store._sessions = _Sessions(session)
+
+    result = await store.list_deployer_launches(
+        deployer_wallet="DEPLOYER",
+        limit=9999,
+    )
+
+    assert result == rows
+    assert session.params == {"wallet": "DEPLOYER", "limit": 500}
+
+
+@pytest.mark.asyncio
+async def test_list_entity_launches_uses_entity_id_and_default_limit() -> None:
+    rows = [{"id": 7, "mint": "MINT7", "outcome_status": None}]
+    session = _Session(rows)
+    store = LaunchHistoryStore.__new__(LaunchHistoryStore)
+    store._sessions = _Sessions(session)
+    entity_id = uuid4()
+
+    result = await store.list_entity_launches(entity_id=entity_id)
+
+    assert result == rows
+    assert session.params == {"eid": entity_id, "limit": 100}
