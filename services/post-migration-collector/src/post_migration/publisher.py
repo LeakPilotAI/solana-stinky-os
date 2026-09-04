@@ -18,12 +18,14 @@ from post_migration.models import MarketSnapshot, ObservedTrade, WalletPerforman
 logger = structlog.get_logger(__name__)
 
 # High-frequency ticks already live in wallet_trades / market_snapshots.
-# HTTP ingest of each one fills `events`, stalls event-log, then /health.
-_SKIP_HTTP = {
+# Putting them on Redis + HTTP fills the stream until the 512m Redis OOM
+# at the default hourly RDB snapshot (~1 hour).
+_SKIP_STREAM = {
     EventType.POST_MIGRATION_BUY,
     EventType.POST_MIGRATION_SELL,
     EventType.POST_MIGRATION_MARKET_SNAPSHOT,
 }
+_SKIP_HTTP = _SKIP_STREAM
 
 
 class EventPublisher:
@@ -49,7 +51,7 @@ class EventPublisher:
         await self._http.aclose()
 
     async def _emit(self, event: Event) -> None:
-        if self._connected:
+        if self._connected and event.event_type not in _SKIP_STREAM:
             try:
                 await self._transport.publish(event)
                 metrics.inc("events_emitted")

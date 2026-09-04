@@ -30,7 +30,7 @@ services:
     container_name: stinky-redis
     mem_limit: 512m
     cpus: "0.50"
-    command: redis-server --appendonly no --stop-writes-on-bgsave-error no
+    command: redis-server --appendonly no --save "" --maxmemory 384mb --maxmemory-policy allkeys-lru --stop-writes-on-bgsave-error no --tcp-keepalive 60
     ports:
       - "6380:6379"   # host 6380 → container 6379
     volumes:

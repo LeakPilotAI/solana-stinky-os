@@ -33,7 +33,7 @@ def test_api_health_is_fast_and_cached():
     t = read("services/api/src/stinky_api/main.py")
     assert "_HEALTH_CACHE" in t
     assert "timeout=0.6" in t
-    assert "timeout=1.0" in t
+    assert "timeout=0.8" in t
 
 
 def test_command_center_runners_are_bounded():
