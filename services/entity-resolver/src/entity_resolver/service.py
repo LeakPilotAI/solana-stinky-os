@@ -108,7 +108,7 @@ class EntityService:
 
     @staticmethod
     def _outcome_payload(event: dict[str, object]) -> tuple[str | None, str | None, dict[str, object]]:
-        """Extract a measured completion status without inventing one."""
+        """Extract measured completion evidence from the canonical event."""
         payload = event.get("payload") or {}
         if not isinstance(payload, dict):
             return None, None, {}
@@ -117,7 +117,10 @@ class EntityService:
             return None, None, {}
         status = payload.get("outcome_status") or payload.get("status") or payload.get("outcome")
         if not isinstance(status, str) or not status:
-            return mint, None, {}
+            if event.get("event_type") == "post_migration.tracking_completed":
+                status = "completed"
+            else:
+                return mint, None, {}
         metadata = {k: v for k, v in payload.items() if k != "mint"}
         return mint, status, metadata
 
