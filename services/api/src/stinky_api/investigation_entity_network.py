@@ -7,6 +7,7 @@ The network is descriptive evidence only; missing entities remain UNKNOWN.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -75,8 +76,9 @@ async def entity_network_for_investigation(
     analogue_limit: int = 10,
     analogue_candidate_limit: int = 500,
     outcome_launch_limit_per_analogue: int = 20,
+    as_of: datetime | str | None = None,
 ) -> dict[str, Any]:
-    """Resolve creator entity and return bounded network plus historical evidence."""
+    """Resolve creator entity and return bounded historical evidence at a cutoff."""
     wallet_limit = max(1, min(500, int(wallet_limit)))
     relationship_limit = max(1, min(500, int(relationship_limit)))
     analogue_limit = max(1, min(50, int(analogue_limit)))
@@ -106,60 +108,28 @@ async def entity_network_for_investigation(
                 )
             ).first()
         except Exception:
-            return _unknown(
-                status="UNKNOWN",
-                wallet_limit=wallet_limit,
-                relationship_limit=relationship_limit,
-            )
+            return _unknown(status="UNKNOWN", wallet_limit=wallet_limit, relationship_limit=relationship_limit)
         if row and row[0]:
             try:
                 resolved_entity_id = UUID(str(row[0]))
             except (TypeError, ValueError, AttributeError):
-                return _unknown(
-                    status="UNKNOWN",
-                    wallet_limit=wallet_limit,
-                    relationship_limit=relationship_limit,
-                )
+                return _unknown(status="UNKNOWN", wallet_limit=wallet_limit, relationship_limit=relationship_limit)
 
     if resolved_entity_id is None:
-        return _unknown(
-            status="NEW-UNKNOWN",
-            wallet_limit=wallet_limit,
-            relationship_limit=relationship_limit,
-        )
+        return _unknown(status="NEW-UNKNOWN", wallet_limit=wallet_limit, relationship_limit=relationship_limit)
 
     try:
-        graph = await _assemble(
-            session,
-            resolved_entity_id,
-            wallet_limit,
-            relationship_limit,
-        )
+        graph = await _assemble(session, resolved_entity_id, wallet_limit, relationship_limit)
         if graph is None:
-            return _unknown(
-                status="UNKNOWN",
-                wallet_limit=wallet_limit,
-                relationship_limit=relationship_limit,
-            )
+            return _unknown(status="UNKNOWN", wallet_limit=wallet_limit, relationship_limit=relationship_limit)
         funding_history = await funding_history_for_entity(
-            session,
-            resolved_entity_id,
-            wallet_limit=wallet_limit,
-            observation_limit=relationship_limit,
+            session, resolved_entity_id, wallet_limit=wallet_limit, observation_limit=relationship_limit
         )
         history = await synthesize_entity_history(
-            session,
-            resolved_entity_id,
-            graph=graph,
-            funding_history=funding_history,
-            launch_limit=relationship_limit,
+            session, resolved_entity_id, graph=graph, funding_history=funding_history, launch_limit=relationship_limit
         )
     except Exception:
-        return _unknown(
-            status="UNKNOWN",
-            wallet_limit=wallet_limit,
-            relationship_limit=relationship_limit,
-        )
+        return _unknown(status="UNKNOWN", wallet_limit=wallet_limit, relationship_limit=relationship_limit)
 
     try:
         historical_analogues = await find_historical_analogues(
@@ -167,6 +137,7 @@ async def entity_network_for_investigation(
             resolved_entity_id,
             limit=analogue_limit,
             candidate_limit=analogue_candidate_limit,
+            as_of=as_of,
         )
     except Exception:
         historical_analogues = {
@@ -174,10 +145,7 @@ async def entity_network_for_investigation(
             "records": [],
             "missing": ["historical_analogues"],
             "evidence_basis": "unknown_query",
-            "bounded": {
-                "limit": analogue_limit,
-                "candidate_limit": analogue_candidate_limit,
-            },
+            "bounded": {"limit": analogue_limit, "candidate_limit": analogue_candidate_limit},
             "evidence_only": True,
         }
 
@@ -186,6 +154,7 @@ async def entity_network_for_investigation(
             session,
             historical_analogues.get("records", []),
             limit_per_entity=outcome_launch_limit_per_analogue,
+            as_of=as_of,
         )
     except Exception:
         historical_outcomes = {
@@ -210,5 +179,8 @@ async def entity_network_for_investigation(
     graph["bounded"]["analogue_limit"] = analogue_limit
     graph["bounded"]["analogue_candidate_limit"] = analogue_candidate_limit
     graph["bounded"]["outcome_launch_limit_per_analogue"] = outcome_launch_limit_per_analogue
+    if as_of is not None:
+        graph["as_of"] = historical_analogues.get("as_of")
+        graph["temporal_cutoff_enforced"] = historical_analogues.get("temporal_cutoff_enforced", False)
     graph["evidence_only"] = True
     return graph
