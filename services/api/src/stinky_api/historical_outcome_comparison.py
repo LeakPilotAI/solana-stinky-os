@@ -7,6 +7,7 @@ prediction, quality, risk, intent, or trading semantics.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -14,14 +15,41 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
+def _parse_as_of(value: datetime | str | None) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        text_value = str(value).strip()
+        if text_value.endswith("Z"):
+            text_value = text_value[:-1] + "+00:00"
+        parsed = datetime.fromisoformat(text_value)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
 async def historical_outcomes_for_analogues(
     session: AsyncSession,
     analogue_records: list[dict[str, Any]],
     *,
     limit_per_entity: int = 20,
+    as_of: datetime | str | None = None,
 ) -> dict[str, Any]:
-    """Attach bounded observed launch outcomes to historical analogue IDs."""
+    """Attach bounded observed launch outcomes to analogue IDs at an optional cutoff."""
     limit_per_entity = max(1, min(100, int(limit_per_entity)))
+    cutoff = _parse_as_of(as_of)
+    if as_of is not None and cutoff is None:
+        return {
+            "status": "UNKNOWN",
+            "records": [],
+            "missing": ["invalid_as_of"],
+            "evidence_basis": "entity_launches",
+            "bounded": {"limit_per_entity": limit_per_entity},
+            "evidence_only": True,
+        }
+
     analogue_ids: list[UUID] = []
     for record in analogue_records:
         try:
@@ -40,10 +68,14 @@ async def historical_outcomes_for_analogues(
         }
 
     try:
+        cutoff_clause = "AND observed_at <= :as_of" if cutoff is not None else ""
+        params: dict[str, Any] = {"entity_ids": analogue_ids}
+        if cutoff is not None:
+            params["as_of"] = cutoff
         rows = (
             await session.execute(
                 text(
-                    """
+                    f"""
                     SELECT entity_id::text AS entity_id,
                            mint,
                            event_id,
@@ -52,10 +84,11 @@ async def historical_outcomes_for_analogues(
                            outcome_meta
                     FROM entity_launches
                     WHERE entity_id = ANY(CAST(:entity_ids AS uuid[]))
+                      {cutoff_clause}
                     ORDER BY entity_id, observed_at DESC, id DESC
                     """
                 ),
-                {"entity_ids": analogue_ids},
+                params,
             )
         ).mappings().all()
     except Exception:
@@ -105,10 +138,14 @@ async def historical_outcomes_for_analogues(
             }
         )
 
-    return {
+    result = {
         "status": "OBSERVED",
         "records": records,
         "evidence_basis": "entity_launches",
         "bounded": {"limit_per_entity": limit_per_entity},
         "evidence_only": True,
     }
+    if cutoff is not None:
+        result["as_of"] = cutoff.isoformat()
+        result["temporal_cutoff_enforced"] = True
+    return result

@@ -26,12 +26,18 @@ class Session:
         self.target = target
         self.candidates = candidates or []
         self.calls = 0
+        self.params = []
 
     async def execute(self, statement, params):
         self.calls += 1
+        self.params.append(params)
         if self.calls == 1:
             return Result(first=self.target)
-        return Result(rows=self.candidates)
+        cutoff = params.get("as_of")
+        rows = self.candidates
+        if cutoff is not None:
+            rows = [row for row in rows if row.get("computed_at") is None or row["computed_at"] <= cutoff]
+        return Result(rows=rows)
 
 
 @pytest.mark.asyncio
@@ -127,6 +133,75 @@ async def test_outcome_only_differences_do_not_change_analogue_distance():
     assert "outcomes_unknown" not in result["records"][0]["matched_dimensions"]
     assert "outcome_coverage" not in result["records"][0]["matched_dimensions"]
     assert result["records"][0]["outcome_dimensions_excluded"] is True
+
+
+@pytest.mark.asyncio
+async def test_analogue_cutoff_is_passed_to_target_and_candidate_queries():
+    entity_id = uuid4()
+    cutoff = datetime(2026, 9, 4, 12, tzinfo=timezone.utc)
+    session = Session(
+        target={"fingerprint": {"launch_count": 2}},
+        candidates=[
+            {
+                "entity_id": "analogue-before-cutoff",
+                "fingerprint": {"launch_count": 2},
+                "computed_at": datetime(2026, 9, 4, 11, tzinfo=timezone.utc),
+            }
+        ],
+    )
+
+    result = await find_historical_analogues(session, entity_id, as_of=cutoff)
+
+    assert result["as_of"] == cutoff.isoformat()
+    assert result["temporal_cutoff_enforced"] is True
+    assert session.params[0]["as_of"] == cutoff
+    assert session.params[1]["as_of"] == cutoff
+
+
+@pytest.mark.asyncio
+async def test_future_fingerprint_snapshots_are_excluded_by_cutoff():
+    entity_id = uuid4()
+    cutoff = datetime(2026, 9, 4, 12, tzinfo=timezone.utc)
+    future = datetime(2026, 9, 4, 13, tzinfo=timezone.utc)
+    before = datetime(2026, 9, 4, 11, tzinfo=timezone.utc)
+    session = Session(
+        target={"fingerprint": {"launch_count": 2}},
+        candidates=[
+            {
+                "entity_id": "future-candidate",
+                "fingerprint": {"launch_count": 2},
+                "computed_at": future,
+            },
+            {
+                "entity_id": "before-candidate",
+                "fingerprint": {"launch_count": 2},
+                "computed_at": before,
+            },
+        ],
+    )
+
+    result = await find_historical_analogues(session, entity_id, as_of=cutoff)
+
+    assert [row["entity_id"] for row in result["records"]] == ["before-candidate"]
+    assert result["temporal_cutoff_enforced"] is True
+    assert all(
+        datetime.fromisoformat(row["candidate_fingerprint_computed_at"]) <= cutoff
+        for row in result["records"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_invalid_analogue_cutoff_is_unknown():
+    result = await find_historical_analogues(
+        Session(target={"fingerprint": {"launch_count": 1}}),
+        uuid4(),
+        as_of="not-a-timestamp",
+    )
+
+    assert result["status"] == "UNKNOWN"
+    assert result["records"] == []
+    assert result["missing"] == ["invalid_as_of"]
+    assert result["evidence_only"] is True
 
 
 @pytest.mark.asyncio
