@@ -24,6 +24,7 @@ async def test_unknown_investigation_entity_is_explicit_and_bounded():
     assert result["funding_history"] == []
     assert result["historical_analogues"]["status"] == "NEW-UNKNOWN"
     assert result["historical_outcome_comparison"]["status"] == "NEW-UNKNOWN"
+    assert result["historical_outcome_calibration"]["status"] == "NEW-UNKNOWN"
     assert result["bounded"] == {
         "wallet_limit": 1,
         "relationship_limit": 500,
@@ -60,7 +61,7 @@ async def test_invalid_entity_id_falls_back_to_creator_wallet():
 
 
 @pytest.mark.asyncio
-async def test_known_entity_includes_historical_outcomes(monkeypatch):
+async def test_known_entity_includes_historical_outcomes_and_calibration(monkeypatch):
     entity_id = uuid4()
 
     class Session:
@@ -100,6 +101,10 @@ async def test_known_entity_includes_historical_outcomes(monkeypatch):
             "status": "OBSERVED",
             "records": [{
                 "entity_id": "analogue-1",
+                "launches": [
+                    {"outcome_observed": True, "outcome_status": "completed"},
+                    {"outcome_observed": False, "outcome_status": None},
+                ],
                 "launch_count_observed": 2,
                 "outcomes_known": 1,
                 "completed_count": 1,
@@ -129,5 +134,13 @@ async def test_known_entity_includes_historical_outcomes(monkeypatch):
     assert result["historical_outcome_comparison"]["status"] == "OBSERVED"
     assert result["historical_outcome_comparison"]["records"][0]["completed_count"] == 1
     assert result["historical_outcome_comparison"]["records"][0]["outcomes_unknown"] == 1
+    assert result["historical_outcome_calibration"]["status"] == "OBSERVED"
+    assert result["historical_outcome_calibration"]["analogue_count"] == 1
+    assert result["historical_outcome_calibration"]["launch_count_observed"] == 2
+    assert result["historical_outcome_calibration"]["outcomes_known"] == 1
+    assert result["historical_outcome_calibration"]["outcomes_unknown"] == 1
+    assert result["historical_outcome_calibration"]["completed_count"] == 1
+    assert result["historical_outcome_calibration"]["outcome_coverage"] == 0.5
     assert result["bounded"]["outcome_launch_limit_per_analogue"] == 20
     assert result["historical_outcome_comparison"]["evidence_only"] is True
+    assert result["historical_outcome_calibration"]["evidence_only"] is True

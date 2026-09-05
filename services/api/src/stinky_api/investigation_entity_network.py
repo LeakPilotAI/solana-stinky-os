@@ -17,6 +17,7 @@ from stinky_api.entity_graph import _assemble
 from stinky_api.entity_history_analogues import find_historical_analogues
 from stinky_api.entity_history_synthesis import synthesize_entity_history
 from stinky_api.funding_history import funding_history_for_entity
+from stinky_api.historical_outcome_calibration import calibrate_historical_outcomes
 from stinky_api.historical_outcome_comparison import historical_outcomes_for_analogues
 
 
@@ -36,6 +37,18 @@ def _unknown(*, status: str, wallet_limit: int, relationship_limit: int) -> dict
         "historical_outcome_comparison": {
             "status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN",
             "records": [],
+            "missing": ["entity_history"],
+            "evidence_only": True,
+        },
+        "historical_outcome_calibration": {
+            "status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN",
+            "analogue_count": 0,
+            "analogue_with_launches": 0,
+            "launch_count_observed": 0,
+            "outcomes_known": 0,
+            "outcomes_unknown": 0,
+            "completed_count": 0,
+            "outcome_coverage": None,
             "missing": ["entity_history"],
             "evidence_only": True,
         },
@@ -184,11 +197,14 @@ async def entity_network_for_investigation(
             "evidence_only": True,
         }
 
+    historical_calibration = calibrate_historical_outcomes(historical_outcomes)
+
     graph["status"] = "KNOWN_ENTITY"
     graph["funding_history"] = funding_history
     graph["history"] = history
     graph["historical_analogues"] = historical_analogues
     graph["historical_outcome_comparison"] = historical_outcomes
+    graph["historical_outcome_calibration"] = historical_calibration
     graph["bounded"]["funding_observation_limit"] = relationship_limit
     graph["bounded"]["launch_history_limit"] = relationship_limit
     graph["bounded"]["analogue_limit"] = analogue_limit
