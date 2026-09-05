@@ -2,9 +2,8 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_relationship_store_records_canonical_wallet_order() -> None:
-    # Contract-level regression placeholder: the persistence method must canonicalize
-    # wallet ordering before applying the database CHECK constraint.
-    from entity_resolver.store import EntityStore
+async def test_relationship_store_exposes_persistent_contract() -> None:
+    from entity_resolver.relationships import WalletRelationshipStore
 
-    assert hasattr(EntityStore, "record_wallet_relationship")
+    assert hasattr(WalletRelationshipStore, "record_relationship")
+    assert hasattr(WalletRelationshipStore, "list_relationships")
