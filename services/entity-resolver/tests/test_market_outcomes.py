@@ -63,7 +63,7 @@ async def test_record_observation_preserves_observed_and_ingested_times(monkeypa
     observed = datetime(2026, 9, 4, 12, 0, tzinfo=timezone.utc)
     ingested = datetime(2026, 9, 4, 12, 0, 2, tzinfo=timezone.utc)
     session = FakeSession(row=(1,))
-    monkeypatch.setattr(store, "_sessions", lambda: FakeContext(session))
+    monkeypatch.setattr(store, "_sessions", lambda: FakeContext(session), raising=False)
 
     result = await store.record_observation(
         mint="MINT",
@@ -90,7 +90,7 @@ async def test_record_observation_preserves_observed_and_ingested_times(monkeypa
 async def test_record_observation_rejects_unknown_horizon_without_db_write(monkeypatch):
     store = object.__new__(MarketOutcomeStore)
     session = FakeSession(row=(1,))
-    monkeypatch.setattr(store, "_sessions", lambda: FakeContext(session))
+    monkeypatch.setattr(store, "_sessions", lambda: FakeContext(session), raising=False)
 
     result = await store.record_observation(
         mint="MINT",
@@ -108,7 +108,7 @@ async def test_record_observation_rejects_unknown_horizon_without_db_write(monke
 async def test_list_observations_enforces_cutoff_and_bound(monkeypatch):
     store = object.__new__(MarketOutcomeStore)
     session = FakeSession(rows=[])
-    monkeypatch.setattr(store, "_sessions", lambda: FakeContext(session))
+    monkeypatch.setattr(store, "_sessions", lambda: FakeContext(session), raising=False)
     cutoff = datetime(2026, 9, 4, tzinfo=timezone.utc)
 
     result = await store.list_mint_observations(mint="MINT", limit=999, as_of=cutoff)
