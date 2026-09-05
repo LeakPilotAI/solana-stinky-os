@@ -131,6 +131,14 @@ async def entity_network_for_investigation(
             funding_history=funding_history,
             launch_limit=relationship_limit,
         )
+    except Exception:
+        return _unknown(
+            status="UNKNOWN",
+            wallet_limit=wallet_limit,
+            relationship_limit=relationship_limit,
+        )
+
+    try:
         historical_analogues = await find_historical_analogues(
             session,
             resolved_entity_id,
@@ -138,11 +146,17 @@ async def entity_network_for_investigation(
             candidate_limit=analogue_candidate_limit,
         )
     except Exception:
-        return _unknown(
-            status="UNKNOWN",
-            wallet_limit=wallet_limit,
-            relationship_limit=relationship_limit,
-        )
+        historical_analogues = {
+            "status": "UNKNOWN",
+            "records": [],
+            "missing": ["historical_analogues"],
+            "evidence_basis": "unknown_query",
+            "bounded": {
+                "limit": analogue_limit,
+                "candidate_limit": analogue_candidate_limit,
+            },
+            "evidence_only": True,
+        }
 
     graph["status"] = "KNOWN_ENTITY"
     graph["funding_history"] = funding_history
