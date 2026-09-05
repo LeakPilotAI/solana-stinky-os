@@ -3,6 +3,7 @@ from uuid import uuid4
 
 import pytest
 
+from stinky_api.entity_history_contract import canonicalize_entity_history
 from stinky_api.entity_history_synthesis import synthesize_entity_history
 
 
@@ -94,13 +95,20 @@ async def test_synthesis_combines_independent_evidence_bases_and_bounds():
     assert result["evidence_only"] is True
     assert result["entity_id"] == str(entity_id)
     assert result["bounded"]["launch_limit"] == 500
-    assert result["launch_history"]["evidence_basis"] == "entity_launches"
-    assert result["launch_history"]["records"][0]["outcome_status"] is None
-    assert result["behavior_fingerprint"]["fingerprint"]["outcomes_unknown"] == 1
-    assert result["wallet_relationships"]["evidence_basis"] == "entity_wallets+wallet_relationships"
-    assert result["wallet_relationships"]["records"][0]["relationship_kind"] == "deployer_buyer_association"
-    assert result["funding_history"]["evidence_basis"] == "wallet_funding_observations+direct_transfer_observation"
-    assert result["funding_history"]["records"][0]["signature"] == "sig-1"
+    assert set(result["sources"]) == {
+        "launch_history",
+        "behavior_fingerprint",
+        "wallet_relationships",
+        "funding_history",
+    }
+    assert result["sources"]["launch_history"]["evidence_basis"] == "entity_launches"
+    assert result["sources"]["launch_history"]["records"][0]["outcome_status"] is None
+    assert result["sources"]["behavior_fingerprint"]["fingerprint"]["outcomes_unknown"] == 1
+    assert result["sources"]["wallet_relationships"]["evidence_basis"] == "entity_wallets+wallet_relationships"
+    assert result["sources"]["wallet_relationships"]["records"][0]["relationship_kind"] == "deployer_buyer_association"
+    assert result["sources"]["funding_history"]["evidence_basis"] == "wallet_funding_observations+direct_transfer_observation"
+    assert result["sources"]["funding_history"]["records"][0]["signature"] == "sig-1"
+    assert result["missing"] == []
 
 
 @pytest.mark.asyncio
@@ -113,9 +121,28 @@ async def test_missing_behavior_fingerprint_remains_unknown():
         funding_history=[],
     )
 
-    assert result["behavior_fingerprint"]["status"] == "UNKNOWN"
-    assert result["behavior_fingerprint"]["missing"] == ["behavior_fingerprint"]
-    assert result["launch_history"]["status"] == "OBSERVED"
-    assert result["launch_history"]["records"] == []
-    assert result["funding_history"]["records"] == []
+    assert result["sources"]["behavior_fingerprint"]["status"] == "UNKNOWN"
+    assert result["missing"] == ["behavior_fingerprint"]
+    assert result["sources"]["launch_history"]["status"] == "OBSERVED"
+    assert result["sources"]["launch_history"]["records"] == []
+    assert result["sources"]["funding_history"]["records"] == []
     assert result["evidence_only"] is True
+
+
+def test_canonical_contract_defaults_missing_sources_to_unknown():
+    result = canonicalize_entity_history({"status": "KNOWN_ENTITY", "entity_id": "entity-1"})
+
+    assert result["evidence_only"] is True
+    assert result["status"] == "KNOWN_ENTITY"
+    assert set(result["sources"]) == {
+        "launch_history",
+        "behavior_fingerprint",
+        "wallet_relationships",
+        "funding_history",
+    }
+    assert result["missing"] == [
+        "launch_history",
+        "behavior_fingerprint",
+        "wallet_relationships",
+        "funding_history",
+    ]
