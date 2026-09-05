@@ -127,10 +127,11 @@ class WalletRelationshipStore:
                 observation_count=int(row["observed_mints"] or 1),
                 first_seen_at=row["first_seen_at"],
                 last_seen_at=row["last_seen_at"],
-                confidence=None,
+                confidence=1.0,
                 evidence={
                     "observed_mints": int(row["observed_mints"] or 0),
                     "evidence_basis": "entity_launches+migration_buyers",
+                    "confidence_basis": "direct_observed_role_association",
                 },
             )
         return len(rows)
