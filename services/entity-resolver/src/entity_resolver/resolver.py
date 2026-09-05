@@ -13,6 +13,7 @@ from __future__ import annotations
 import structlog
 
 from entity_resolver.config import settings
+from entity_resolver.relationships import WalletRelationshipStore
 from entity_resolver.store import EntityStore
 
 logger = structlog.get_logger(__name__)
@@ -32,12 +33,15 @@ def co_buy_confidence(shared_mints: int) -> tuple[float, str]:
 class EntityResolver:
     def __init__(self, store: EntityStore | None = None) -> None:
         self._store = store or EntityStore()
+        self._relationships = WalletRelationshipStore()
 
     async def close(self) -> None:
+        await self._relationships.close()
         await self._store.close()
 
     async def run_batch(self) -> dict[str, int]:
         """Full deterministic pass over known deployers + co-buy pairs."""
+        await self._relationships.ensure_schema()
         stats = {
             "deployers_seen": 0,
             "entities_created": 0,
@@ -84,6 +88,18 @@ class EntityResolver:
             if conf <= 0:
                 stats["co_buy_skipped"] += 1
                 continue
+
+            await self._relationships.record_relationship(
+                wallet_a=a,
+                wallet_b=b,
+                relationship_kind="co_early_buy",
+                confidence=conf,
+                evidence={
+                    "shared_mints": shared,
+                    "evidence_basis": "migration_buyers",
+                    "confidence_rule": reason,
+                },
+            )
 
             ea = await self._store.get_entity_for_wallet(a)
             eb = await self._store.get_entity_for_wallet(b)
