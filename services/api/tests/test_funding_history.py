@@ -34,6 +34,7 @@ async def test_funding_history_returns_direct_evidence_and_enforces_bounds():
     session = FakeSession([{
         "source_wallet": "SOURCE", "destination_wallet": "DESTINATION",
         "amount_lamports": 123456, "signature": "sig-1", "observed_at": observed,
+        "created_at": observed,
         "evidence": {"evidence_basis": "direct_transfer_observation"},
     }])
 
@@ -44,6 +45,7 @@ async def test_funding_history_returns_direct_evidence_and_enforces_bounds():
     assert result[0]["amount_lamports"] == 123456
     assert result[0]["signature"] == "sig-1"
     assert result[0]["observed_at"] == "2026-09-04T00:00:00+00:00"
+    assert result[0]["ingested_at"] == "2026-09-04T00:00:00+00:00"
     assert result[0]["evidence"]["evidence_basis"] == "direct_transfer_observation"
     assert session.calls[0][1]["wallet_limit"] == 1
     assert session.calls[0][1]["observation_limit"] == 500
