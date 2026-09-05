@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
+from uuid import UUID
 
 import orjson
 from sqlalchemy import text
@@ -190,6 +191,51 @@ class WalletRelationshipStore:
                         """
                     ),
                     {"wallet": wallet, "limit": limit},
+                )
+            ).mappings().all()
+            return [dict(row) for row in rows]
+
+    async def list_entity_relationships(
+        self,
+        entity_id: UUID,
+        *,
+        limit: int = 500,
+        wallet_limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Return bounded persisted relationships touching any wallet in an entity."""
+        limit = max(1, min(limit, 500))
+        wallet_limit = max(1, min(wallet_limit, 500))
+        async with self._sessions() as session:
+            rows = (
+                await session.execute(
+                    text(
+                        """
+                        WITH entity_wallets_limited AS (
+                            SELECT wallet
+                            FROM entity_wallets
+                            WHERE entity_id = :eid
+                            ORDER BY wallet
+                            LIMIT :wallet_limit
+                        )
+                        SELECT wr.wallet_a, wr.wallet_b, wr.relationship_kind,
+                               wr.observation_count, wr.first_seen_at, wr.last_seen_at,
+                               wr.confidence, wr.evidence,
+                               ea.entity_id AS entity_a_id,
+                               eb.entity_id AS entity_b_id
+                        FROM wallet_relationships wr
+                        LEFT JOIN entity_wallets ea_w ON ea_w.wallet = wr.wallet_a
+                        LEFT JOIN entities ea ON ea.entity_id = ea_w.entity_id
+                        LEFT JOIN entity_wallets eb_w ON eb_w.wallet = wr.wallet_b
+                        LEFT JOIN entities eb ON eb.entity_id = eb_w.entity_id
+                        WHERE EXISTS (
+                            SELECT 1 FROM entity_wallets_limited ewl
+                            WHERE ewl.wallet = wr.wallet_a OR ewl.wallet = wr.wallet_b
+                        )
+                        ORDER BY wr.observation_count DESC, wr.last_seen_at DESC
+                        LIMIT :limit
+                        """
+                    ),
+                    {"eid": entity_id, "limit": limit, "wallet_limit": wallet_limit},
                 )
             ).mappings().all()
             return [dict(row) for row in rows]
