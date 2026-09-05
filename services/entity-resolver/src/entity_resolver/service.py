@@ -1,4 +1,4 @@
-﻿"""Entity resolver service – batch + optional event-driven hooks."""
+﻿"""Entity resolver service – batch + event-driven entity intelligence."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import redis.asyncio as redis
 import structlog
 
+from entity_resolver.behavior import BehaviorFingerprintStore
 from entity_resolver.config import settings
 from entity_resolver.launch_history import LaunchHistoryStore
 from entity_resolver.resolver import EntityResolver
@@ -21,6 +22,7 @@ class EntityService:
     def __init__(self) -> None:
         self._store = EntityStore()
         self._launch_history = LaunchHistoryStore()
+        self._behavior = BehaviorFingerprintStore()
         self._resolver = EntityResolver(self._store)
         self._redis: redis.Redis | None = None
         self._running = False
@@ -28,6 +30,7 @@ class EntityService:
     async def start(self) -> None:
         await self._store.ensure_schema()
         await self._launch_history.ensure_schema()
+        await self._behavior.ensure_schema()
         self._redis = redis.from_url(
             settings.redis_url,
             decode_responses=True,
@@ -58,6 +61,7 @@ class EntityService:
         self._running = False
         if self._redis:
             await self._redis.aclose()
+        await self._behavior.close()
         await self._launch_history.close()
         await self._resolver.close()
 
@@ -155,7 +159,14 @@ class EntityService:
                     observed_at=self._event_timestamp(event),
                 )
                 if inserted:
-                    logger.info("entity.launch_recorded", entity_id=entity_id, deployer=deployer, mint=mint)
+                    fingerprint = await self._behavior.refresh_entity(entity_id)
+                    logger.info(
+                        "entity.launch_recorded",
+                        entity_id=entity_id,
+                        deployer=deployer,
+                        mint=mint,
+                        cadence_bucket=fingerprint["cadence_bucket"],
+                    )
                 else:
                     logger.debug("entity.launch_duplicate", event_id=msg_id, deployer=deployer, mint=mint)
 
@@ -174,7 +185,13 @@ class EntityService:
                     observed_at=self._event_timestamp(event),
                 )
                 if updated:
-                    logger.info("entity.launch_outcome_recorded", mint=mint, status=status)
+                    fingerprint = await self._behavior.refresh_for_mint(mint)
+                    logger.info(
+                        "entity.launch_outcome_recorded",
+                        mint=mint,
+                        status=status,
+                        cadence_bucket=(fingerprint or {}).get("cadence_bucket"),
+                    )
 
         await self._redis.xack(
             settings.event_stream,
