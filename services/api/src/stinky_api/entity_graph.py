@@ -40,6 +40,21 @@ def _parse_as_of(value: datetime | str | None) -> datetime | None:
         return None
 
 
+def _historical_entity(row: dict[str, Any], cutoff: datetime | None) -> dict[str, Any]:
+    result = dict(row)
+    for key in ("created_at", "updated_at"):
+        result[key] = _iso(result.get(key))
+    if cutoff is not None:
+        # Entity counters are current aggregates, not historical snapshots.
+        # They must not masquerade as as-of values.
+        for key in ("wallet_count", "launch_count", "early_buy_count"):
+            result[key] = None
+        result["historical_aggregate_status"] = "UNKNOWN"
+        result["historical_aggregate_missing"] = ["entity_snapshot"]
+        result["temporal_cutoff_enforced"] = True
+    return result
+
+
 async def _assemble(
     session: AsyncSession,
     entity_id: UUID,
@@ -64,6 +79,9 @@ async def _assemble(
     ).mappings().first()
     if entity is None:
         return None
+    entity = dict(entity)
+    if cutoff is not None and entity.get("created_at") is not None and entity["created_at"] > cutoff:
+        return None
 
     wallet_clause = "AND first_seen_at <= :as_of" if cutoff is not None else ""
     wallet_params: dict[str, Any] = {"entity_id": entity_id, "wallet_limit": wallet_limit}
@@ -86,7 +104,7 @@ async def _assemble(
     wallet_values = [str(row["wallet"]) for row in wallets]
     if not wallet_values:
         result = {
-            "entity": {k: (_iso(v) if k in {"created_at", "updated_at"} else v) for k, v in dict(entity).items()},
+            "entity": _historical_entity(entity, cutoff),
             "wallets": [], "relationships": [],
             "bounded": {"wallet_limit": wallet_limit, "relationship_limit": relationship_limit},
             "evidence_only": True, "status": "KNOWN_ENTITY_NO_WALLET_EDGES",
@@ -134,16 +152,35 @@ async def _assemble(
             continue
         seen.add(key)
         edge = dict(row)
-        edge["first_seen_at"] = _iso(edge.get("first_seen_at"))
-        edge["last_seen_at"] = _iso(edge.get("last_seen_at"))
+        first_seen = edge.get("first_seen_at")
+        last_seen = edge.get("last_seen_at")
+        edge["first_seen_at"] = _iso(first_seen)
+        edge["last_seen_at"] = _iso(last_seen)
+        if cutoff is not None and last_seen is not None and last_seen > cutoff:
+            # Relationship counts are cumulative aggregates. Once their last
+            # observation is after the cutoff, the historical count cannot be
+            # reconstructed from this table without leaking future evidence.
+            edge["observation_count"] = None
+            edge["last_seen_at"] = None
+            edge["historical_observation_status"] = "UNKNOWN"
+            edge["historical_observation_missing"] = ["relationship_observation_history"]
         edges.append(edge)
 
+    historical_wallets = []
+    for row in wallets:
+        item = dict(row)
+        last_seen = item.get("last_seen_at")
+        item["first_seen_at"] = _iso(item.get("first_seen_at"))
+        item["last_seen_at"] = _iso(last_seen)
+        if cutoff is not None and last_seen is not None and last_seen > cutoff:
+            item["last_seen_at"] = None
+            item["historical_last_seen_status"] = "UNKNOWN"
+            item["historical_last_seen_missing"] = ["wallet_observation_history"]
+        historical_wallets.append(item)
+
     result = {
-        "entity": {k: (_iso(v) if k in {"created_at", "updated_at"} else v) for k, v in dict(entity).items()},
-        "wallets": [
-            {k: (_iso(v) if k in {"first_seen_at", "last_seen_at"} else v) for k, v in dict(row).items()}
-            for row in wallets
-        ],
+        "entity": _historical_entity(entity, cutoff),
+        "wallets": historical_wallets,
         "relationships": edges,
         "bounded": {"wallet_limit": wallet_limit, "relationship_limit": relationship_limit},
         "evidence_only": True, "status": "KNOWN_ENTITY",
