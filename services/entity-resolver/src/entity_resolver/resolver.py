@@ -13,6 +13,7 @@ from __future__ import annotations
 import structlog
 
 from entity_resolver.config import settings
+from entity_resolver.relationships import WalletRelationshipStore
 from entity_resolver.store import EntityStore
 
 logger = structlog.get_logger(__name__)
@@ -32,12 +33,15 @@ def co_buy_confidence(shared_mints: int) -> tuple[float, str]:
 class EntityResolver:
     def __init__(self, store: EntityStore | None = None) -> None:
         self._store = store or EntityStore()
+        self._relationships = WalletRelationshipStore()
 
     async def close(self) -> None:
+        await self._relationships.close()
         await self._store.close()
 
     async def run_batch(self) -> dict[str, int]:
         """Full deterministic pass over known deployers + co-buy pairs."""
+        await self._relationships.ensure_schema()
         stats = {
             "deployers_seen": 0,
             "entities_created": 0,
@@ -68,12 +72,7 @@ class EntityResolver:
                 },
             )
             stats["entities_created"] += 1
-            logger.info(
-                "entity.created",
-                entity_id=str(entity_id),
-                wallet=wallet,
-                reason="deployer_from_events",
-            )
+            logger.info("entity.created", entity_id=str(entity_id), wallet=wallet, reason="deployer_from_events")
 
         pairs = await self._store.early_buyer_pairs(settings.min_co_buy_overlap)
         for p in pairs:
@@ -85,17 +84,25 @@ class EntityResolver:
                 stats["co_buy_skipped"] += 1
                 continue
 
+            await self._relationships.record_relationship(
+                wallet_a=a,
+                wallet_b=b,
+                relationship_kind="co_early_buy",
+                confidence=conf,
+                evidence={
+                    "shared_mints": shared,
+                    "evidence_basis": "migration_buyers",
+                    "confidence_rule": reason,
+                },
+            )
+
             ea = await self._store.get_entity_for_wallet(a)
             eb = await self._store.get_entity_for_wallet(b)
 
             if ea and eb:
                 if ea["entity_id"] == eb["entity_id"]:
                     continue
-                if (
-                    settings.auto_merge_enabled
-                    and shared >= settings.auto_merge_min_shared
-                    and conf >= settings.auto_merge_min_confidence
-                ):
+                if settings.auto_merge_enabled and shared >= settings.auto_merge_min_shared and conf >= settings.auto_merge_min_confidence:
                     la = int(ea.get("launch_count") or 0)
                     lb = int(eb.get("launch_count") or 0)
                     wa = int(ea.get("wallet_count") or 0)
@@ -109,141 +116,60 @@ class EntityResolver:
                         absorbed_id=absorbed["entity_id"],
                         reason="strong_co_early_buy_merge",
                         confidence=conf,
-                        evidence={
-                            "shared_mints": shared,
-                            "wallet_a": a,
-                            "wallet_b": b,
-                            "rule": "auto_merge_min_shared",
-                        },
+                        evidence={"shared_mints": shared, "wallet_a": a, "wallet_b": b, "rule": "auto_merge_min_shared"},
                     )
                     if ok:
                         stats["entity_merges"] += 1
                         stats["strong_links"] += 1
-                        logger.info(
-                            "entity.merged",
-                            survivor=str(survivor["entity_id"]),
-                            absorbed=str(absorbed["entity_id"]),
-                            shared_mints=shared,
-                            confidence=conf,
-                        )
+                        logger.info("entity.merged", survivor=str(survivor["entity_id"]), absorbed=str(absorbed["entity_id"]), shared_mints=shared, confidence=conf)
                     else:
                         stats["co_buy_skipped"] += 1
                     continue
                 stats["co_buy_skipped"] += 1
-                logger.debug(
-                    "entity.co_buy_skip_merge",
-                    wallet_a=a,
-                    wallet_b=b,
-                    shared_mints=shared,
-                    entity_a=str(ea["entity_id"]),
-                    entity_b=str(eb["entity_id"]),
-                )
+                logger.debug("entity.co_buy_skip_merge", wallet_a=a, wallet_b=b, shared_mints=shared, entity_a=str(ea["entity_id"]), entity_b=str(eb["entity_id"]))
                 continue
 
             if ea and not eb:
-                ok = await self._store.link_wallet(
-                    entity_id=ea["entity_id"],
-                    wallet=b,
-                    role="early_buyer",
-                    reason=reason,
-                    confidence=conf,
-                    evidence={"shared_mints": shared, "peer": a},
-                )
+                ok = await self._store.link_wallet(entity_id=ea["entity_id"], wallet=b, role="early_buyer", reason=reason, confidence=conf, evidence={"shared_mints": shared, "peer": a})
                 if ok:
                     stats["co_buy_links"] += 1
                     if shared >= 8:
                         stats["strong_links"] += 1
                     await self._store.bump_early_buy_count(ea["entity_id"])
-                    logger.info(
-                        "entity.co_buy_linked",
-                        entity_id=str(ea["entity_id"]),
-                        wallet=b,
-                        peer=a,
-                        shared_mints=shared,
-                        confidence=conf,
-                        reason=reason,
-                    )
+                    logger.info("entity.co_buy_linked", entity_id=str(ea["entity_id"]), wallet=b, peer=a, shared_mints=shared, confidence=conf, reason=reason)
                 else:
                     stats["co_buy_skipped"] += 1
             elif eb and not ea:
-                ok = await self._store.link_wallet(
-                    entity_id=eb["entity_id"],
-                    wallet=a,
-                    role="early_buyer",
-                    reason=reason,
-                    confidence=conf,
-                    evidence={"shared_mints": shared, "peer": b},
-                )
+                ok = await self._store.link_wallet(entity_id=eb["entity_id"], wallet=a, role="early_buyer", reason=reason, confidence=conf, evidence={"shared_mints": shared, "peer": b})
                 if ok:
                     stats["co_buy_links"] += 1
                     if shared >= 8:
                         stats["strong_links"] += 1
                     await self._store.bump_early_buy_count(eb["entity_id"])
-                    logger.info(
-                        "entity.co_buy_linked",
-                        entity_id=str(eb["entity_id"]),
-                        wallet=a,
-                        peer=b,
-                        shared_mints=shared,
-                        confidence=conf,
-                        reason=reason,
-                    )
+                    logger.info("entity.co_buy_linked", entity_id=str(eb["entity_id"]), wallet=a, peer=b, shared_mints=shared, confidence=conf, reason=reason)
                 else:
                     stats["co_buy_skipped"] += 1
             else:
-                eid = await self._store.create_entity(
-                    primary_wallet=a,
-                    entity_type="trader",
-                    display_label=f"tr:{a[:6]}",
-                    confidence=conf,
-                    meta={"seed": reason, "shared_mints_seed": shared},
-                )
+                eid = await self._store.create_entity(primary_wallet=a, entity_type="trader", display_label=f"tr:{a[:6]}", confidence=conf, meta={"seed": reason, "shared_mints_seed": shared})
                 stats["entities_created"] += 1
-                ok = await self._store.link_wallet(
-                    entity_id=eid,
-                    wallet=b,
-                    role="early_buyer",
-                    reason=reason,
-                    confidence=conf,
-                    evidence={"shared_mints": shared, "peer": a},
-                )
+                ok = await self._store.link_wallet(entity_id=eid, wallet=b, role="early_buyer", reason=reason, confidence=conf, evidence={"shared_mints": shared, "peer": a})
                 if ok:
                     stats["co_buy_links"] += 1
                     if shared >= 8:
                         stats["strong_links"] += 1
                     await self._store.bump_early_buy_count(eid)
-                    logger.info(
-                        "entity.cluster_seeded",
-                        entity_id=str(eid),
-                        wallet_a=a,
-                        wallet_b=b,
-                        shared_mints=shared,
-                        confidence=conf,
-                        reason=reason,
-                    )
+                    logger.info("entity.cluster_seeded", entity_id=str(eid), wallet_a=a, wallet_b=b, shared_mints=shared, confidence=conf, reason=reason)
 
         logger.info("entity.batch_complete", **stats)
         return stats
 
     async def ensure_deployer_observed(self, deployer: str) -> str:
-        """Ensure a deployer entity exists without counting a launch.
-
-        Used by migration observations because a migration confirms the creator
-        identity but is not itself a new launch.
-        """
-        eid = await self._store.ensure_wallet_entity(
-            deployer,
-            entity_type="deployer",
-            confidence=settings.deployer_link_confidence,
-        )
+        """Ensure a deployer entity exists without counting a launch."""
+        eid = await self._store.ensure_wallet_entity(deployer, entity_type="deployer", confidence=settings.deployer_link_confidence)
         return str(eid)
 
     async def on_deployer_observed(self, deployer: str) -> str:
         """Record one deployer launch observation and return its entity id."""
-        eid = await self._store.ensure_wallet_entity(
-            deployer,
-            entity_type="deployer",
-            confidence=settings.deployer_link_confidence,
-        )
+        eid = await self._store.ensure_wallet_entity(deployer, entity_type="deployer", confidence=settings.deployer_link_confidence)
         await self._store.bump_launch_count(eid)
         return str(eid)
