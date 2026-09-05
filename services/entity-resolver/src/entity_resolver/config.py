@@ -17,6 +17,7 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+asyncpg://stinky:stinky@localhost:5433/stinky"
     redis_url: str = "redis://localhost:6380/0"
+    solana_rpc_url: str = "https://api.mainnet-beta.solana.com"
     event_stream: str = "stinky.events"
     # Dedicated group — do NOT share STINKY_CONSUMER_GROUP with event-log
     entity_consumer_group: str = "entity-resolver"
@@ -32,6 +33,8 @@ class Settings(BaseSettings):
     auto_merge_min_shared: int = 8  # require strong co-buy evidence
     auto_merge_min_confidence: float = 0.85
 
+    # Funding evidence: bounded recent history per newly observed buyer wallet.
+    funding_scan_signature_limit: int = 20
 
 
 settings = Settings()

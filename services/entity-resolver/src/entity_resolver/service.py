@@ -6,10 +6,12 @@ import asyncio
 import json
 from datetime import datetime, timezone
 
+import httpx
 import redis.asyncio as redis
 import structlog
 
 from entity_resolver.behavior import BehaviorFingerprintStore
+from entity_resolver.chain_evidence import fetch_recent_inbound_transfers
 from entity_resolver.config import settings
 from entity_resolver.launch_history import LaunchHistoryStore
 from entity_resolver.relationships import WalletRelationshipStore
@@ -27,7 +29,9 @@ class EntityService:
         self._relationships = WalletRelationshipStore()
         self._resolver = EntityResolver(self._store)
         self._redis: redis.Redis | None = None
+        self._http = httpx.AsyncClient(timeout=10.0)
         self._running = False
+        self._funding_scanned_wallets: set[str] = set()
 
     async def start(self) -> None:
         await self._store.ensure_schema()
@@ -64,6 +68,7 @@ class EntityService:
         self._running = False
         if self._redis:
             await self._redis.aclose()
+        await self._http.aclose()
         await self._behavior.close()
         await self._launch_history.close()
         await self._resolver.close()
@@ -175,6 +180,56 @@ class EntityService:
         }
         return source, destination, observed_at, amount_lamports, signature, evidence
 
+    async def _observe_wallet_funding(self, wallet: str) -> None:
+        """Capture recent inbound SOL transfers for an observed buyer wallet once per run."""
+        if not wallet or wallet in self._funding_scanned_wallets:
+            return
+        self._funding_scanned_wallets.add(wallet)
+        try:
+            transfers = await fetch_recent_inbound_transfers(
+                self._http,
+                rpc_url=settings.solana_rpc_url,
+                wallet=wallet,
+                signature_limit=settings.funding_scan_signature_limit,
+            )
+            for transfer in transfers:
+                observed_at = transfer.get("observed_at")
+                if isinstance(observed_at, (int, float)):
+                    observed_dt = datetime.fromtimestamp(float(observed_at), tz=timezone.utc)
+                elif isinstance(observed_at, str) and observed_at.strip():
+                    observed_dt = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+                    if observed_dt.tzinfo is None:
+                        observed_dt = observed_dt.replace(tzinfo=timezone.utc)
+                else:
+                    observed_dt = datetime.now(timezone.utc)
+                await self._relationships.record_funding_observation(
+                    source_wallet=str(transfer["source_wallet"]),
+                    destination_wallet=str(transfer["destination_wallet"]),
+                    observed_at=observed_dt,
+                    amount_lamports=int(transfer["amount_lamports"]),
+                    signature=str(transfer["signature"]),
+                    evidence={
+                        "evidence_basis": transfer.get(
+                            "evidence_basis", "direct_system_program_transfer"
+                        ),
+                        "source_event": "post_migration.buy",
+                        "observed_wallet": wallet,
+                        "slot": transfer.get("slot"),
+                    },
+                )
+            if transfers:
+                logger.info(
+                    "entity.wallet_funding_scanned",
+                    wallet=wallet,
+                    transfers=len(transfers),
+                )
+        except Exception as exc:
+            logger.warning(
+                "entity.wallet_funding_scan_failed",
+                wallet=wallet,
+                error=str(exc)[:200],
+            )
+
     async def _handle(self, msg_id: str, fields: dict[str, str]) -> None:
         """Process one stream event and ACK only after successful processing."""
         assert self._redis is not None
@@ -221,6 +276,11 @@ class EntityService:
             creator = payload.get("creator") or payload.get("deployer")
             if creator:
                 await self._resolver.ensure_deployer_observed(creator)
+
+        elif et == "post_migration.buy":
+            wallet = payload.get("wallet")
+            if isinstance(wallet, str) and wallet:
+                await self._observe_wallet_funding(wallet)
 
         elif et == "post_migration.tracking_completed":
             mint, status, metadata = self._outcome_payload(event)
