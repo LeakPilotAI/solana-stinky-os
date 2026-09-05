@@ -63,6 +63,7 @@ async def funding_history_for_entity(
                        wfo.amount_lamports,
                        wfo.signature,
                        wfo.observed_at,
+                       wfo.created_at,
                        wfo.evidence
                 FROM wallet_funding_observations wfo
                 WHERE (wfo.source_wallet IN (SELECT wallet FROM entity_wallets_limited)
@@ -81,5 +82,8 @@ async def funding_history_for_entity(
         item = dict(row)
         if hasattr(item.get("observed_at"), "isoformat"):
             item["observed_at"] = item["observed_at"].isoformat()
+        if hasattr(item.get("created_at"), "isoformat"):
+            item["created_at"] = item["created_at"].isoformat()
+        item["ingested_at"] = item.get("created_at")
         result.append(item)
     return result

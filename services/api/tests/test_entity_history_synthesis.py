@@ -60,7 +60,8 @@ async def test_synthesis_combines_independent_evidence_bases_and_bounds():
         "bounded": {"wallet_limit": 2, "relationship_limit": 3, "funding_observation_limit": 3},
     }
     funding = [{"source_wallet": "SOURCE", "destination_wallet": "DEPLOYER", "amount_lamports": 123,
-                "signature": "sig-1", "evidence": {"evidence_basis": "direct_transfer_observation"}}]
+                "signature": "sig-1", "observed_at": observed.isoformat(), "ingested_at": observed.isoformat(),
+                "evidence": {"evidence_basis": "direct_transfer_observation"}}]
 
     result = await synthesize_entity_history(session, entity_id, graph=graph, funding_history=funding, launch_limit=999)
 
@@ -71,11 +72,17 @@ async def test_synthesis_combines_independent_evidence_bases_and_bounds():
     assert set(result["sources"]) == {"launch_history", "behavior_fingerprint", "wallet_relationships", "funding_history"}
     assert result["sources"]["launch_history"]["evidence_basis"] == "entity_launches"
     assert result["sources"]["launch_history"]["records"][0]["outcome_status"] is None
+    assert result["sources"]["launch_history"]["records"][0]["ingested_at"] == observed.isoformat()
+    assert result["sources"]["launch_history"]["provenance"]["observed_at"]["last"] == observed.isoformat()
+    assert result["sources"]["launch_history"]["provenance"]["ingested_at"]["last"] == observed.isoformat()
     assert result["sources"]["behavior_fingerprint"]["fingerprint"]["outcomes_unknown"] == 1
+    assert result["sources"]["behavior_fingerprint"]["provenance"]["computed_at"] == observed.isoformat()
+    assert result["sources"]["behavior_fingerprint"]["provenance"]["freshness_status"] == "UNKNOWN"
     assert result["sources"]["wallet_relationships"]["evidence_basis"] == "entity_wallets+wallet_relationships"
     assert result["sources"]["wallet_relationships"]["records"][0]["relationship_kind"] == "deployer_buyer_association"
     assert result["sources"]["funding_history"]["evidence_basis"] == "wallet_funding_observations+direct_transfer_observation"
     assert result["sources"]["funding_history"]["records"][0]["signature"] == "sig-1"
+    assert result["sources"]["funding_history"]["provenance"]["ingested_at"]["last"] == observed.isoformat()
     assert result["missing"] == []
 
 
@@ -107,6 +114,8 @@ async def test_synthesis_passes_temporal_cutoff_to_launch_and_fingerprint_querie
     assert session.params[0]["as_of"] == cutoff
     assert session.params[1]["as_of"] == cutoff
     assert result["as_of"] == cutoff.isoformat()
+    assert result["sources"]["launch_history"]["provenance"]["freshness_status"] == "HISTORICAL_AS_OF"
+    assert result["sources"]["behavior_fingerprint"]["provenance"]["freshness_status"] == "HISTORICAL_AS_OF"
 
 
 def test_canonical_contract_defaults_missing_sources_to_unknown():
@@ -116,3 +125,6 @@ def test_canonical_contract_defaults_missing_sources_to_unknown():
     assert result["status"] == "KNOWN_ENTITY"
     assert set(result["sources"]) == {"launch_history", "behavior_fingerprint", "wallet_relationships", "funding_history"}
     assert result["missing"] == ["launch_history", "behavior_fingerprint", "wallet_relationships", "funding_history"]
+    assert result["sources"]["launch_history"]["provenance"]["freshness_status"] == "UNKNOWN"
+    assert result["sources"]["launch_history"]["provenance"]["observed_at"] == {"first": None, "last": None}
+    assert result["sources"]["launch_history"]["provenance"]["ingested_at"] == {"first": None, "last": None}

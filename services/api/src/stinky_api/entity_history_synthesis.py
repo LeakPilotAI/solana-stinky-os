@@ -40,6 +40,42 @@ def _unknown_source(reason: str) -> dict[str, Any]:
     return {"status": "UNKNOWN", "records": [], "missing": [reason]}
 
 
+def _source_provenance(
+    source: dict[str, Any],
+    *,
+    source_name: str,
+    as_of: datetime | None,
+) -> dict[str, Any]:
+    """Expose provenance without inventing freshness or timestamps."""
+    records = source.get("records") or []
+    observed: list[str] = []
+    ingested: list[str] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        for key in ("observed_at", "first_seen_at", "first_launch_at"):
+            value = record.get(key)
+            if value is not None:
+                observed.append(str(value))
+                break
+        value = record.get("ingested_at")
+        if value is not None:
+            ingested.append(str(value))
+    computed_at = source.get("computed_at")
+    result = {
+        "evidence_source": source_name,
+        "evidence_basis": source.get("evidence_basis") or "UNKNOWN",
+        "observed_at": {"first": min(observed) if observed else None, "last": max(observed) if observed else None},
+        "ingested_at": {"first": min(ingested) if ingested else None, "last": max(ingested) if ingested else None},
+        "computed_at": _iso(computed_at) if computed_at is not None else None,
+        "freshness_status": "UNKNOWN",
+    }
+    if as_of is not None:
+        result["as_of"] = as_of.isoformat()
+        result["freshness_status"] = "HISTORICAL_AS_OF"
+    return result
+
+
 async def synthesize_entity_history(
     session: AsyncSession,
     entity_id: UUID,
@@ -90,6 +126,10 @@ async def synthesize_entity_history(
             item = dict(row)
             item["observed_at"] = _iso(item.get("observed_at"))
             item["created_at"] = _iso(item.get("created_at"))
+            item["ingested_at"] = item.get("created_at")
+            metadata = item.get("outcome_meta") or {}
+            if isinstance(metadata, dict):
+                item["outcome_observed_at"] = metadata.get("observed_at")
             launches.append(item)
         launch_history = {"status": "OBSERVED", "records": launches, "evidence_basis": "entity_launches"}
     except Exception:
@@ -142,6 +182,14 @@ async def synthesize_entity_history(
         "records": list(funding_history),
         "evidence_basis": "wallet_funding_observations+direct_transfer_observation",
     }
+
+    for source_name, source in (
+        ("launch_history", launch_history),
+        ("behavior_fingerprint", behavior),
+        ("wallet_relationships", relationships),
+        ("funding_history", funding),
+    ):
+        source["provenance"] = _source_provenance(source, source_name=source_name, as_of=cutoff)
 
     history = {
         "status": "KNOWN_ENTITY",

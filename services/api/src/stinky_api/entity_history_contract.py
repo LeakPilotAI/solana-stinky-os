@@ -17,6 +17,17 @@ _SOURCE_KEYS = (
 )
 
 
+def _unknown_provenance(source_name: str) -> dict[str, Any]:
+    return {
+        "evidence_source": source_name,
+        "evidence_basis": "UNKNOWN",
+        "observed_at": {"first": None, "last": None},
+        "ingested_at": {"first": None, "last": None},
+        "computed_at": None,
+        "freshness_status": "UNKNOWN",
+    }
+
+
 def canonicalize_entity_history(history: dict[str, Any]) -> dict[str, Any]:
     """Return a stable, bounded contract for downstream investigation consumers."""
     bounded = dict(history.get("bounded") or {})
@@ -27,6 +38,7 @@ def canonicalize_entity_history(history: dict[str, Any]) -> dict[str, Any]:
         source = dict(history.get(key) or {})
         source.setdefault("status", "UNKNOWN")
         source.setdefault("records", [])
+        source.setdefault("provenance", _unknown_provenance(key))
         if source.get("status") == "UNKNOWN":
             missing.extend(str(item) for item in (source.get("missing") or [key]))
         sources[key] = source
