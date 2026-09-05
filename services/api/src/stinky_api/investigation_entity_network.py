@@ -14,6 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from stinky_api.entity_graph import _assemble
+from stinky_api.entity_history_analogues import find_historical_analogues
 from stinky_api.entity_history_synthesis import synthesize_entity_history
 from stinky_api.funding_history import funding_history_for_entity
 
@@ -25,10 +26,18 @@ def _unknown(*, status: str, wallet_limit: int, relationship_limit: int) -> dict
         "wallets": [],
         "relationships": [],
         "funding_history": [],
+        "historical_analogues": {
+            "status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN",
+            "records": [],
+            "missing": ["entity_history"],
+            "evidence_only": True,
+        },
         "bounded": {
             "wallet_limit": wallet_limit,
             "relationship_limit": relationship_limit,
             "funding_observation_limit": relationship_limit,
+            "analogue_limit": 10,
+            "analogue_candidate_limit": 500,
         },
         "evidence_only": True,
         "missing": ["entity_history"],
@@ -42,10 +51,14 @@ async def entity_network_for_investigation(
     creator_wallet: str | None = None,
     wallet_limit: int = 100,
     relationship_limit: int = 500,
+    analogue_limit: int = 10,
+    analogue_candidate_limit: int = 500,
 ) -> dict[str, Any]:
-    """Resolve creator entity and return bounded network plus funding evidence."""
+    """Resolve creator entity and return bounded network plus historical evidence."""
     wallet_limit = max(1, min(500, int(wallet_limit)))
     relationship_limit = max(1, min(500, int(relationship_limit)))
+    analogue_limit = max(1, min(50, int(analogue_limit)))
+    analogue_candidate_limit = max(analogue_limit, min(500, int(analogue_candidate_limit)))
 
     resolved_entity_id: UUID | None = None
     if entity_id:
@@ -125,10 +138,33 @@ async def entity_network_for_investigation(
             relationship_limit=relationship_limit,
         )
 
+    try:
+        historical_analogues = await find_historical_analogues(
+            session,
+            resolved_entity_id,
+            limit=analogue_limit,
+            candidate_limit=analogue_candidate_limit,
+        )
+    except Exception:
+        historical_analogues = {
+            "status": "UNKNOWN",
+            "records": [],
+            "missing": ["historical_analogues"],
+            "evidence_basis": "unknown_query",
+            "bounded": {
+                "limit": analogue_limit,
+                "candidate_limit": analogue_candidate_limit,
+            },
+            "evidence_only": True,
+        }
+
     graph["status"] = "KNOWN_ENTITY"
     graph["funding_history"] = funding_history
     graph["history"] = history
+    graph["historical_analogues"] = historical_analogues
     graph["bounded"]["funding_observation_limit"] = relationship_limit
     graph["bounded"]["launch_history_limit"] = relationship_limit
+    graph["bounded"]["analogue_limit"] = analogue_limit
+    graph["bounded"]["analogue_candidate_limit"] = analogue_candidate_limit
     graph["evidence_only"] = True
     return graph
