@@ -89,6 +89,43 @@ class WalletRelationshipStore:
             )
             await session.commit()
 
+    async def record_funding_observation(
+        self,
+        *,
+        source_wallet: str,
+        destination_wallet: str,
+        observed_at: datetime,
+        amount_lamports: int | None = None,
+        signature: str | None = None,
+        evidence: dict[str, Any] | None = None,
+    ) -> None:
+        """Persist one directly observed wallet-to-wallet funding event.
+
+        This records only supplied transfer evidence. It does not infer ownership,
+        intent, identity, quality, risk, or future behavior from the transfer.
+        """
+        if source_wallet == destination_wallet:
+            return
+        observed_at = observed_at if observed_at.tzinfo else observed_at.replace(tzinfo=timezone.utc)
+        payload = dict(evidence or {})
+        payload.update(
+            {
+                "evidence_basis": "direct_transfer_observation",
+                "amount_lamports": amount_lamports,
+                "signature": signature,
+            }
+        )
+        await self.record_relationship(
+            wallet_a=source_wallet,
+            wallet_b=destination_wallet,
+            relationship_kind="funding_observation",
+            observation_count=1,
+            first_seen_at=observed_at,
+            last_seen_at=observed_at,
+            confidence=1.0,
+            evidence=payload,
+        )
+
     async def record_deployer_buyer_relationships(self, limit: int = 500) -> int:
         """Persist factual deployer↔buyer associations observed on the same launch mint."""
         limit = max(1, min(limit, 500))
