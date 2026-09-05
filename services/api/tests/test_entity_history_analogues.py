@@ -51,7 +51,7 @@ async def test_historical_analogues_are_descriptive_and_preserve_missing_dimensi
         "cadence_bucket": "high_frequency",
     }
     session = Session(
-        target=target,
+        target={"fingerprint": target},
         candidates=[
             {
                 "entity_id": "analogue-1",
