@@ -60,6 +60,16 @@ def _distance(target: dict[str, Any], candidate: dict[str, Any]) -> tuple[float,
     return numeric_distance, len(matched), matched
 
 
+def _unknown(reason: str) -> dict[str, Any]:
+    return {
+        "status": "UNKNOWN",
+        "records": [],
+        "missing": [reason],
+        "evidence_basis": "entity_behavior_fingerprints",
+        "evidence_only": True,
+    }
+
+
 async def find_historical_analogues(
     session: AsyncSession,
     entity_id: UUID,
@@ -85,12 +95,7 @@ async def find_historical_analogues(
             )
         ).mappings().first()
         if not target_row or not isinstance(target_row.get("fingerprint"), dict):
-            return {
-                "status": "UNKNOWN",
-                "records": [],
-                "missing": ["behavior_fingerprint"],
-                "evidence_basis": "entity_behavior_fingerprints",
-            }
+            return _unknown("behavior_fingerprint")
 
         candidate_rows = (
             await session.execute(
@@ -107,12 +112,7 @@ async def find_historical_analogues(
             )
         ).mappings().all()
     except Exception:
-        return {
-            "status": "UNKNOWN",
-            "records": [],
-            "missing": ["historical_analogues"],
-            "evidence_basis": "unknown_table_or_query",
-        }
+        return _unknown("historical_analogues") | {"evidence_basis": "unknown_table_or_query"}
 
     target = target_row["fingerprint"]
     records: list[dict[str, Any]] = []
@@ -140,7 +140,7 @@ async def find_historical_analogues(
 
     records.sort(key=lambda item: (item["similarity_distance"], -item["matched_dimension_count"], item["entity_id"]))
     return {
-        "status": "OBSERVED" if records else "OBSERVED_EMPTY",
+        "status": "OBSERVED",
         "records": records[:limit],
         "evidence_basis": "entity_behavior_fingerprints",
         "bounded": {"limit": limit, "candidate_limit": candidate_limit},

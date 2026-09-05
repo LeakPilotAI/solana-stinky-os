@@ -113,7 +113,7 @@ async def test_synthesis_combines_independent_evidence_bases_and_bounds():
     assert result["sources"]["wallet_relationships"]["records"][0]["relationship_kind"] == "deployer_buyer_association"
     assert result["sources"]["funding_history"]["evidence_basis"] == "wallet_funding_observations+direct_transfer_observation"
     assert result["sources"]["funding_history"]["records"][0]["signature"] == "sig-1"
-    assert result["sources"]["historical_analogues"]["status"] == "OBSERVED_EMPTY"
+    assert result["sources"]["historical_analogues"]["status"] == "OBSERVED"
     assert result["missing"] == []
 
 
@@ -128,11 +128,12 @@ async def test_missing_behavior_fingerprint_remains_unknown():
     )
 
     assert result["sources"]["behavior_fingerprint"]["status"] == "UNKNOWN"
-    assert result["missing"] == ["behavior_fingerprint"]
+    assert result["missing"] == ["behavior_fingerprint", "historical_analogues"]
     assert result["sources"]["launch_history"]["status"] == "OBSERVED"
     assert result["sources"]["launch_history"]["records"] == []
     assert result["sources"]["funding_history"]["records"] == []
     assert result["sources"]["historical_analogues"]["status"] == "UNKNOWN"
+    assert result["sources"]["historical_analogues"]["evidence_only"] is True
     assert result["evidence_only"] is True
 
 
@@ -218,4 +219,4 @@ async def test_analogue_discovery_is_unknown_without_target_fingerprint():
     assert result["status"] == "UNKNOWN"
     assert result["records"] == []
     assert result["missing"] == ["behavior_fingerprint"]
-    assert result["evidence_only"] is not True
+    assert result["evidence_only"] is True
