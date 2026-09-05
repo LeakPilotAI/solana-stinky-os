@@ -48,9 +48,13 @@ class EntityResolver:
             "co_buy_links": 0,
             "co_buy_skipped": 0,
             "co_buy_pairs_seen": 0,
+            "deployer_buyer_pairs_seen": 0,
             "strong_links": 0,
             "entity_merges": 0,
         }
+
+        deployer_buyer_pairs = await self._relationships.record_deployer_buyer_relationships()
+        stats["deployer_buyer_pairs_seen"] = deployer_buyer_pairs
 
         deployers = await self._store.deployers_from_events()
         for d in deployers:
