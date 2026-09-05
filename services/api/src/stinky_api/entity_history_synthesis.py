@@ -13,6 +13,8 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from stinky_api.entity_history_contract import canonicalize_entity_history
+
 
 def _iso(value: Any) -> Any:
     return value.isoformat() if hasattr(value, "isoformat") else value
@@ -105,7 +107,7 @@ async def synthesize_entity_history(
         "evidence_basis": "wallet_funding_observations+direct_transfer_observation",
     }
 
-    return {
+    history = {
         "status": "KNOWN_ENTITY",
         "entity_id": str(entity_id),
         "launch_history": launch_history,
@@ -120,3 +122,4 @@ async def synthesize_entity_history(
         },
         "evidence_only": True,
     }
+    return canonicalize_entity_history(history)
