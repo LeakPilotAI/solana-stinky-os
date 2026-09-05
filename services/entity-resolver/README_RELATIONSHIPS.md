@@ -1,1 +1,0 @@
-Relationship evidence is persisted separately from entity identity and remains descriptive.
