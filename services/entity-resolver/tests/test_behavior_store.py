@@ -72,4 +72,4 @@ async def test_refresh_entity_persists_fingerprint() -> None:
     assert persisted["outcomes_known"] == 1
     assert persisted["completed_count"] == 1
     assert persisted["outcomes_unknown"] == 1
-    assert '"evidence_basis":"entity_launches"' in persisted["fingerprint"]
+    assert '"evidence_basis":"entity_launches+entity_wallets+early_buyer_observations"' in persisted["fingerprint"]
