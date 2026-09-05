@@ -12,6 +12,7 @@ import structlog
 from entity_resolver.behavior import BehaviorFingerprintStore
 from entity_resolver.config import settings
 from entity_resolver.launch_history import LaunchHistoryStore
+from entity_resolver.relationships import WalletRelationshipStore
 from entity_resolver.resolver import EntityResolver
 from entity_resolver.store import EntityStore
 
@@ -23,6 +24,7 @@ class EntityService:
         self._store = EntityStore()
         self._launch_history = LaunchHistoryStore()
         self._behavior = BehaviorFingerprintStore()
+        self._relationships = WalletRelationshipStore()
         self._resolver = EntityResolver(self._store)
         self._redis: redis.Redis | None = None
         self._running = False
@@ -31,6 +33,7 @@ class EntityService:
         await self._store.ensure_schema()
         await self._launch_history.ensure_schema()
         await self._behavior.ensure_schema()
+        await self._relationships.ensure_schema()
         self._redis = redis.from_url(
             settings.redis_url,
             decode_responses=True,
@@ -64,6 +67,7 @@ class EntityService:
         await self._behavior.close()
         await self._launch_history.close()
         await self._resolver.close()
+        await self._relationships.close()
 
     async def run_forever(self) -> None:
         await self.start()
@@ -127,6 +131,49 @@ class EntityService:
                 return mint, None, {}
         metadata = {k: v for k, v in payload.items() if k != "mint"}
         return mint, status, metadata
+
+    @staticmethod
+    def _funding_payload(event: dict[str, object]) -> tuple[str, str, datetime, int | None, str | None, dict[str, object]] | None:
+        """Extract only explicitly identified native-SOL transfer evidence.
+
+        Missing asset identity is rejected rather than guessing that a generic
+        token transfer is funding. No ownership or intent is inferred.
+        """
+        payload = event.get("payload") or {}
+        if not isinstance(payload, dict):
+            return None
+        asset_type = str(payload.get("asset_type") or payload.get("asset") or "").strip().lower()
+        if asset_type not in {"sol", "native_sol", "native"}:
+            return None
+
+        source = payload.get("source_wallet") or payload.get("from_wallet") or payload.get("from")
+        destination = payload.get("destination_wallet") or payload.get("to_wallet") or payload.get("to")
+        if not isinstance(source, str) or not source or not isinstance(destination, str) or not destination:
+            return None
+        if source == destination:
+            return None
+
+        amount = payload.get("amount_lamports")
+        if amount is None:
+            amount = payload.get("lamports")
+        try:
+            amount_lamports = int(amount) if amount is not None else None
+        except (TypeError, ValueError):
+            return None
+        if amount_lamports is not None and amount_lamports < 0:
+            return None
+
+        signature = event.get("signature") or payload.get("signature")
+        signature = str(signature) if signature else None
+        observed_at = EntityService._event_timestamp(event)
+        evidence = {
+            "event_type": event.get("event_type"),
+            "event_id": event.get("event_id"),
+            "slot": event.get("slot"),
+            "asset_type": asset_type,
+            "evidence_basis": "canonical_token_transfer_event",
+        }
+        return source, destination, observed_at, amount_lamports, signature, evidence
 
     async def _handle(self, msg_id: str, fields: dict[str, str]) -> None:
         """Process one stream event and ACK only after successful processing."""
@@ -192,6 +239,26 @@ class EntityService:
                         status=status,
                         cadence_bucket=(fingerprint or {}).get("cadence_bucket"),
                     )
+
+        elif et == "token.transfer":
+            funding = self._funding_payload(event)
+            if funding:
+                source, destination, observed_at, amount_lamports, signature, evidence = funding
+                await self._relationships.record_funding_observation(
+                    source_wallet=source,
+                    destination_wallet=destination,
+                    observed_at=observed_at,
+                    amount_lamports=amount_lamports,
+                    signature=signature,
+                    evidence=evidence,
+                )
+                logger.debug(
+                    "entity.funding_observed",
+                    source=source,
+                    destination=destination,
+                    amount_lamports=amount_lamports,
+                    signature=signature,
+                )
 
         await self._redis.xack(
             settings.event_stream,
