@@ -30,13 +30,15 @@ class WalletRelationshipStore:
     async def ensure_schema(self) -> None:
         from pathlib import Path
 
-        path = Path(__file__).resolve().parents[2] / "migrations" / "005_wallet_relationships.sql"
-        sql = path.read_text(encoding="utf-8")
+        base = Path(__file__).resolve().parents[2] / "migrations"
+        paths = [base / "005_wallet_relationships.sql", base / "006_funding_observations.sql"]
         async with self._sessions() as session:
-            for statement in sql.split(";"):
-                statement = statement.strip()
-                if statement:
-                    await session.execute(text(statement))
+            for path in paths:
+                sql = path.read_text(encoding="utf-8")
+                for statement in sql.split(";"):
+                    statement = statement.strip()
+                    if statement:
+                        await session.execute(text(statement))
             await session.commit()
 
     async def record_relationship(
@@ -99,14 +101,20 @@ class WalletRelationshipStore:
         amount_lamports: int | None = None,
         signature: str | None = None,
         evidence: dict[str, Any] | None = None,
-    ) -> None:
-        """Persist one directly observed wallet-to-wallet funding event.
+    ) -> bool:
+        """Persist one direct funding observation, durably deduped by signature.
+
+        A Solana transaction signature identifies the observed transfer. When a
+        signature is supplied, the observation row and relationship increment are
+        committed atomically, so service restarts cannot inflate the relationship
+        count by replaying the same transaction. Missing signatures retain the
+        prior behavior and are recorded as an observation without deduplication.
 
         This records only supplied transfer evidence. It does not infer ownership,
         intent, identity, quality, risk, or future behavior from the transfer.
         """
         if source_wallet == destination_wallet:
-            return
+            return False
         observed_at = observed_at if observed_at.tzinfo else observed_at.replace(tzinfo=timezone.utc)
         payload = dict(evidence or {})
         payload.update(
@@ -116,16 +124,67 @@ class WalletRelationshipStore:
                 "signature": signature,
             }
         )
-        await self.record_relationship(
-            wallet_a=source_wallet,
-            wallet_b=destination_wallet,
-            relationship_kind="funding_observation",
-            observation_count=1,
-            first_seen_at=observed_at,
-            last_seen_at=observed_at,
-            confidence=1.0,
-            evidence=payload,
-        )
+        a, b = sorted((source_wallet, destination_wallet))
+        async with self._sessions() as session:
+            if signature:
+                inserted = (
+                    await session.execute(
+                        text(
+                            """
+                            INSERT INTO wallet_funding_observations (
+                                signature, source_wallet, destination_wallet,
+                                observed_at, amount_lamports, evidence
+                            ) VALUES (
+                                :signature, :source, :destination,
+                                :observed_at, :amount_lamports, CAST(:evidence AS jsonb)
+                            )
+                            ON CONFLICT (signature) DO NOTHING
+                            RETURNING signature
+                            """
+                        ),
+                        {
+                            "signature": signature,
+                            "source": source_wallet,
+                            "destination": destination_wallet,
+                            "observed_at": observed_at,
+                            "amount_lamports": amount_lamports,
+                            "evidence": orjson.dumps(payload).decode(),
+                        },
+                    )
+                ).first()
+                if inserted is None:
+                    await session.rollback()
+                    return False
+
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO wallet_relationships (
+                        wallet_a, wallet_b, relationship_kind, observation_count,
+                        first_seen_at, last_seen_at, confidence, evidence
+                    ) VALUES (
+                        :a, :b, 'funding_observation', 1,
+                        :observed_at, :observed_at, 1.0, CAST(:evidence AS jsonb)
+                    )
+                    ON CONFLICT (wallet_a, wallet_b, relationship_kind)
+                    DO UPDATE SET
+                        observation_count = wallet_relationships.observation_count + 1,
+                        first_seen_at = LEAST(wallet_relationships.first_seen_at, EXCLUDED.first_seen_at),
+                        last_seen_at = GREATEST(wallet_relationships.last_seen_at, EXCLUDED.last_seen_at),
+                        confidence = GREATEST(COALESCE(wallet_relationships.confidence, 0), 1.0),
+                        evidence = wallet_relationships.evidence || EXCLUDED.evidence,
+                        updated_at = now()
+                    """
+                ),
+                {
+                    "a": a,
+                    "b": b,
+                    "observed_at": observed_at,
+                    "evidence": orjson.dumps(payload).decode(),
+                },
+            )
+            await session.commit()
+            return True
 
     async def record_deployer_buyer_relationships(self, limit: int = 500) -> int:
         """Persist factual deployer↔buyer associations observed on the same launch mint."""
