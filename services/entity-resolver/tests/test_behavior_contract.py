@@ -5,4 +5,4 @@ def test_behavioral_fingerprint_contract_is_descriptive_only() -> None:
     forbidden = {"quality_score", "risk_score", "prediction", "buy", "sell", "position_size"}
 
     assert forbidden.isdisjoint(result)
-    assert result["evidence_basis"] == "entity_launches"
+    assert result["evidence_basis"] == "entity_launches+entity_wallets+early_buyer_observations"
