@@ -33,7 +33,11 @@ class Session:
         self.params.append(params)
         if self.calls == 1:
             return Result(first=self.target)
-        return Result(rows=self.candidates)
+        cutoff = params.get("as_of")
+        rows = self.candidates
+        if cutoff is not None:
+            rows = [row for row in rows if row.get("computed_at") is None or row["computed_at"] <= cutoff]
+        return Result(rows=rows)
 
 
 @pytest.mark.asyncio
@@ -178,21 +182,21 @@ async def test_future_fingerprint_snapshots_are_excluded_by_cutoff():
 
     result = await find_historical_analogues(session, entity_id, as_of=cutoff)
 
-    # The SQL cutoff is the source of truth; a database-backed session cannot
-    # return the future row. This fixture also guards the returned evidence
-    # contract if a query adapter applies filtering before hydration.
+    assert [row["entity_id"] for row in result["records"]] == ["before-candidate"]
     assert result["temporal_cutoff_enforced"] is True
     assert all(
         datetime.fromisoformat(row["candidate_fingerprint_computed_at"]) <= cutoff
         for row in result["records"]
-    ) if result["records"] else True
-    assert session.params[0]["as_of"] == cutoff
-    assert session.params[1]["as_of"] == cutoff
+    )
 
 
 @pytest.mark.asyncio
 async def test_invalid_analogue_cutoff_is_unknown():
-    result = await find_historical_analogues(Session(target={"fingerprint": {"launch_count": 1}}), uuid4(), as_of="not-a-timestamp")
+    result = await find_historical_analogues(
+        Session(target={"fingerprint": {"launch_count": 1}}),
+        uuid4(),
+        as_of="not-a-timestamp",
+    )
 
     assert result["status"] == "UNKNOWN"
     assert result["records"] == []
