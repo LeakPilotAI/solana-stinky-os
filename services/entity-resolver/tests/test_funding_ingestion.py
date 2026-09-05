@@ -3,9 +3,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from entity_resolver.service import EntityService
 
 
+@pytest.mark.asyncio
 async def test_observe_wallet_funding_persists_direct_inbound_transfer_once() -> None:
     service = EntityService.__new__(EntityService)
     service._funding_scanned_wallets = set()
