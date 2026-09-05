@@ -32,7 +32,34 @@ def test_behavioral_fingerprint_is_descriptive_and_preserves_unknown_outcomes() 
     assert result["last_launch_at"] == (start + timedelta(hours=6)).isoformat()
     assert result["median_launch_interval_sec"] == 10800.0
     assert result["cadence_bucket"] == "active"
-    assert result["evidence_basis"] == "entity_launches"
+    assert result["evidence_basis"] == "entity_launches+entity_wallets+early_buyer_observations"
+    assert result["early_buyer_wallet_count"] is None
+    assert result["early_buyer_mint_count"] is None
+    assert result["repeat_early_buyer_wallet_count"] is None
+
+
+def test_wallet_behavior_is_descriptive() -> None:
+    result = build_behavioral_fingerprint(
+        [],
+        wallets=[
+            {"wallet": "primary", "role": "primary"},
+            {"wallet": "buyer1", "role": "early_buyer"},
+            {"wallet": "buyer2", "role": "early_buyer"},
+        ],
+        early_buy_stats={
+            "early_buyer_wallet_count": 2,
+            "early_buyer_mint_count": 5,
+            "repeat_early_buyer_wallet_count": 1,
+            "evidence_basis": "migration_buyers",
+        },
+    )
+
+    assert result["wallet_count"] == 3
+    assert result["wallet_role_counts"] == {"early_buyer": 2, "primary": 1}
+    assert result["early_buyer_wallet_count"] == 2
+    assert result["early_buyer_mint_count"] == 5
+    assert result["repeat_early_buyer_wallet_count"] == 1
+    assert result["early_buyer_evidence"] == "migration_buyers"
 
 
 def test_empty_history_is_unknown_not_negative() -> None:
@@ -44,3 +71,7 @@ def test_empty_history_is_unknown_not_negative() -> None:
     assert result["outcomes_unknown"] == 0
     assert result["outcome_coverage"] is None
     assert result["cadence_bucket"] == "unknown"
+    assert result["wallet_count"] == 0
+    assert result["early_buyer_wallet_count"] is None
+    assert result["early_buyer_mint_count"] is None
+    assert result["repeat_early_buyer_wallet_count"] is None
