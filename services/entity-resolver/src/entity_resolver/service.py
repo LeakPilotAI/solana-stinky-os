@@ -14,6 +14,7 @@ from entity_resolver.behavior import BehaviorFingerprintStore
 from entity_resolver.chain_evidence import fetch_recent_inbound_transfers
 from entity_resolver.config import settings
 from entity_resolver.launch_history import LaunchHistoryStore
+from entity_resolver.market_outcomes import MarketOutcomeStore
 from entity_resolver.relationships import WalletRelationshipStore
 from entity_resolver.resolver import EntityResolver
 from entity_resolver.store import EntityStore
@@ -25,6 +26,7 @@ class EntityService:
     def __init__(self) -> None:
         self._store = EntityStore()
         self._launch_history = LaunchHistoryStore()
+        self._market_outcomes = MarketOutcomeStore()
         self._behavior = BehaviorFingerprintStore()
         self._relationships = WalletRelationshipStore()
         self._resolver = EntityResolver(self._store)
@@ -36,6 +38,7 @@ class EntityService:
     async def start(self) -> None:
         await self._store.ensure_schema()
         await self._launch_history.ensure_schema()
+        await self._market_outcomes.ensure_schema()
         await self._behavior.ensure_schema()
         await self._relationships.ensure_schema()
         self._redis = redis.from_url(
@@ -70,6 +73,7 @@ class EntityService:
             await self._redis.aclose()
         await self._http.aclose()
         await self._behavior.close()
+        await self._market_outcomes.close()
         await self._launch_history.close()
         await self._resolver.close()
         await self._relationships.close()
