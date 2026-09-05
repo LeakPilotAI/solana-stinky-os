@@ -51,7 +51,7 @@ async def historical_outcomes_for_analogues(
                            outcome_status,
                            outcome_meta
                     FROM entity_launches
-                    WHERE entity_id = ANY(:entity_ids)
+                    WHERE entity_id = ANY(CAST(:entity_ids AS uuid[]))
                     ORDER BY entity_id, observed_at DESC, id DESC
                     """
                 ),
