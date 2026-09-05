@@ -125,3 +125,6 @@ def test_canonical_contract_defaults_missing_sources_to_unknown():
     assert result["status"] == "KNOWN_ENTITY"
     assert set(result["sources"]) == {"launch_history", "behavior_fingerprint", "wallet_relationships", "funding_history"}
     assert result["missing"] == ["launch_history", "behavior_fingerprint", "wallet_relationships", "funding_history"]
+    assert result["sources"]["launch_history"]["provenance"]["freshness_status"] == "UNKNOWN"
+    assert result["sources"]["launch_history"]["provenance"]["observed_at"] == {"first": None, "last": None}
+    assert result["sources"]["launch_history"]["provenance"]["ingested_at"] == {"first": None, "last": None}
