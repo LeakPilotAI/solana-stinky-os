@@ -21,3 +21,21 @@ def test_relationship_contract_contains_evidence_only() -> None:
     assert forbidden.isdisjoint(relationship)
     assert relationship["evidence_basis"] == "migration_buyers"
     assert relationship["wallet_a"] < relationship["wallet_b"]
+
+
+def test_deployer_buyer_association_is_factual_and_not_a_prediction() -> None:
+    relationship = {
+        "relationship_kind": "deployer_buyer_association",
+        "wallet_a": "DEPLOYER",
+        "wallet_b": "BUYER",
+        "observed_mints": 3,
+        "confidence": 1.0,
+        "evidence_basis": "entity_launches+migration_buyers",
+        "confidence_basis": "direct_observed_role_association",
+        "first_seen_at": "2026-01-01T00:00:00+00:00",
+        "last_seen_at": "2026-01-03T00:00:00+00:00",
+    }
+    forbidden = {"quality_score", "risk_score", "prediction", "buy", "sell", "position_size"}
+    assert forbidden.isdisjoint(relationship)
+    assert relationship["evidence_basis"] == "entity_launches+migration_buyers"
+    assert relationship["first_seen_at"] < relationship["last_seen_at"]
