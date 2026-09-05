@@ -89,6 +89,52 @@ class WalletRelationshipStore:
             )
             await session.commit()
 
+    async def record_deployer_buyer_relationships(self, limit: int = 500) -> int:
+        """Persist factual deployer↔buyer associations observed on the same launch mint."""
+        limit = max(1, min(limit, 500))
+        async with self._sessions() as session:
+            try:
+                rows = (
+                    await session.execute(
+                        text(
+                            """
+                            SELECT el.deployer_wallet,
+                                   mb.wallet AS buyer_wallet,
+                                   COUNT(DISTINCT el.mint)::int AS observed_mints,
+                                   MIN(el.observed_at) AS first_seen_at,
+                                   MAX(el.observed_at) AS last_seen_at
+                            FROM entity_launches el
+                            JOIN migration_buyers mb ON mb.mint = el.mint
+                            WHERE el.mint IS NOT NULL
+                              AND mb.wallet IS NOT NULL
+                              AND el.deployer_wallet <> mb.wallet
+                            GROUP BY el.deployer_wallet, mb.wallet
+                            ORDER BY observed_mints DESC, last_seen_at DESC
+                            LIMIT :limit
+                            """
+                        ),
+                        {"limit": limit},
+                    )
+                ).mappings().all()
+            except Exception:
+                return 0
+
+        for row in rows:
+            await self.record_relationship(
+                wallet_a=row["deployer_wallet"],
+                wallet_b=row["buyer_wallet"],
+                relationship_kind="deployer_buyer_association",
+                observation_count=int(row["observed_mints"] or 1),
+                first_seen_at=row["first_seen_at"],
+                last_seen_at=row["last_seen_at"],
+                confidence=None,
+                evidence={
+                    "observed_mints": int(row["observed_mints"] or 0),
+                    "evidence_basis": "entity_launches+migration_buyers",
+                },
+            )
+        return len(rows)
+
     async def list_relationships(self, wallet: str, limit: int = 100) -> list[dict[str, Any]]:
         limit = max(1, min(limit, 500))
         async with self._sessions() as session:
