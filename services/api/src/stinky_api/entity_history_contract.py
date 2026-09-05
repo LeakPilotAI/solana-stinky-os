@@ -14,6 +14,7 @@ _SOURCE_KEYS = (
     "behavior_fingerprint",
     "wallet_relationships",
     "funding_history",
+    "historical_analogues",
 )
 
 

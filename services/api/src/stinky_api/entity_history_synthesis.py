@@ -14,6 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from stinky_api.entity_history_contract import canonicalize_entity_history
+from stinky_api.entity_history_analogues import find_historical_analogues
 
 
 def _iso(value: Any) -> Any:
@@ -94,6 +95,12 @@ async def synthesize_entity_history(
         behavior = _unknown_source("behavior_fingerprint")
         behavior["evidence_basis"] = "unknown_table_or_query"
 
+    try:
+        analogues = await find_historical_analogues(session, entity_id, limit=10, candidate_limit=500)
+    except Exception:
+        analogues = _unknown_source("historical_analogues")
+        analogues["evidence_basis"] = "unknown_table_or_query"
+
     relationships = {
         "status": "OBSERVED",
         "wallets": list(graph.get("wallets") or []),
@@ -114,11 +121,14 @@ async def synthesize_entity_history(
         "behavior_fingerprint": behavior,
         "wallet_relationships": relationships,
         "funding_history": funding,
+        "historical_analogues": analogues,
         "bounded": {
             "launch_limit": launch_limit,
             "wallet_limit": graph.get("bounded", {}).get("wallet_limit"),
             "relationship_limit": graph.get("bounded", {}).get("relationship_limit"),
             "funding_observation_limit": graph.get("bounded", {}).get("funding_observation_limit"),
+            "analogue_limit": analogues.get("bounded", {}).get("limit"),
+            "analogue_candidate_limit": analogues.get("bounded", {}).get("candidate_limit"),
         },
         "evidence_only": True,
     }
