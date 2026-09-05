@@ -14,6 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from stinky_api.entity_graph import _assemble
+from stinky_api.funding_history import funding_history_for_entity
 
 
 def _unknown(*, status: str, wallet_limit: int, relationship_limit: int) -> dict[str, Any]:
@@ -22,9 +23,11 @@ def _unknown(*, status: str, wallet_limit: int, relationship_limit: int) -> dict
         "entity": None,
         "wallets": [],
         "relationships": [],
+        "funding_history": [],
         "bounded": {
             "wallet_limit": wallet_limit,
             "relationship_limit": relationship_limit,
+            "funding_observation_limit": relationship_limit,
         },
         "evidence_only": True,
         "missing": ["entity_history"],
@@ -39,7 +42,7 @@ async def entity_network_for_investigation(
     wallet_limit: int = 100,
     relationship_limit: int = 500,
 ) -> dict[str, Any]:
-    """Resolve the creator entity and return its bounded descriptive graph."""
+    """Resolve creator entity and return bounded network plus funding evidence."""
     wallet_limit = max(1, min(500, int(wallet_limit)))
     relationship_limit = max(1, min(500, int(relationship_limit)))
 
@@ -95,6 +98,18 @@ async def entity_network_for_investigation(
             wallet_limit,
             relationship_limit,
         )
+        if graph is None:
+            return _unknown(
+                status="UNKNOWN",
+                wallet_limit=wallet_limit,
+                relationship_limit=relationship_limit,
+            )
+        funding_history = await funding_history_for_entity(
+            session,
+            resolved_entity_id,
+            wallet_limit=wallet_limit,
+            observation_limit=relationship_limit,
+        )
     except Exception:
         return _unknown(
             status="UNKNOWN",
@@ -102,13 +117,8 @@ async def entity_network_for_investigation(
             relationship_limit=relationship_limit,
         )
 
-    if graph is None:
-        return _unknown(
-            status="UNKNOWN",
-            wallet_limit=wallet_limit,
-            relationship_limit=relationship_limit,
-        )
-
     graph["status"] = "KNOWN_ENTITY"
+    graph["funding_history"] = funding_history
+    graph["bounded"]["funding_observation_limit"] = relationship_limit
     graph["evidence_only"] = True
     return graph
