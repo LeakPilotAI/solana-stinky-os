@@ -89,7 +89,10 @@ async def filter_evaluate(payload: dict) -> dict:
 
 
 @app.post("/v1/investigate")
-async def investigate_endpoint(payload: dict) -> dict:
+async def investigate_endpoint(
+    payload: dict,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
     """Gate 1 then investigation. Does not fabricate wallets, fees, or history."""
     from stinky_core.admission import FILTER_VERSION, evaluate_gate1
     from stinky_core.intelligence import can_alert_investigation, investigate
@@ -110,6 +113,18 @@ async def investigate_endpoint(payload: dict) -> dict:
             "alert_reason": decision.rejection_reason,
         }
     inv = investigate(payload)
+
+    from stinky_api.investigation_entity_network import (
+        entity_network_for_investigation,
+    )
+
+    entity_network = await entity_network_for_investigation(
+        session,
+        creator_wallet=payload.get("creator")
+        or payload.get("deployer")
+        or payload.get("creator_wallet"),
+    )
+
     alert_ok, alert_reason = can_alert_investigation(True, inv)
     return {
         "gate1_passed": True,
@@ -137,7 +152,11 @@ async def investigate_endpoint(payload: dict) -> dict:
         "band_ledger": inv.band_ledger,
         "correlation_id": inv.correlation_id,
         "filter_version": decision.filter_version or FILTER_VERSION,
-        "investigation": inv.to_dict(),
+        "entity_network": entity_network,
+        "investigation": {
+            **inv.to_dict(),
+            "entity_network": entity_network,
+        },
         "alert_ok": alert_ok,
         "alert_reason": alert_reason,
     }
