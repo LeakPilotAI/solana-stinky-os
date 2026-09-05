@@ -1,5 +1,7 @@
-import pytest
+from datetime import datetime, timezone
 from uuid import uuid4
+
+import pytest
 
 from stinky_api.historical_outcome_comparison import historical_outcomes_for_analogues
 
@@ -19,11 +21,17 @@ class Session:
     def __init__(self, rows=None, error=False):
         self.rows = rows or []
         self.error = error
+        self.params = []
 
     async def execute(self, statement, params):
+        self.params.append(params)
         if self.error:
             raise RuntimeError("query failed")
-        return Result(self.rows)
+        cutoff = params.get("as_of")
+        rows = self.rows
+        if cutoff is not None:
+            rows = [row for row in rows if row.get("observed_at") is None or row["observed_at"] <= cutoff]
+        return Result(rows)
 
 
 @pytest.mark.asyncio
@@ -61,6 +69,56 @@ async def test_historical_outcomes_are_descriptive_and_bounded():
     assert result["records"][0]["completed_count"] == 1
     assert result["records"][0]["outcomes_unknown"] == 0
     assert result["records"][0]["launches"][0]["outcome_observed"] is True
+
+
+@pytest.mark.asyncio
+async def test_historical_outcomes_respect_as_of_cutoff():
+    analogue_id = uuid4()
+    cutoff = datetime(2026, 9, 4, 12, tzinfo=timezone.utc)
+    session = Session([
+        {
+            "entity_id": str(analogue_id),
+            "mint": "before",
+            "event_id": "before-event",
+            "observed_at": datetime(2026, 9, 4, 11, tzinfo=timezone.utc),
+            "outcome_status": "completed",
+            "outcome_meta": {},
+        },
+        {
+            "entity_id": str(analogue_id),
+            "mint": "future",
+            "event_id": "future-event",
+            "observed_at": datetime(2026, 9, 4, 13, tzinfo=timezone.utc),
+            "outcome_status": "completed",
+            "outcome_meta": {},
+        },
+    ])
+
+    result = await historical_outcomes_for_analogues(
+        session,
+        [{"entity_id": str(analogue_id)}],
+        as_of=cutoff,
+    )
+
+    launches = result["records"][0]["launches"]
+    assert [launch["mint"] for launch in launches] == ["before"]
+    assert result["as_of"] == cutoff.isoformat()
+    assert result["temporal_cutoff_enforced"] is True
+    assert session.params[0]["as_of"] == cutoff
+
+
+@pytest.mark.asyncio
+async def test_invalid_outcome_cutoff_is_unknown():
+    result = await historical_outcomes_for_analogues(
+        Session(),
+        [{"entity_id": str(uuid4())}],
+        as_of="not-a-timestamp",
+    )
+
+    assert result["status"] == "UNKNOWN"
+    assert result["records"] == []
+    assert result["missing"] == ["invalid_as_of"]
+    assert result["evidence_only"] is True
 
 
 @pytest.mark.asyncio
