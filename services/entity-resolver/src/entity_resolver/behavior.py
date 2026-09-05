@@ -170,7 +170,7 @@ class BehaviorFingerprintStore:
                             SELECT
                                 COUNT(DISTINCT mb.wallet)::int AS early_buyer_wallet_count,
                                 COUNT(DISTINCT mb.mint)::int AS early_buyer_mint_count,
-                                COUNT(*) FILTER (WHERE wallet_counts.mint_count >= 2)::int
+                                COUNT(DISTINCT mb.wallet) FILTER (WHERE wallet_counts.mint_count >= 2)::int
                                     AS repeat_early_buyer_wallet_count
                             FROM migration_buyers mb
                             JOIN entity_wallets ew ON ew.wallet = mb.wallet
