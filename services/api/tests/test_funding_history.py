@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -30,23 +31,13 @@ class FakeSession:
 @pytest.mark.asyncio
 async def test_funding_history_returns_direct_evidence_and_enforces_bounds():
     observed = SimpleNamespace(isoformat=lambda: "2026-09-04T00:00:00+00:00")
-    session = FakeSession([
-        {
-            "source_wallet": "SOURCE",
-            "destination_wallet": "DESTINATION",
-            "amount_lamports": 123456,
-            "signature": "sig-1",
-            "observed_at": observed,
-            "evidence": {"evidence_basis": "direct_transfer_observation"},
-        }
-    ])
+    session = FakeSession([{
+        "source_wallet": "SOURCE", "destination_wallet": "DESTINATION",
+        "amount_lamports": 123456, "signature": "sig-1", "observed_at": observed,
+        "evidence": {"evidence_basis": "direct_transfer_observation"},
+    }])
 
-    result = await funding_history.funding_history_for_entity(
-        session,
-        uuid4(),
-        wallet_limit=0,
-        observation_limit=999,
-    )
+    result = await funding_history.funding_history_for_entity(session, uuid4(), wallet_limit=0, observation_limit=999)
 
     assert result[0]["source_wallet"] == "SOURCE"
     assert result[0]["destination_wallet"] == "DESTINATION"
@@ -63,3 +54,15 @@ async def test_funding_history_no_observations_is_empty():
     session = FakeSession([])
     result = await funding_history.funding_history_for_entity(session, uuid4())
     assert result == []
+
+
+@pytest.mark.asyncio
+async def test_funding_history_passes_temporal_cutoff_to_query():
+    session = FakeSession([])
+    cutoff = datetime(2026, 9, 4, tzinfo=timezone.utc)
+    result = await funding_history.funding_history_for_entity(session, uuid4(), as_of=cutoff)
+
+    assert result == []
+    statement, params = session.calls[0]
+    assert "wfo.observed_at <= :as_of" in statement
+    assert params["as_of"] == cutoff

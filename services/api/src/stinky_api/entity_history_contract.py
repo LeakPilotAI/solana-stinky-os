@@ -32,7 +32,7 @@ def canonicalize_entity_history(history: dict[str, Any]) -> dict[str, Any]:
         sources[key] = source
 
     missing = list(dict.fromkeys(missing))
-    return {
+    result = {
         "status": str(history.get("status") or "UNKNOWN"),
         "entity_id": history.get("entity_id"),
         "sources": sources,
@@ -40,3 +40,7 @@ def canonicalize_entity_history(history: dict[str, Any]) -> dict[str, Any]:
         "missing": missing,
         "evidence_only": True,
     }
+    if history.get("as_of") is not None:
+        result["as_of"] = history["as_of"]
+        result["temporal_cutoff_enforced"] = bool(history.get("temporal_cutoff_enforced", False))
+    return result
