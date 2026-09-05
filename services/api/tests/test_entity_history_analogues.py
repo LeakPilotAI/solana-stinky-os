@@ -79,11 +79,54 @@ async def test_historical_analogues_are_descriptive_and_preserve_missing_dimensi
 
     assert result["status"] == "OBSERVED"
     assert result["evidence_only"] is True
+    assert result["outcome_dimensions_excluded"] is True
+    assert result["selection_basis"] == "activity_and_network_structure_only"
     assert [row["entity_id"] for row in result["records"]] == ["analogue-1", "analogue-2"]
     assert result["records"][0]["similarity_distance"] == 0.0
     assert "launch_count" in result["records"][0]["matched_dimensions"]
     assert "early_buyer_wallet_count" not in result["records"][0]["matched_dimensions"]
     assert result["records"][0]["evidence_basis"] == "entity_behavior_fingerprints"
+
+
+@pytest.mark.asyncio
+async def test_outcome_only_differences_do_not_change_analogue_distance():
+    entity_id = uuid4()
+    target = {
+        "launch_count": 5,
+        "outcomes_known": 5,
+        "completed_count": 5,
+        "outcomes_unknown": 0,
+        "outcome_coverage": 1.0,
+        "median_launch_interval_sec": 3600,
+        "wallet_count": 2,
+        "cadence_bucket": "high_frequency",
+    }
+    candidate = {
+        "entity_id": "analogue-1",
+        "fingerprint": {
+            "launch_count": 5,
+            "outcomes_known": 0,
+            "completed_count": 0,
+            "outcomes_unknown": 5,
+            "outcome_coverage": 0.0,
+            "median_launch_interval_sec": 3600,
+            "wallet_count": 2,
+            "cadence_bucket": "high_frequency",
+        },
+        "computed_at": datetime(2026, 9, 4, tzinfo=timezone.utc),
+    }
+
+    result = await find_historical_analogues(
+        Session(target={"fingerprint": target}, candidates=[candidate]),
+        entity_id,
+    )
+
+    assert result["records"][0]["similarity_distance"] == 0.0
+    assert "outcomes_known" not in result["records"][0]["matched_dimensions"]
+    assert "completed_count" not in result["records"][0]["matched_dimensions"]
+    assert "outcomes_unknown" not in result["records"][0]["matched_dimensions"]
+    assert "outcome_coverage" not in result["records"][0]["matched_dimensions"]
+    assert result["records"][0]["outcome_dimensions_excluded"] is True
 
 
 @pytest.mark.asyncio
