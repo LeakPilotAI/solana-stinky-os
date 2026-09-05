@@ -24,33 +24,12 @@ from stinky_api.historical_outcome_comparison import historical_outcomes_for_ana
 
 def _unknown(*, status: str, wallet_limit: int, relationship_limit: int) -> dict[str, Any]:
     return {
-        "status": status,
-        "entity": None,
-        "wallets": [],
-        "relationships": [],
-        "funding_history": [],
-        "historical_analogues": {
-            "status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN",
-            "records": [], "missing": ["entity_history"], "evidence_only": True,
-        },
-        "historical_outcome_comparison": {
-            "status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN",
-            "records": [], "missing": ["entity_history"], "evidence_only": True,
-        },
-        "historical_outcome_calibration": {
-            "status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN",
-            "analogue_count": 0, "analogue_with_launches": 0,
-            "launch_count_observed": 0, "outcomes_known": 0,
-            "outcomes_unknown": 0, "completed_count": 0,
-            "outcome_coverage": None, "missing": ["entity_history"], "evidence_only": True,
-        },
-        "bounded": {
-            "wallet_limit": wallet_limit, "relationship_limit": relationship_limit,
-            "funding_observation_limit": relationship_limit, "analogue_limit": 10,
-            "analogue_candidate_limit": 500, "outcome_launch_limit_per_analogue": 20,
-        },
-        "evidence_only": True,
-        "missing": ["entity_history"],
+        "status": status, "entity": None, "wallets": [], "relationships": [], "funding_history": [],
+        "historical_analogues": {"status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN", "records": [], "missing": ["entity_history"], "evidence_only": True},
+        "historical_outcome_comparison": {"status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN", "records": [], "missing": ["entity_history"], "evidence_only": True},
+        "historical_outcome_calibration": {"status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN", "analogue_count": 0, "analogue_with_launches": 0, "launch_count_observed": 0, "outcomes_known": 0, "outcomes_unknown": 0, "completed_count": 0, "outcome_coverage": None, "missing": ["entity_history"], "evidence_only": True},
+        "bounded": {"wallet_limit": wallet_limit, "relationship_limit": relationship_limit, "funding_observation_limit": relationship_limit, "analogue_limit": 10, "analogue_candidate_limit": 500, "outcome_launch_limit_per_analogue": 20},
+        "evidence_only": True, "missing": ["entity_history"],
     }
 
 
@@ -95,44 +74,37 @@ async def entity_network_for_investigation(
         return _unknown(status="NEW-UNKNOWN", wallet_limit=wallet_limit, relationship_limit=relationship_limit)
 
     try:
-        graph = await _assemble(session, resolved_entity_id, wallet_limit, relationship_limit, as_of=as_of)
+        assemble_kwargs: dict[str, Any] = {}
+        if as_of is not None:
+            assemble_kwargs["as_of"] = as_of
+        graph = await _assemble(session, resolved_entity_id, wallet_limit, relationship_limit, **assemble_kwargs)
         if graph is None:
             return _unknown(status="UNKNOWN", wallet_limit=wallet_limit, relationship_limit=relationship_limit)
-        funding_history = await funding_history_for_entity(
-            session, resolved_entity_id, wallet_limit=wallet_limit,
-            observation_limit=relationship_limit, as_of=as_of,
-        )
-        history = await synthesize_entity_history(
-            session, resolved_entity_id, graph=graph, funding_history=funding_history,
-            launch_limit=relationship_limit, as_of=as_of,
-        )
+        funding_kwargs = {"wallet_limit": wallet_limit, "observation_limit": relationship_limit}
+        if as_of is not None:
+            funding_kwargs["as_of"] = as_of
+        funding_history = await funding_history_for_entity(session, resolved_entity_id, **funding_kwargs)
+        history_kwargs = {"graph": graph, "funding_history": funding_history, "launch_limit": relationship_limit}
+        if as_of is not None:
+            history_kwargs["as_of"] = as_of
+        history = await synthesize_entity_history(session, resolved_entity_id, **history_kwargs)
     except Exception:
         return _unknown(status="UNKNOWN", wallet_limit=wallet_limit, relationship_limit=relationship_limit)
 
     try:
-        historical_analogues = await find_historical_analogues(
-            session, resolved_entity_id, limit=analogue_limit,
-            candidate_limit=analogue_candidate_limit, as_of=as_of,
-        )
+        analogue_kwargs = {"limit": analogue_limit, "candidate_limit": analogue_candidate_limit}
+        if as_of is not None:
+            analogue_kwargs["as_of"] = as_of
+        historical_analogues = await find_historical_analogues(session, resolved_entity_id, **analogue_kwargs)
     except Exception:
-        historical_analogues = {
-            "status": "UNKNOWN", "records": [], "missing": ["historical_analogues"],
-            "evidence_basis": "unknown_query",
-            "bounded": {"limit": analogue_limit, "candidate_limit": analogue_candidate_limit},
-            "evidence_only": True,
-        }
+        historical_analogues = {"status": "UNKNOWN", "records": [], "missing": ["historical_analogues"], "evidence_basis": "unknown_query", "bounded": {"limit": analogue_limit, "candidate_limit": analogue_candidate_limit}, "evidence_only": True}
     try:
-        historical_outcomes = await historical_outcomes_for_analogues(
-            session, historical_analogues.get("records", []),
-            limit_per_entity=outcome_launch_limit_per_analogue, as_of=as_of,
-        )
+        outcome_kwargs = {"limit_per_entity": outcome_launch_limit_per_analogue}
+        if as_of is not None:
+            outcome_kwargs["as_of"] = as_of
+        historical_outcomes = await historical_outcomes_for_analogues(session, historical_analogues.get("records", []), **outcome_kwargs)
     except Exception:
-        historical_outcomes = {
-            "status": "UNKNOWN", "records": [], "missing": ["historical_outcome_comparison"],
-            "evidence_basis": "unknown_query",
-            "bounded": {"limit_per_entity": outcome_launch_limit_per_analogue},
-            "evidence_only": True,
-        }
+        historical_outcomes = {"status": "UNKNOWN", "records": [], "missing": ["historical_outcome_comparison"], "evidence_basis": "unknown_query", "bounded": {"limit_per_entity": outcome_launch_limit_per_analogue}, "evidence_only": True}
     historical_calibration = calibrate_historical_outcomes(historical_outcomes)
 
     graph["status"] = "KNOWN_ENTITY"
