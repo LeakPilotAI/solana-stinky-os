@@ -30,7 +30,7 @@ def test_behavioral_fingerprint_is_descriptive_and_preserves_unknown_outcomes() 
     assert result["outcome_coverage"] == 2 / 3
     assert result["first_launch_at"] == start.isoformat()
     assert result["last_launch_at"] == (start + timedelta(hours=6)).isoformat()
-    assert result["median_launch_interval_sec"] == 14400.0
+    assert result["median_launch_interval_sec"] == 10800.0
     assert result["cadence_bucket"] == "active"
     assert result["evidence_basis"] == "entity_launches"
 
