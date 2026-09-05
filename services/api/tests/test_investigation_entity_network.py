@@ -23,12 +23,14 @@ async def test_unknown_investigation_entity_is_explicit_and_bounded():
     assert result["missing"] == ["entity_history"]
     assert result["funding_history"] == []
     assert result["historical_analogues"]["status"] == "NEW-UNKNOWN"
+    assert result["historical_outcome_comparison"]["status"] == "NEW-UNKNOWN"
     assert result["bounded"] == {
         "wallet_limit": 1,
         "relationship_limit": 500,
         "funding_observation_limit": 500,
         "analogue_limit": 10,
         "analogue_candidate_limit": 500,
+        "outcome_launch_limit_per_analogue": 20,
     }
 
 
@@ -58,7 +60,7 @@ async def test_invalid_entity_id_falls_back_to_creator_wallet():
 
 
 @pytest.mark.asyncio
-async def test_known_entity_includes_bounded_funding_history(monkeypatch):
+async def test_known_entity_includes_historical_outcomes(monkeypatch):
     entity_id = uuid4()
 
     class Session:
@@ -78,35 +80,34 @@ async def test_known_entity_includes_bounded_funding_history(monkeypatch):
         }
 
     async def fake_funding(*args, **kwargs):
-        assert kwargs["wallet_limit"] == 10
-        assert kwargs["observation_limit"] == 20
-        return [{
-            "source_wallet": "SOURCE",
-            "destination_wallet": "DESTINATION",
-            "amount_lamports": 42,
-            "signature": "sig-1",
-            "observed_at": "2026-09-04T00:00:00+00:00",
-            "evidence": {"evidence_basis": "direct_transfer_observation"},
-        }]
+        return [{"signature": "sig-1", "amount_lamports": 42}]
 
     async def fake_history(*args, **kwargs):
         return {"status": "KNOWN_ENTITY", "sources": {}, "evidence_only": True}
 
     async def fake_analogues(*args, **kwargs):
-        assert kwargs["limit"] == 10
-        assert kwargs["candidate_limit"] == 500
+        return {
+            "status": "OBSERVED",
+            "records": [{"entity_id": str(uuid4()), "similarity_distance": 0.0}],
+            "evidence_basis": "entity_behavior_fingerprints",
+            "bounded": {"limit": 10, "candidate_limit": 500},
+            "evidence_only": True,
+        }
+
+    async def fake_outcomes(*args, **kwargs):
+        assert kwargs["limit_per_entity"] == 20
         return {
             "status": "OBSERVED",
             "records": [{
                 "entity_id": "analogue-1",
-                "similarity_distance": 0.0,
-                "matched_dimension_count": 5,
-                "matched_dimensions": ["launch_count"],
-                "candidate_fingerprint_computed_at": "2026-09-04T00:00:00+00:00",
-                "evidence_basis": "entity_behavior_fingerprints",
+                "launch_count_observed": 2,
+                "outcomes_known": 1,
+                "completed_count": 1,
+                "outcomes_unknown": 1,
+                "evidence_basis": "entity_launches",
             }],
-            "evidence_basis": "entity_behavior_fingerprints",
-            "bounded": {"limit": 10, "candidate_limit": 500},
+            "evidence_basis": "entity_launches",
+            "bounded": {"limit_per_entity": 20},
             "evidence_only": True,
         }
 
@@ -114,6 +115,7 @@ async def test_known_entity_includes_bounded_funding_history(monkeypatch):
     monkeypatch.setattr(adapter, "funding_history_for_entity", fake_funding)
     monkeypatch.setattr(adapter, "synthesize_entity_history", fake_history)
     monkeypatch.setattr(adapter, "find_historical_analogues", fake_analogues)
+    monkeypatch.setattr(adapter, "historical_outcomes_for_analogues", fake_outcomes)
 
     result = await entity_network_for_investigation(
         Session(),
@@ -124,11 +126,8 @@ async def test_known_entity_includes_bounded_funding_history(monkeypatch):
 
     assert result["status"] == "KNOWN_ENTITY"
     assert result["evidence_only"] is True
-    assert result["funding_history"][0]["signature"] == "sig-1"
-    assert result["funding_history"][0]["amount_lamports"] == 42
-    assert result["bounded"]["funding_observation_limit"] == 20
-    assert result["historical_analogues"]["status"] == "OBSERVED"
-    assert result["historical_analogues"]["records"][0]["entity_id"] == "analogue-1"
-    assert result["bounded"]["analogue_limit"] == 10
-    assert result["bounded"]["analogue_candidate_limit"] == 500
-    assert result["historical_analogues"]["evidence_only"] is True
+    assert result["historical_outcome_comparison"]["status"] == "OBSERVED"
+    assert result["historical_outcome_comparison"]["records"][0]["completed_count"] == 1
+    assert result["historical_outcome_comparison"]["records"][0]["outcomes_unknown"] == 1
+    assert result["bounded"]["outcome_launch_limit_per_analogue"] == 20
+    assert result["historical_outcome_comparison"]["evidence_only"] is True
