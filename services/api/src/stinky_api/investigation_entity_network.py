@@ -14,6 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from stinky_api.entity_graph import _assemble
+from stinky_api.entity_history_synthesis import synthesize_entity_history
 from stinky_api.funding_history import funding_history_for_entity
 
 
@@ -110,6 +111,13 @@ async def entity_network_for_investigation(
             wallet_limit=wallet_limit,
             observation_limit=relationship_limit,
         )
+        history = await synthesize_entity_history(
+            session,
+            resolved_entity_id,
+            graph=graph,
+            funding_history=funding_history,
+            launch_limit=relationship_limit,
+        )
     except Exception:
         return _unknown(
             status="UNKNOWN",
@@ -119,6 +127,8 @@ async def entity_network_for_investigation(
 
     graph["status"] = "KNOWN_ENTITY"
     graph["funding_history"] = funding_history
+    graph["history"] = history
     graph["bounded"]["funding_observation_limit"] = relationship_limit
+    graph["bounded"]["launch_history_limit"] = relationship_limit
     graph["evidence_only"] = True
     return graph
