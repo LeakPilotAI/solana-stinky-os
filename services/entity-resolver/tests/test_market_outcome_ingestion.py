@@ -25,6 +25,7 @@ def test_ingestion_uses_only_supported_lifecycle_horizons():
 
 def test_ingestion_preserves_anchor_observation_and_real_snapshot_time():
     sql = MIGRATION.read_text(encoding="utf-8")
+    assert "SELECT mt.migration_at" in sql
     assert "MIN(ms.captured_at)" in sql
     assert "anchor_observed_at" in sql
     assert "observed_at" in sql
@@ -34,6 +35,16 @@ def test_ingestion_preserves_anchor_observation_and_real_snapshot_time():
 
 def test_missing_horizons_are_not_fabricated():
     sql = MIGRATION.read_text(encoding="utf-8")
-    assert "NEW.captured_at >= anchor_at + make_interval" in sql
+    assert "NEW.captured_at >= feature_cutoff" in sql
+    assert "evidence_basis = 'market_snapshot_observation'" in sql
     assert "NOT EXISTS" in sql
     assert "ON CONFLICT DO NOTHING" in sql
+
+
+def test_phase10_pre_cutoff_evidence_is_separate_and_bounded():
+    sql = MIGRATION.read_text(encoding="utf-8")
+    assert "phase10_pre_cutoff_market_snapshot" in sql
+    assert "seconds_before_cutoff >= 0" in sql
+    assert "seconds_before_cutoff <= 90" in sql
+    assert "horizon_name IN ('5m', '15m', '30m')" in sql
+    assert "phase10_prospective" in sql
