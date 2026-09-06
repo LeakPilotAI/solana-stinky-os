@@ -91,6 +91,8 @@ async def calibrate_market_pattern_outcomes(
                     SELECT o.id AS occurrence_id,
                            o.mint,
                            o.observed_at AS pattern_observed_at,
+                           baseline.metrics AS baseline_metrics,
+                           baseline.observed_at AS baseline_observed_at,
                            mo.horizon,
                            mo.horizon_seconds,
                            mo.observed_at AS followup_observed_at,
@@ -99,6 +101,14 @@ async def calibrate_market_pattern_outcomes(
                            mo.evidence_basis,
                            mo.metrics
                     FROM occurrences o
+                    LEFT JOIN LATERAL (
+                        SELECT b.metrics, b.observed_at
+                        FROM market_outcome_observations b
+                        WHERE b.mint = o.mint
+                          AND b.observed_at <= o.observed_at
+                        ORDER BY b.observed_at DESC, b.horizon_seconds DESC, b.id DESC
+                        LIMIT 1
+                    ) baseline ON TRUE
                     LEFT JOIN market_outcome_observations mo
                       ON mo.mint = o.mint
                      AND mo.observed_at > o.observed_at
@@ -132,6 +142,8 @@ async def calibrate_market_pattern_outcomes(
                 "occurrence_id": occurrence_id,
                 "mint": str(item["mint"]),
                 "pattern_observed_at": item["pattern_observed_at"],
+                "baseline_observed_at": item.get("baseline_observed_at"),
+                "baseline_metrics": item.get("baseline_metrics") if isinstance(item.get("baseline_metrics"), dict) else {},
                 "followup_horizons": [],
                 "followup_records": [],
                 "evidence_only": True,
@@ -156,7 +168,7 @@ async def calibrate_market_pattern_outcomes(
     records = list(grouped.values())
     with_followup = 0
     for record in records:
-        for key in ("pattern_observed_at",):
+        for key in ("pattern_observed_at", "baseline_observed_at"):
             value = record.get(key)
             if hasattr(value, "isoformat"):
                 record[key] = value.isoformat()
