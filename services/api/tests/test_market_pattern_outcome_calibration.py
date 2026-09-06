@@ -35,11 +35,14 @@ class Session:
 
 @pytest.mark.asyncio
 async def test_pattern_followup_coverage_is_descriptive_and_horizon_specific():
+    baseline_time = datetime(2026, 9, 1, 0, 15, tzinfo=timezone.utc)
     rows = [
         {
             "occurrence_id": 1,
             "mint": "A",
-            "pattern_observed_at": datetime(2026, 9, 1, 0, 15, tzinfo=timezone.utc),
+            "pattern_observed_at": baseline_time,
+            "baseline_observed_at": baseline_time,
+            "baseline_metrics": {"price_usd": 1.0},
             "horizon": "30m",
             "horizon_seconds": 1800,
             "followup_observed_at": datetime(2026, 9, 1, 0, 30, tzinfo=timezone.utc),
@@ -51,7 +54,9 @@ async def test_pattern_followup_coverage_is_descriptive_and_horizon_specific():
         {
             "occurrence_id": 1,
             "mint": "A",
-            "pattern_observed_at": datetime(2026, 9, 1, 0, 15, tzinfo=timezone.utc),
+            "pattern_observed_at": baseline_time,
+            "baseline_observed_at": baseline_time,
+            "baseline_metrics": {"price_usd": 1.0},
             "horizon": "1h",
             "horizon_seconds": 3600,
             "followup_observed_at": datetime(2026, 9, 1, 1, 0, tzinfo=timezone.utc),
@@ -64,6 +69,8 @@ async def test_pattern_followup_coverage_is_descriptive_and_horizon_specific():
             "occurrence_id": 2,
             "mint": "B",
             "pattern_observed_at": datetime(2026, 9, 2, 0, 15, tzinfo=timezone.utc),
+            "baseline_observed_at": None,
+            "baseline_metrics": None,
             "horizon": None,
             "horizon_seconds": None,
             "followup_observed_at": None,
@@ -84,6 +91,8 @@ async def test_pattern_followup_coverage_is_descriptive_and_horizon_specific():
     assert result["horizon_coverage"]["30m"]["coverage"] == 0.5
     assert result["horizon_coverage"]["1h"]["coverage"] == 0.5
     assert result["horizon_coverage"]["24h"]["coverage"] == 0.0
+    assert result["records"][0]["baseline_metrics"] == {"price_usd": 1.0}
+    assert result["records"][0]["baseline_observed_at"] == baseline_time.isoformat()
     assert result["records"][1]["followup_records"] == []
     assert result["evidence_only"] is True
     assert all(k not in result for k in ("prediction", "probability", "risk", "quality", "trade_signal"))
@@ -99,6 +108,7 @@ async def test_pattern_followup_query_enforces_strict_after_boundary_and_as_of()
     )
 
     assert "mo.observed_at > o.observed_at" in session.statement
+    assert "b.observed_at <= o.observed_at" in session.statement
     assert "observed_at <= :as_of" in session.statement
     assert "mo.observed_at <= :as_of" in session.statement
     assert session.params["as_of"].isoformat() == "2026-09-03T00:00:00+00:00"
