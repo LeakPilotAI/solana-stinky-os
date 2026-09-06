@@ -106,6 +106,16 @@ async def test_missing_evidence_boundary_is_not_persisted():
 
 
 @pytest.mark.asyncio
+async def test_snapshot_rejects_evidence_after_its_own_as_of():
+    session = PersistSession()
+    rolling = _rolling()
+    rolling["as_of"] = "2026-09-01T12:00:00Z"
+
+    assert await persist_rolling_calibration_snapshot(session, rolling) is None
+    assert session.statements == []
+
+
+@pytest.mark.asyncio
 async def test_longitudinal_history_is_bounded_and_cutoff_safe():
     rows = [
         {
@@ -138,6 +148,8 @@ async def test_longitudinal_history_is_bounded_and_cutoff_safe():
     assert result["bounded"]["limit"] == 500
     assert result["temporal_cutoff_enforced"] is True
     assert "evidence_through_observed_at <= :as_of" in session.statement
+    assert "computed_at <= :as_of" in session.statement
+    assert "ingested_at <= :as_of" in session.statement
     assert session.params["as_of"].isoformat() == "2026-09-02T00:00:00+00:00"
     assert result["records"][0]["trend_status"] == "STABLE"
     assert result["evidence_only"] is True
