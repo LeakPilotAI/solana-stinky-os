@@ -17,6 +17,7 @@ from stinky_api.historical_outcome_calibration import calibrate_historical_outco
 from stinky_api.historical_outcome_comparison import historical_outcomes_for_analogues
 from stinky_api.market_outcome_analysis import analyze_market_lifecycle, market_path_signature
 from stinky_api.market_outcome_history import market_lifecycle_for_mint
+from stinky_api.market_pattern_calibration_readiness import assess_pattern_calibration_readiness
 from stinky_api.market_pattern_history import market_pattern_history, persist_market_pattern_occurrence
 from stinky_api.market_pattern_outcome_calibration import calibrate_market_pattern_outcomes
 from stinky_api.market_pattern_outcome_distribution import summarize_pattern_outcome_distribution
@@ -35,6 +36,7 @@ def _unknown(*, status: str, wallet_limit: int, relationship_limit: int) -> dict
         "market_pattern_history": {"status": unknown_status, "pattern_hash": None, "occurrence_count": 0, "distinct_market_count": 0, "records": [], "missing": ["market_path_pattern_occurrences"], "bounded": {"limit": relationship_limit}, "evidence_only": True},
         "market_pattern_outcome_calibration": {"status": unknown_status, "pattern_hash": None, "occurrence_count": 0, "occurrences_with_followup": 0, "occurrences_without_followup": 0, "followup_coverage": None, "horizon_coverage": {}, "records": [], "missing": ["market_pattern_followup_evidence"], "bounded": {"occurrence_limit": relationship_limit}, "evidence_only": True},
         "market_pattern_outcome_distribution": {"status": unknown_status, "pattern_hash": None, "horizons": {}, "sufficient_horizons": [], "insufficient_horizons": [], "criteria": {"min_sample_count": 5, "min_horizon_coverage": 0.5}, "missing": ["market_pattern_outcome_calibration"], "evidence_only": True},
+        "market_pattern_calibration_readiness": {"status": unknown_status, "pattern_hash": None, "readiness_status": "INSUFFICIENT_EVIDENCE", "stable_horizons": [], "unstable_horizons": [], "slice_sizes": {"early": 0, "late": 0}, "horizons": {}, "criteria": {"min_total_occurrences": 10, "min_slice_occurrences": 5, "min_horizon_coverage": 0.5, "max_median_drift_pct_points": 25.0}, "missing": ["market_pattern_outcome_calibration"], "evidence_only": True},
         "historical_analogues": {"status": unknown_status, "records": [], "missing": ["entity_history"], "evidence_only": True},
         "historical_outcome_comparison": {"status": unknown_status, "records": [], "missing": ["entity_history"], "evidence_only": True},
         "historical_outcome_calibration": {"status": unknown_status, "analogue_count": 0, "analogue_with_launches": 0, "launch_count_observed": 0, "outcomes_known": 0, "outcomes_unknown": 0, "completed_count": 0, "outcome_coverage": None, "missing": ["entity_history"], "evidence_only": True},
@@ -177,6 +179,7 @@ async def entity_network_for_investigation(
             pass
 
     pattern_outcome_distribution = summarize_pattern_outcome_distribution(pattern_outcome_calibration)
+    pattern_calibration_readiness = assess_pattern_calibration_readiness(pattern_outcome_calibration)
 
     try:
         analogue_kwargs = {"limit": analogue_limit, "candidate_limit": analogue_candidate_limit}
@@ -203,6 +206,7 @@ async def entity_network_for_investigation(
     graph["market_pattern_history"] = pattern_history
     graph["market_pattern_outcome_calibration"] = pattern_outcome_calibration
     graph["market_pattern_outcome_distribution"] = pattern_outcome_distribution
+    graph["market_pattern_calibration_readiness"] = pattern_calibration_readiness
     graph["historical_analogues"] = historical_analogues
     graph["historical_outcome_comparison"] = historical_outcomes
     graph["historical_outcome_calibration"] = historical_calibration
