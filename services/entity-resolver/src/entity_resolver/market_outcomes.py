@@ -67,12 +67,23 @@ class MarketOutcomeStore:
         migration_008 = migration_dir / "008_market_outcome_ingestion.sql"
         migration_009 = migration_dir / "009_market_path_patterns.sql"
         migration_010 = migration_dir / "010_market_pattern_calibration_memory.sql"
-        migration_paths = (migration_007, migration_008, migration_009, migration_010)
+
+        if not migration_007.exists():
+            raise FileNotFoundError(f"market outcome migration missing: {migration_007}")
+        if not migration_008.exists():
+            raise FileNotFoundError(f"market outcome ingestion migration missing: {migration_008}")
+        if not migration_009.exists():
+            raise FileNotFoundError(f"market path pattern migration missing: {migration_009}")
+        if not migration_010.exists():
+            raise FileNotFoundError(f"market calibration memory migration missing: {migration_010}")
+
+        sql_007 = migration_007.read_text(encoding="utf-8")
+        sql_008 = migration_008.read_text(encoding="utf-8")
+        sql_009 = migration_009.read_text(encoding="utf-8")
+        sql_010 = migration_010.read_text(encoding="utf-8")
+
         async with self._sessions() as session:
-            for migration in migration_paths:
-                if not migration.exists():
-                    raise FileNotFoundError(f"market outcome migration missing: {migration}")
-                sql = migration.read_text(encoding="utf-8")
+            for sql in (sql_007, sql_008, sql_009, sql_010):
                 for statement in split_postgres_statements(sql):
                     await session.execute(text(statement))
             await session.commit()
