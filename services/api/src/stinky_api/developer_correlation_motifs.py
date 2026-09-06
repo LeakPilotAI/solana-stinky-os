@@ -164,6 +164,6 @@ def analyze_network_motifs(correlation: dict[str, Any]) -> dict[str, Any]:
         "multi_entity_constellation_count": sum(1 for m in motifs if len(m.get("other_entity_ids") or []) >= 2),
         "records": motifs,
         "motif_is_not_ownership_or_coordination": True,
-        "motif_is_not_risk_or_quality_score": True,
+        "motif_is_not_risk_or_quality_inference": True,
         **AUTHORITY,
     }
