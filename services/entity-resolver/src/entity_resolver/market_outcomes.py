@@ -16,6 +16,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from entity_resolver.config import settings
+from entity_resolver.sql_migrations import split_postgres_statements
 
 
 HORIZONS_SECONDS: dict[str, int] = {
@@ -66,35 +67,24 @@ class MarketOutcomeStore:
         migration_008 = migration_dir / "008_market_outcome_ingestion.sql"
         migration_009 = migration_dir / "009_market_path_patterns.sql"
         migration_010 = migration_dir / "010_market_pattern_calibration_memory.sql"
+
+        if not migration_007.exists():
+            raise FileNotFoundError(f"market outcome migration missing: {migration_007}")
+        if not migration_008.exists():
+            raise FileNotFoundError(f"market outcome ingestion migration missing: {migration_008}")
+        if not migration_009.exists():
+            raise FileNotFoundError(f"market path pattern migration missing: {migration_009}")
+        if not migration_010.exists():
+            raise FileNotFoundError(f"market calibration memory migration missing: {migration_010}")
+
+        sql_007 = migration_007.read_text(encoding="utf-8")
+        sql_008 = migration_008.read_text(encoding="utf-8")
+        sql_009 = migration_009.read_text(encoding="utf-8")
+        sql_010 = migration_010.read_text(encoding="utf-8")
+
         async with self._sessions() as session:
-            if not migration_007.exists():
-                raise FileNotFoundError(f"market outcome migration missing: {migration_007}")
-            sql_007 = migration_007.read_text(encoding="utf-8")
-            for statement in sql_007.split(";"):
-                statement = statement.strip()
-                if statement:
-                    await session.execute(text(statement))
-
-            if not migration_008.exists():
-                raise FileNotFoundError(f"market outcome ingestion migration missing: {migration_008}")
-            # 008 contains a PL/pgSQL function body with internal semicolons;
-            # execute the migration as one statement rather than splitting it.
-            await session.execute(text(migration_008.read_text(encoding="utf-8")))
-
-            if not migration_009.exists():
-                raise FileNotFoundError(f"market path pattern migration missing: {migration_009}")
-            sql_009 = migration_009.read_text(encoding="utf-8")
-            for statement in sql_009.split(";"):
-                statement = statement.strip()
-                if statement:
-                    await session.execute(text(statement))
-
-            if not migration_010.exists():
-                raise FileNotFoundError(f"market calibration memory migration missing: {migration_010}")
-            sql_010 = migration_010.read_text(encoding="utf-8")
-            for statement in sql_010.split(";"):
-                statement = statement.strip()
-                if statement:
+            for sql in (sql_007, sql_008, sql_009, sql_010):
+                for statement in split_postgres_statements(sql):
                     await session.execute(text(statement))
             await session.commit()
 
