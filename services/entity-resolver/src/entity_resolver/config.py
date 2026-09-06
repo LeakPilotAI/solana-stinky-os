@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://stinky:stinky@localhost:5433/stinky"
     redis_url: str = "redis://localhost:6380/0"
     solana_rpc_url: str = "https://api.mainnet-beta.solana.com"
+    api_base_url: str = "http://127.0.0.1:8010"
     event_stream: str = "stinky.events"
     # Dedicated group — do NOT share STINKY_CONSUMER_GROUP with event-log
     entity_consumer_group: str = "entity-resolver"
