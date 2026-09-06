@@ -14,6 +14,8 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from stinky_api.phase10_cohort_provenance import canonical_token_outcome_label
+
 FEATURE_HORIZONS = {"launch": 0, "5m": 300, "15m": 900, "30m": 1800}
 CANONICAL_OUTCOMES = {"RUNNER", "HELD", "FADE", "UNKNOWN"}
 AUTHORITY = {
@@ -51,12 +53,61 @@ def _hash(value: Any) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _canonical_label(event: dict[str, Any] | None) -> str:
+def _canonical_event_label(event: dict[str, Any] | None) -> str:
+    """Completion is not an outcome unless the event explicitly says so."""
     if not isinstance(event, dict) or event.get("event_type") != "post_migration.tracking_completed":
         return "UNKNOWN"
     payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
-    value = str(payload.get("outcome_status") or payload.get("outcome") or payload.get("status") or "UNKNOWN").upper()
+    value = str(
+        payload.get("outcome_status")
+        or payload.get("outcome")
+        or payload.get("status")
+        or "UNKNOWN"
+    ).upper()
     return value if value in CANONICAL_OUTCOMES else "UNKNOWN"
+
+
+def _resolve_label(
+    event: dict[str, Any] | None,
+    token_outcome: dict[str, Any] | None,
+) -> tuple[str, str, dict[str, Any]]:
+    """Resolve a canonical label from explicit or safely mapped measured evidence."""
+    event_label = _canonical_event_label(event)
+    if event_label != "UNKNOWN":
+        return event_label, "explicit_tracking_completed_outcome", {
+            "event_id": event.get("event_id") if event else None,
+            "observed_at": _iso(event.get("occurred_at")) if event else None,
+            "ingested_at": _iso(event.get("ingested_at")) if event else None,
+            "source_event": event.get("event_type") if event else None,
+            "producer": event.get("producer") if event else None,
+        }
+
+    mapped = canonical_token_outcome_label((token_outcome or {}).get("label"))
+    if mapped != "UNKNOWN":
+        return mapped, "measured_token_outcomes_safe_mapping", {
+            "event_id": None,
+            "observed_at": _iso((token_outcome or {}).get("evaluated_at")),
+            "ingested_at": _iso((token_outcome or {}).get("evaluated_at")),
+            "source_event": "token_outcomes",
+            "producer": "post_migration.success_learner",
+            "legacy_label": (token_outcome or {}).get("label"),
+            "snapshots_n": (token_outcome or {}).get("snapshots_n"),
+        }
+
+    if token_outcome is not None:
+        basis = "token_outcome_not_semantically_canonical"
+    elif event is not None:
+        basis = "tracking_completed_has_no_canonical_outcome"
+    else:
+        basis = "no_label_evidence"
+    return "UNKNOWN", basis, {
+        "event_id": event.get("event_id") if event else None,
+        "observed_at": _iso(event.get("occurred_at")) if event else None,
+        "ingested_at": _iso(event.get("ingested_at")) if event else None,
+        "source_event": event.get("event_type") if event else None,
+        "producer": event.get("producer") if event else None,
+        "legacy_label": (token_outcome or {}).get("label"),
+    }
 
 
 def _snapshot_feature(snapshot: Any) -> dict[str, Any] | None:
@@ -164,7 +215,9 @@ async def form_pattern_discovery_dataset(
     launch_rows = [dict(r) for r in candidates]
     mints = sorted({str(r.get("mint")) for r in launch_rows if r.get("mint")})
     lifecycle_by_mint: dict[str, list[dict[str, Any]]] = {mint: [] for mint in mints}
-    labels_by_mint: dict[str, dict[str, Any]] = {}
+    completion_by_mint: dict[str, dict[str, Any]] = {}
+    token_outcomes_by_mint: dict[str, dict[str, Any]] = {}
+    query_count = 1
     if mints:
         try:
             lifecycle_rows = (await session.execute(text("""
@@ -182,6 +235,8 @@ async def form_pattern_discovery_dataset(
                 lifecycle_by_mint.setdefault(str(row.get("mint")), []).append(dict(row))
         except Exception:
             lifecycle_by_mint = {mint: [] for mint in mints}
+        query_count += 1
+
         try:
             label_rows = (await session.execute(text("""
                 SELECT DISTINCT ON (e.payload->>'mint') e.payload->>'mint' AS mint,
@@ -193,16 +248,34 @@ async def form_pattern_discovery_dataset(
                   AND e.occurred_at <= :dataset_as_of AND e.ingested_at <= :dataset_as_of
                 ORDER BY e.payload->>'mint', e.occurred_at DESC, e.ingested_at DESC
             """), {"mints": mints, "dataset_as_of": cutoff})).mappings().all()
-            labels_by_mint = {str(r.get("mint")): dict(r) for r in label_rows}
+            completion_by_mint = {str(r.get("mint")): dict(r) for r in label_rows}
         except Exception:
-            labels_by_mint = {}
+            completion_by_mint = {}
+        query_count += 1
+
+        try:
+            outcome_rows = (await session.execute(text("""
+                SELECT mint, label, evaluated_at, snapshots_n,
+                       peak_volume_m5_usd, peak_liquidity_usd,
+                       peak_market_cap_usd, peak_price_usd, notes
+                FROM token_outcomes
+                WHERE mint = ANY(:mints)
+                  AND evaluated_at <= :dataset_as_of
+            """), {"mints": mints, "dataset_as_of": cutoff})).mappings().all()
+            token_outcomes_by_mint = {str(r.get("mint")): dict(r) for r in outcome_rows}
+        except Exception:
+            token_outcomes_by_mint = {}
+        query_count += 1
 
     rows: list[dict[str, Any]] = []
+    label_basis_counts: dict[str, int] = {}
     for launch in launch_rows:
         mint = str(launch.get("mint") or "")
         feature_as_of = launch.get("feature_as_of")
-        event = labels_by_mint.get(mint)
-        label_outcome = _canonical_label(event)
+        event = completion_by_mint.get(mint)
+        token_outcome = token_outcomes_by_mint.get(mint)
+        label_outcome, label_basis, label_provenance = _resolve_label(event, token_outcome)
+        label_basis_counts[label_basis] = label_basis_counts.get(label_basis, 0) + 1
         developer_snapshot = _snapshot_feature(launch.get("developer_evidence"))
         correlation_snapshot = _snapshot_feature(launch.get("correlation_evidence"))
         features = {
@@ -216,11 +289,8 @@ async def form_pattern_discovery_dataset(
         }
         label = {
             "outcome": label_outcome,
-            "event_id": event.get("event_id") if event else None,
-            "observed_at": _iso(event.get("occurred_at")) if event else None,
-            "ingested_at": _iso(event.get("ingested_at")) if event else None,
-            "source_event": event.get("event_type") if event else None,
-            "producer": event.get("producer") if event else None,
+            "basis": label_basis,
+            **label_provenance,
         }
         canonical = {
             "entity_id": launch.get("entity_id"), "mint": mint,
@@ -247,8 +317,15 @@ async def form_pattern_discovery_dataset(
         "dataset_hash": _hash(dataset_identity),
         "as_of": cutoff.isoformat(), "feature_horizon": horizon,
         "rows": rows, "row_count": len(rows), "coverage": coverage,
+        "label_basis_counts": label_basis_counts,
         "criteria": {"min_rows": min_rows, "min_label_coverage": min_label_coverage, "min_feature_source_coverage": min_feature_source_coverage},
-        "bounded": {"limit": limit, "query_count": 3 if mints else 1},
-        "temporal_contract": {"features_must_be_known_by_feature_as_of": True, "labels_must_be_known_by_dataset_as_of": True, "labels_may_resolve_after_feature_as_of": True},
+        "bounded": {"limit": limit, "query_count": query_count},
+        "temporal_contract": {
+            "features_must_be_known_by_feature_as_of": True,
+            "labels_must_be_known_by_dataset_as_of": True,
+            "labels_may_resolve_after_feature_as_of": True,
+            "tracking_completed_without_explicit_outcome_is_not_a_label": True,
+            "legacy_mid_is_not_mapped_to_held": True,
+        },
         **AUTHORITY,
     }
