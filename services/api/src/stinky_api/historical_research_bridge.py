@@ -49,7 +49,7 @@ async def historical_research_bridge_preflight(session: AsyncSession) -> dict[st
               to_regclass('developer_correlation_snapshots')::text AS developer_correlation_snapshots,
               to_regclass('market_outcome_observations')::text AS market_outcome_observations,
               to_regclass('events')::text AS events
-        """)).mappings().first()
+        """))).mappings().first()
     except Exception as exc:
         return {
             "status": "UNKNOWN",
@@ -135,7 +135,7 @@ async def historical_research_bridge_preflight(session: AsyncSession) -> dict[st
                         )
                     )::int AS unbridged_historically_resolvable_migrations
                 FROM resolved
-            """)).mappings().first()
+            """))).mappings().first()
             if bridge_row:
                 bridge_counts = {
                     "historically_resolvable_migrations": int(bridge_row.get("historically_resolvable_migrations") or 0),
