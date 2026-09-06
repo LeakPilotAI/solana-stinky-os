@@ -176,7 +176,8 @@ async def persist_motif_outcome_snapshot(session: AsyncSession, context: dict[st
 async def motif_outcome_audit_history(session: AsyncSession, entity_id: str, *, limit: int = 20, as_of: datetime | None = None) -> dict[str, Any]:
     limit = max(1, min(100, int(limit)))
     try:
-        await ensure_motif_outcome_audit_table(session)
+        if as_of is None:
+            await ensure_motif_outcome_audit_table(session)
         clause = "AND observed_at <= :as_of AND ingested_at <= :as_of" if as_of is not None else ""
         params: dict[str, Any] = {"entity_id": entity_id, "limit": limit}
         if as_of is not None:
@@ -218,7 +219,8 @@ async def motif_outcome_audit_history(session: AsyncSession, entity_id: str, *, 
 async def motif_outcome_change_feed(session: AsyncSession, *, limit: int = 50, as_of: datetime | None = None, include_unchanged: bool = False) -> dict[str, Any]:
     limit = max(1, min(200, int(limit)))
     try:
-        await ensure_motif_outcome_audit_table(session)
+        if as_of is None:
+            await ensure_motif_outcome_audit_table(session)
         clause = "WHERE observed_at <= :as_of AND ingested_at <= :as_of" if as_of is not None else ""
         params: dict[str, Any] = {"limit": limit}
         if as_of is not None:
