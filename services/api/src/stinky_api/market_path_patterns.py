@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections import Counter
 from typing import Any
 
 from stinky_api.market_outcome_analysis import market_path_signature
+
+
+def canonical_pattern_hash(signature: dict[str, Any]) -> str:
+    """Return a stable content hash for a market path signature."""
+    payload = json.dumps(signature, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def discover_market_path_patterns(analyses: list[dict[str, Any]], *, limit: int = 20) -> dict[str, Any]:
@@ -22,22 +30,37 @@ def discover_market_path_patterns(analyses: list[dict[str, Any]], *, limit: int 
         if result.get("status") != "OBSERVED":
             continue
         signature = result["signature"]
-        key = repr(signature)
-        groups[key] += 1
-        signatures[key] = signature
+        pattern_hash = canonical_pattern_hash(signature)
+        groups[pattern_hash] += 1
+        signatures[pattern_hash] = signature
 
     ordered = sorted(groups.items(), key=lambda item: (-item[1], item[0]))[:bounded_limit]
     records = [
-        {"pattern_id": f"path-{i + 1}", "occurrence_count": count,
-         "signature": signatures[key], "evidence_basis": "observed_market_lifecycle_analysis",
-         "evidence_only": True}
-        for i, (key, count) in enumerate(ordered)
+        {
+            "pattern_id": pattern_hash,
+            "pattern_hash": pattern_hash,
+            "occurrence_count": count,
+            "signature": signatures[pattern_hash],
+            "evidence_basis": "observed_market_lifecycle_analysis",
+            "evidence_only": True,
+        }
+        for pattern_hash, count in ordered
     ]
     if not records:
-        return {"status": "UNKNOWN", "patterns": [], "observed_market_count": 0,
-                "missing": ["market_lifecycle_analysis"], "bounded": {"limit": bounded_limit},
-                "evidence_only": True}
-    return {"status": "OBSERVED", "patterns": records,
-            "observed_market_count": sum(groups.values()), "missing": [],
+        return {
+            "status": "UNKNOWN",
+            "patterns": [],
+            "observed_market_count": 0,
+            "missing": ["market_lifecycle_analysis"],
             "bounded": {"limit": bounded_limit},
-            "evidence_basis": "observed_market_lifecycle_analysis", "evidence_only": True}
+            "evidence_only": True,
+        }
+    return {
+        "status": "OBSERVED",
+        "patterns": records,
+        "observed_market_count": sum(groups.values()),
+        "missing": [],
+        "bounded": {"limit": bounded_limit},
+        "evidence_basis": "observed_market_lifecycle_analysis",
+        "evidence_only": True,
+    }

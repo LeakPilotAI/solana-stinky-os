@@ -24,6 +24,7 @@ async def test_unknown_investigation_entity_is_explicit_and_bounded():
     assert result["funding_history"] == []
     assert result["market_lifecycle"]["status"] == "NEW-UNKNOWN"
     assert result["market_outcome_analysis"]["status"] == "NEW-UNKNOWN"
+    assert result["market_pattern_history"]["status"] == "NEW-UNKNOWN"
     assert result["historical_analogues"]["status"] == "NEW-UNKNOWN"
     assert result["historical_outcome_comparison"]["status"] == "NEW-UNKNOWN"
     assert result["historical_outcome_calibration"]["status"] == "NEW-UNKNOWN"
@@ -32,6 +33,7 @@ async def test_unknown_investigation_entity_is_explicit_and_bounded():
         "relationship_limit": 500,
         "funding_observation_limit": 500,
         "market_lifecycle_limit": 500,
+        "market_pattern_history_limit": 500,
         "analogue_limit": 10,
         "analogue_candidate_limit": 500,
         "outcome_launch_limit_per_analogue": 20,
@@ -106,6 +108,25 @@ async def test_known_entity_includes_historical_outcomes_and_calibration(monkeyp
             "evidence_only": True,
         }
 
+    async def fake_persist(*args, **kwargs):
+        assert kwargs["mint"] == "MINT"
+        assert kwargs["observed_at"] == "2026-09-04T00:05:00+00:00"
+        return "pattern-hash"
+
+    async def fake_pattern_history(*args, **kwargs):
+        assert args[1] == "pattern-hash"
+        assert kwargs["limit"] == 20
+        return {
+            "status": "OBSERVED",
+            "pattern_hash": "pattern-hash",
+            "occurrence_count": 2,
+            "distinct_market_count": 2,
+            "records": [{"mint": "MINT"}, {"mint": "OTHER"}],
+            "missing": [],
+            "bounded": {"limit": 20},
+            "evidence_only": True,
+        }
+
     async def fake_analogues(*args, **kwargs):
         return {
             "status": "OBSERVED",
@@ -140,6 +161,8 @@ async def test_known_entity_includes_historical_outcomes_and_calibration(monkeyp
     monkeypatch.setattr(adapter, "funding_history_for_entity", fake_funding)
     monkeypatch.setattr(adapter, "synthesize_entity_history", fake_history)
     monkeypatch.setattr(adapter, "market_lifecycle_for_mint", fake_lifecycle)
+    monkeypatch.setattr(adapter, "persist_market_pattern_occurrence", fake_persist)
+    monkeypatch.setattr(adapter, "market_pattern_history", fake_pattern_history)
     monkeypatch.setattr(adapter, "find_historical_analogues", fake_analogues)
     monkeypatch.setattr(adapter, "historical_outcomes_for_analogues", fake_outcomes)
 
@@ -159,6 +182,9 @@ async def test_known_entity_includes_historical_outcomes_and_calibration(monkeyp
     assert result["market_outcome_analysis"]["status"] == "OBSERVED"
     assert result["market_outcome_analysis"]["metrics"]["price_usd"]["first"] == {"horizon": "5m", "value": 1.0}
     assert result["market_outcome_analysis"]["evidence_only"] is True
+    assert result["market_pattern_history"]["status"] == "OBSERVED"
+    assert result["market_pattern_history"]["occurrence_count"] == 2
+    assert result["market_pattern_history"]["distinct_market_count"] == 2
     assert result["historical_outcome_comparison"]["status"] == "OBSERVED"
     assert result["historical_outcome_comparison"]["records"][0]["completed_count"] == 1
     assert result["historical_outcome_comparison"]["records"][0]["outcomes_unknown"] == 1
@@ -170,5 +196,6 @@ async def test_known_entity_includes_historical_outcomes_and_calibration(monkeyp
     assert result["historical_outcome_calibration"]["completed_count"] == 1
     assert result["historical_outcome_calibration"]["outcome_coverage"] == 0.5
     assert result["bounded"]["outcome_launch_limit_per_analogue"] == 20
+    assert result["bounded"]["market_pattern_history_limit"] == 20
     assert result["historical_outcome_comparison"]["evidence_only"] is True
     assert result["historical_outcome_calibration"]["evidence_only"] is True

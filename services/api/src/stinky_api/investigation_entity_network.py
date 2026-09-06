@@ -22,6 +22,7 @@ from stinky_api.historical_outcome_calibration import calibrate_historical_outco
 from stinky_api.historical_outcome_comparison import historical_outcomes_for_analogues
 from stinky_api.market_outcome_analysis import analyze_market_lifecycle, market_path_signature
 from stinky_api.market_outcome_history import market_lifecycle_for_mint
+from stinky_api.market_pattern_history import market_pattern_history, persist_market_pattern_occurrence
 
 
 def _unknown(*, status: str, wallet_limit: int, relationship_limit: int) -> dict[str, Any]:
@@ -29,10 +30,11 @@ def _unknown(*, status: str, wallet_limit: int, relationship_limit: int) -> dict
         "status": status, "entity": None, "wallets": [], "relationships": [], "funding_history": [],
         "market_lifecycle": {"status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN", "mint": None, "records": [], "missing": ["market_outcome_observations"], "bounded": {"limit": relationship_limit}, "evidence_only": True},
         "market_outcome_analysis": {"status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN", "observed_horizons": [], "observed_record_count": 0, "metrics": {}, "missing": ["market_outcome_observations"], "bounded": {"limit": relationship_limit}, "evidence_only": True},
+        "market_pattern_history": {"status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN", "pattern_hash": None, "occurrence_count": 0, "distinct_market_count": 0, "records": [], "missing": ["market_path_pattern_occurrences"], "bounded": {"limit": relationship_limit}, "evidence_only": True},
         "historical_analogues": {"status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN", "records": [], "missing": ["entity_history"], "evidence_only": True},
         "historical_outcome_comparison": {"status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN", "records": [], "missing": ["entity_history"], "evidence_only": True},
         "historical_outcome_calibration": {"status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN", "analogue_count": 0, "analogue_with_launches": 0, "launch_count_observed": 0, "outcomes_known": 0, "outcomes_unknown": 0, "completed_count": 0, "outcome_coverage": None, "missing": ["entity_history"], "evidence_only": True},
-        "bounded": {"wallet_limit": wallet_limit, "relationship_limit": relationship_limit, "funding_observation_limit": relationship_limit, "analogue_limit": 10, "analogue_candidate_limit": 500, "outcome_launch_limit_per_analogue": 20, "market_lifecycle_limit": relationship_limit},
+        "bounded": {"wallet_limit": wallet_limit, "relationship_limit": relationship_limit, "funding_observation_limit": relationship_limit, "analogue_limit": 10, "analogue_candidate_limit": 500, "outcome_launch_limit_per_analogue": 20, "market_lifecycle_limit": relationship_limit, "market_pattern_history_limit": relationship_limit},
         "evidence_only": True, "missing": ["entity_history"],
     }
 
@@ -57,6 +59,7 @@ async def entity_network_for_investigation(
     analogue_candidate_limit = max(analogue_limit, min(500, int(analogue_candidate_limit)))
     outcome_launch_limit_per_analogue = max(1, min(100, int(outcome_launch_limit_per_analogue)))
     market_lifecycle_limit = relationship_limit
+    market_pattern_history_limit = relationship_limit
 
     resolved_entity_id: UUID | None = None
     if entity_id:
@@ -97,9 +100,6 @@ async def entity_network_for_investigation(
     except Exception:
         return _unknown(status="UNKNOWN", wallet_limit=wallet_limit, relationship_limit=relationship_limit)
 
-    # Market lifecycle evidence is market-level rather than entity-level. When
-    # the caller does not supply the candidate mint, use the newest observed
-    # entity launch as the explicit evidence anchor; no mint is fabricated.
     resolved_mint = str(mint or "").strip() or None
     if resolved_mint is None:
         try:
@@ -140,6 +140,34 @@ async def entity_network_for_investigation(
         market_outcome_analysis["temporal_cutoff_enforced"] = market_lifecycle.get("temporal_cutoff_enforced", False)
     market_path = market_path_signature(market_outcome_analysis)
 
+    pattern_history = {
+        "status": "UNKNOWN",
+        "pattern_hash": None,
+        "occurrence_count": 0,
+        "distinct_market_count": 0,
+        "records": [],
+        "missing": ["market_path_pattern_occurrences"],
+        "bounded": {"limit": market_pattern_history_limit},
+        "evidence_only": True,
+    }
+    if resolved_mint and market_path.get("status") == "OBSERVED":
+        lifecycle_records = market_lifecycle.get("records", [])
+        observed_at = lifecycle_records[-1].get("observed_at") if lifecycle_records else None
+        try:
+            pattern_hash = await persist_market_pattern_occurrence(
+                session,
+                mint=resolved_mint,
+                signature=market_path.get("signature", {}),
+                observed_at=observed_at,
+            )
+            if pattern_hash:
+                history_kwargs: dict[str, Any] = {"limit": market_pattern_history_limit}
+                if as_of is not None:
+                    history_kwargs["as_of"] = as_of
+                pattern_history = await market_pattern_history(session, pattern_hash, **history_kwargs)
+        except Exception:
+            pass
+
     try:
         analogue_kwargs = {"limit": analogue_limit, "candidate_limit": analogue_candidate_limit}
         if as_of is not None:
@@ -162,12 +190,14 @@ async def entity_network_for_investigation(
     graph["market_lifecycle"] = market_lifecycle
     graph["market_outcome_analysis"] = market_outcome_analysis
     graph["market_path_signature"] = market_path
+    graph["market_pattern_history"] = pattern_history
     graph["historical_analogues"] = historical_analogues
     graph["historical_outcome_comparison"] = historical_outcomes
     graph["historical_outcome_calibration"] = historical_calibration
     graph["bounded"]["funding_observation_limit"] = relationship_limit
     graph["bounded"]["launch_history_limit"] = relationship_limit
     graph["bounded"]["market_lifecycle_limit"] = market_lifecycle_limit
+    graph["bounded"]["market_pattern_history_limit"] = market_pattern_history_limit
     graph["bounded"]["analogue_limit"] = analogue_limit
     graph["bounded"]["analogue_candidate_limit"] = analogue_candidate_limit
     graph["bounded"]["outcome_launch_limit_per_analogue"] = outcome_launch_limit_per_analogue
