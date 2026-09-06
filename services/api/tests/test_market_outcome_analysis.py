@@ -1,4 +1,4 @@
-from stinky_api.market_outcome_analysis import analyze_market_lifecycle
+from stinky_api.market_outcome_analysis import analyze_market_lifecycle, market_path_signature
 
 
 def test_analysis_describes_observed_path_and_extremes_only():
@@ -41,3 +41,16 @@ def test_analysis_returns_unknown_without_records():
     assert result["metrics"] == {}
     assert result["missing"] == ["market_outcome_observations"]
     assert result["evidence_only"] is True
+
+
+def test_signature_is_outcome_agnostic_and_deterministic():
+    result = analyze_market_lifecycle([
+        {"horizon": "5m", "metrics": {"price_usd": 1.0}},
+        {"horizon": "15m", "metrics": {"price_usd": 1.2}},
+    ])
+    signature = market_path_signature(result)
+
+    assert signature["status"] == "OBSERVED"
+    assert signature["signature"]["observed_horizons"] == ["5m", "15m"]
+    assert signature["signature"]["metrics"]["price_usd"]["percent_change_first_to_last"] == 20.0
+    assert signature["evidence_only"] is True
