@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { api, shortAddr } from "@/lib/api/client";
@@ -8,6 +8,14 @@ import type { ResearchResponse, ResearchItem } from "@/types";
 import { CopyButton } from "@/components/ui/CopyButton";
 
 export default function ResearchPage() {
+  return (
+    <Suspense fallback={<div className="p-4 text-sm text-terminal-muted">Loading research…</div>}>
+      <ResearchContent />
+    </Suspense>
+  );
+}
+
+function ResearchContent() {
   const searchParams = useSearchParams();
   const [q, setQ] = useState(() => searchParams.get("q") || "");
   const [data, setData] = useState<ResearchResponse | null>(null);
@@ -24,7 +32,6 @@ export default function ResearchPage() {
   }, []);
 
   useEffect(() => {
-    // load overview on mount
     api
       .research("", "overview")
       .then(setData)
@@ -56,16 +63,12 @@ export default function ResearchPage() {
   return (
     <div className="space-y-3 p-4">
       <div>
-        <h1 className="text-sm font-medium uppercase tracking-wide text-terminal-dim">
-          Research
-        </h1>
+        <h1 className="text-sm font-medium uppercase tracking-wide text-terminal-dim">Research</h1>
         <p className="mt-1 max-w-2xl text-xs text-terminal-muted">
           Query measured intelligence only. Keywords route to the same SQL as Patterns /
           Graph / Wallets — no fabricated AI answers.
         </p>
-        {data?.engine && (
-          <p className="mt-1 text-2xs text-terminal-muted mono">{data.engine}</p>
-        )}
+        {data?.engine && <p className="mt-1 text-2xs text-terminal-muted mono">{data.engine}</p>}
       </div>
 
       <div className="panel flex flex-wrap items-end gap-2 p-3">
@@ -108,10 +111,8 @@ export default function ResearchPage() {
       {data && (
         <div className="text-xs text-terminal-dim">
           <span className="text-terminal-muted">Kind</span>{" "}
-          <span className="mono">{data.kind}</span>
-          {" · "}
-          {data.explanation}
-          {" · "}
+          <span className="mono">{data.kind}</span>{" · "}
+          {data.explanation}{" · "}
           <span className="tabular">{data.count} results</span>
         </div>
       )}
@@ -136,52 +137,34 @@ function ResultCard({ item }: { item: ResearchItem }) {
     <div className="panel p-3">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
-          <div className="text-2xs uppercase tracking-wide text-terminal-muted">
-            {item.type}
-          </div>
+          <div className="text-2xs uppercase tracking-wide text-terminal-muted">{item.type}</div>
           <div className="mt-0.5 text-sm font-medium">{item.title}</div>
           <p className="mt-1 text-xs text-terminal-dim">{item.summary}</p>
         </div>
         <div className="flex flex-wrap gap-2 text-2xs">
           {item.wallet && (
             <>
-              <Link
-                href={`/wallets/${item.wallet}`}
-                className="mono text-terminal-accent hover:underline"
-              >
+              <Link href={`/wallets/${item.wallet}`} className="mono text-terminal-accent hover:underline">
                 {shortAddr(item.wallet, 5)}
               </Link>
               <CopyButton value={item.wallet} label="CA" />
-              <Link
-                href={`/time-machine`}
-                className="text-terminal-muted hover:underline"
-                title="Paste wallet in Time Machine"
-              >
+              <Link href="/time-machine" className="text-terminal-muted hover:underline" title="Paste wallet in Time Machine">
                 Timeline
               </Link>
             </>
           )}
           {item.wallet_b && (
-            <Link
-              href={`/wallets/${item.wallet_b}`}
-              className="mono text-terminal-accent hover:underline"
-            >
+            <Link href={`/wallets/${item.wallet_b}`} className="mono text-terminal-accent hover:underline">
               + {shortAddr(item.wallet_b, 5)}
             </Link>
           )}
           {item.mint && (
-            <Link
-              href={`/tokens/${item.mint}`}
-              className="mono text-terminal-accent hover:underline"
-            >
+            <Link href={`/tokens/${item.mint}`} className="mono text-terminal-accent hover:underline">
               mint {shortAddr(item.mint, 4)}
             </Link>
           )}
           {item.entity_id && (
-            <Link
-              href={`/entities/${item.entity_id}`}
-              className="text-terminal-accent hover:underline"
-            >
+            <Link href={`/entities/${item.entity_id}`} className="text-terminal-accent hover:underline">
               entity
             </Link>
           )}
