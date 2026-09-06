@@ -22,6 +22,7 @@ async def test_unknown_investigation_entity_is_explicit_and_bounded():
     assert result["evidence_only"] is True
     assert result["missing"] == ["entity_history"]
     assert result["funding_history"] == []
+    assert result["market_lifecycle"]["status"] == "NEW-UNKNOWN"
     assert result["historical_analogues"]["status"] == "NEW-UNKNOWN"
     assert result["historical_outcome_comparison"]["status"] == "NEW-UNKNOWN"
     assert result["historical_outcome_calibration"]["status"] == "NEW-UNKNOWN"
@@ -29,6 +30,7 @@ async def test_unknown_investigation_entity_is_explicit_and_bounded():
         "wallet_limit": 1,
         "relationship_limit": 500,
         "funding_observation_limit": 500,
+        "market_lifecycle_limit": 500,
         "analogue_limit": 10,
         "analogue_candidate_limit": 500,
         "outcome_launch_limit_per_analogue": 20,
@@ -86,6 +88,18 @@ async def test_known_entity_includes_historical_outcomes_and_calibration(monkeyp
     async def fake_history(*args, **kwargs):
         return {"status": "KNOWN_ENTITY", "sources": {}, "evidence_only": True}
 
+    async def fake_lifecycle(*args, **kwargs):
+        assert kwargs["limit"] == 20
+        return {
+            "status": "OBSERVED",
+            "mint": "MINT",
+            "records": [{"horizon": "5m", "horizon_seconds": 300, "observed_at": "2026-09-04T00:05:00+00:00"}],
+            "missing": [],
+            "bounded": {"limit": 20},
+            "evidence_basis": "market_snapshot_observation",
+            "evidence_only": True,
+        }
+
     async def fake_analogues(*args, **kwargs):
         return {
             "status": "OBSERVED",
@@ -119,18 +133,23 @@ async def test_known_entity_includes_historical_outcomes_and_calibration(monkeyp
     monkeypatch.setattr(adapter, "_assemble", fake_assemble)
     monkeypatch.setattr(adapter, "funding_history_for_entity", fake_funding)
     monkeypatch.setattr(adapter, "synthesize_entity_history", fake_history)
+    monkeypatch.setattr(adapter, "market_lifecycle_for_mint", fake_lifecycle)
     monkeypatch.setattr(adapter, "find_historical_analogues", fake_analogues)
     monkeypatch.setattr(adapter, "historical_outcomes_for_analogues", fake_outcomes)
 
     result = await entity_network_for_investigation(
         Session(),
         creator_wallet="creator-wallet",
+        mint="MINT",
         wallet_limit=10,
         relationship_limit=20,
     )
 
     assert result["status"] == "KNOWN_ENTITY"
     assert result["evidence_only"] is True
+    assert result["market_lifecycle"]["status"] == "OBSERVED"
+    assert result["market_lifecycle"]["mint"] == "MINT"
+    assert result["market_lifecycle"]["records"][0]["horizon"] == "5m"
     assert result["historical_outcome_comparison"]["status"] == "OBSERVED"
     assert result["historical_outcome_comparison"]["records"][0]["completed_count"] == 1
     assert result["historical_outcome_comparison"]["records"][0]["outcomes_unknown"] == 1
