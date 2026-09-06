@@ -1,4 +1,4 @@
-from stinky_api.market_path_patterns import discover_market_path_patterns
+from stinky_api.market_path_patterns import canonical_pattern_hash, discover_market_path_patterns
 
 
 def _analysis(change):
@@ -13,7 +13,14 @@ def test_repeated_structural_paths_are_grouped():
     assert result["status"] == "OBSERVED"
     assert result["observed_market_count"] == 3
     assert result["patterns"][0]["occurrence_count"] == 2
+    assert result["patterns"][0]["pattern_id"] == result["patterns"][0]["pattern_hash"]
     assert result["patterns"][0]["evidence_only"] is True
+
+
+def test_pattern_hash_is_stable_across_dict_order():
+    left = {"b": {"y": 2, "x": 1}, "a": ["5m", "15m"]}
+    right = {"a": ["5m", "15m"], "b": {"x": 1, "y": 2}}
+    assert canonical_pattern_hash(left) == canonical_pattern_hash(right)
 
 
 def test_missing_observations_remain_unknown():
