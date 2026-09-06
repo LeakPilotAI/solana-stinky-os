@@ -11,6 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from entity_resolver.config import settings
+from entity_resolver.sql_migrations import split_postgres_statements
 
 
 class WalletRelationshipStore:
@@ -35,10 +36,8 @@ class WalletRelationshipStore:
         async with self._sessions() as session:
             for path in paths:
                 sql = path.read_text(encoding="utf-8")
-                for statement in sql.split(";"):
-                    statement = statement.strip()
-                    if statement:
-                        await session.execute(text(statement))
+                for statement in split_postgres_statements(sql):
+                    await session.execute(text(statement))
             await session.commit()
 
     async def record_relationship(
