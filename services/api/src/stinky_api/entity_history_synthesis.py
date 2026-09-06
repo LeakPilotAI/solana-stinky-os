@@ -124,12 +124,13 @@ async def synthesize_entity_history(session: AsyncSession, entity_id: UUID, *, g
                 }
             item["outcome_status"] = canonical_outcome_from_event(event)
             item["outcome_resolution_basis"] = "immutable_post_migration_tracking_completed_event" if item["outcome_status"] != "UNKNOWN" else "UNKNOWN"
+            item["outcome_evidence_basis"] = "events:post_migration.tracking_completed" if event is not None else "UNKNOWN"
             item["mutable_outcome_status_is_historical_authority"] = False
             item["observed_at"] = _iso(item.get("observed_at")); item["created_at"] = _iso(item.get("created_at")); item["ingested_at"] = item.get("created_at")
             item["outcome_observed_at"] = _iso(item.get("outcome_observed_at")); item["outcome_ingested_at"] = _iso(item.get("outcome_ingested_at"))
             item.pop("outcome_event_payload", None)
             launches.append(item)
-        launch_history = {"status": "OBSERVED", "records": launches, "evidence_basis": "entity_launches+immutable_tracking_completed_events"}
+        launch_history = {"status": "OBSERVED", "records": launches, "evidence_basis": "entity_launches", "outcome_evidence_basis": "immutable_post_migration.tracking_completed_events"}
     except Exception:
         launch_history = _unknown_source("launch_history"); launch_history["evidence_basis"] = "unknown_table_or_query"
 
