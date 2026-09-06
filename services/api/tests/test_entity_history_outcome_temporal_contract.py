@@ -9,7 +9,9 @@ def test_entity_history_uses_immutable_completion_event_for_outcome():
     assert "e.occurred_at <= :as_of AND e.ingested_at <= :as_of" in source
     assert "canonical_outcome_from_event" in source
     assert '"mutable_outcome_status_is_historical_authority"] = False' in source
-    assert 'item["outcome_status"] = canonical_outcome_from_event(event)' in source
+    assert 'resolved_outcome = canonical_outcome_from_event(event)' in source
+    assert 'item["outcome_state"] = resolved_outcome' in source
+    assert 'item["outcome_status"] = None if resolved_outcome == "UNKNOWN" else resolved_outcome' in source
 
 
 def test_lifecycle_memory_keeps_all_canonical_horizons_explicit():
