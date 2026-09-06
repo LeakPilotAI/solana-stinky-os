@@ -87,6 +87,8 @@ async def persist_rolling_calibration_snapshot(
     as_of = _parse_time(rolling.get("as_of")) if rolling.get("as_of") is not None else None
     if rolling.get("as_of") is not None and as_of is None:
         return None
+    if as_of is not None and evidence_through > as_of:
+        return None
 
     criteria_hash = _criteria_hash(criteria)
     payload = json.dumps(rolling, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
@@ -180,7 +182,11 @@ async def calibration_longitudinal_memory(
     cutoff_clause = ""
     params: dict[str, Any] = {"pattern_hash": pattern_hash, "limit": bounded_limit}
     if cutoff is not None:
-        cutoff_clause = "AND evidence_through_observed_at <= :as_of"
+        cutoff_clause = """
+        AND evidence_through_observed_at <= :as_of
+        AND computed_at <= :as_of
+        AND ingested_at <= :as_of
+        """
         params["as_of"] = cutoff
     try:
         rows = (
