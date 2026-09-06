@@ -23,6 +23,7 @@ async def test_unknown_investigation_entity_is_explicit_and_bounded():
     assert result["missing"] == ["entity_history"]
     assert result["funding_history"] == []
     assert result["market_lifecycle"]["status"] == "NEW-UNKNOWN"
+    assert result["market_outcome_analysis"]["status"] == "NEW-UNKNOWN"
     assert result["historical_analogues"]["status"] == "NEW-UNKNOWN"
     assert result["historical_outcome_comparison"]["status"] == "NEW-UNKNOWN"
     assert result["historical_outcome_calibration"]["status"] == "NEW-UNKNOWN"
@@ -93,7 +94,12 @@ async def test_known_entity_includes_historical_outcomes_and_calibration(monkeyp
         return {
             "status": "OBSERVED",
             "mint": "MINT",
-            "records": [{"horizon": "5m", "horizon_seconds": 300, "observed_at": "2026-09-04T00:05:00+00:00"}],
+            "records": [{
+                "horizon": "5m",
+                "horizon_seconds": 300,
+                "observed_at": "2026-09-04T00:05:00+00:00",
+                "metrics": {"price_usd": 1.0},
+            }],
             "missing": [],
             "bounded": {"limit": 20},
             "evidence_basis": "market_snapshot_observation",
@@ -150,6 +156,9 @@ async def test_known_entity_includes_historical_outcomes_and_calibration(monkeyp
     assert result["market_lifecycle"]["status"] == "OBSERVED"
     assert result["market_lifecycle"]["mint"] == "MINT"
     assert result["market_lifecycle"]["records"][0]["horizon"] == "5m"
+    assert result["market_outcome_analysis"]["status"] == "OBSERVED"
+    assert result["market_outcome_analysis"]["metrics"]["price_usd"]["first"] == {"horizon": "5m", "value": 1.0}
+    assert result["market_outcome_analysis"]["evidence_only"] is True
     assert result["historical_outcome_comparison"]["status"] == "OBSERVED"
     assert result["historical_outcome_comparison"]["records"][0]["completed_count"] == 1
     assert result["historical_outcome_comparison"]["records"][0]["outcomes_unknown"] == 1
