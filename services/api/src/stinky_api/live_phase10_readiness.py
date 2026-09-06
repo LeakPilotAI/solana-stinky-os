@@ -12,6 +12,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from stinky_api.descriptive_pattern_discovery import discover_descriptive_patterns
+from stinky_api.historical_research_bridge import historical_research_bridge_preflight
 from stinky_api.pattern_discovery_dataset import form_pattern_discovery_dataset
 from stinky_api.pattern_stability_memory import persist_pattern_stability_snapshot
 from stinky_api.pattern_temporal_validation import validate_pattern_temporal_stability
@@ -45,6 +46,8 @@ def _compact_dataset(dataset: dict[str, Any]) -> dict[str, Any]:
         "coverage": dataset.get("coverage") or {},
         "criteria": dataset.get("criteria") or {},
         "bounded": dataset.get("bounded") or {},
+        "missing": dataset.get("missing") or [],
+        "failure_stage": dataset.get("failure_stage"),
     }
 
 
@@ -96,6 +99,7 @@ async def run_live_phase10_readiness(
     dataset_limit = max(50, min(500, int(dataset_limit)))
     historical_replay = as_of is not None
 
+    bridge_preflight = await historical_research_bridge_preflight(session)
     dataset = await form_pattern_discovery_dataset(
         session,
         limit=dataset_limit,
@@ -144,11 +148,24 @@ async def run_live_phase10_readiness(
     )
     gate = audit_phase10_readiness(dataset, discovery, validation, persistence)
 
+    bridge_counts = bridge_preflight.get("counts") if isinstance(bridge_preflight.get("counts"), dict) else {}
+    unbridged = bridge_counts.get("unbridged_historically_resolvable_migrations")
+    dataset_missing = dataset.get("missing") or []
+    if dataset.get("row_count", 0) == 0 and dataset_missing:
+        operator_note = "Phase 11 remains blocked because the historical research dataset query is unavailable. Inspect dataset.missing and bridge_preflight before collecting more data."
+    elif dataset.get("row_count", 0) == 0 and isinstance(unbridged, int) and unbridged > 0:
+        operator_note = "Phase 11 remains blocked. Historically resolvable migration rows exist but have not yet been bridged into entity_launches; run the explicit recovery command, then audit again."
+    elif gate.get("completion_status") == "PHASE_10_COMPLETE":
+        operator_note = "Phase 10 evidence criteria pass. This permits controlled Phase 11 research design only; it grants no predictive authority."
+    else:
+        operator_note = "Phase 11 remains blocked. Keep collecting or repairing the specific failed evidence criteria shown below."
+
     return {
         "available": True,
-        "engine": "phase10-live-readiness-v1",
+        "engine": "phase10-live-readiness-v1.1-bridge-diagnostics",
         "completion_status": gate.get("completion_status"),
         "ready_for_phase_11_research": gate.get("ready_for_phase_11_research", False),
+        "bridge_preflight": bridge_preflight,
         "dataset": _compact_dataset(dataset),
         "discovery": _compact_discovery(discovery),
         "validation": _compact_validation(validation),
@@ -157,16 +174,13 @@ async def run_live_phase10_readiness(
         "persisted_or_deduped_evidence_count": len(persisted_hashes),
         "audit": gate,
         "failed_criteria": gate.get("failed_criteria") or [],
-        "operator_note": (
-            "Phase 10 evidence criteria pass. This permits controlled Phase 11 research design only; it grants no predictive authority."
-            if gate.get("completion_status") == "PHASE_10_COMPLETE"
-            else "Phase 11 remains blocked. Keep collecting or repairing the specific failed evidence criteria shown below."
-        ),
+        "operator_note": operator_note,
         "historical_replay": historical_replay,
         "command_center_coupled": False,
         "bounded": {
             "dataset_limit": dataset_limit,
             "dataset_query_count": (dataset.get("bounded") or {}).get("query_count"),
+            "bridge_preflight_query_count_max": (bridge_preflight.get("bounded") or {}).get("count_queries_max"),
             "persistence_query_count": (persistence.get("bounded") or {}).get("query_count", 1 if pattern_hashes else 0),
             "max_patterns": 100,
         },
