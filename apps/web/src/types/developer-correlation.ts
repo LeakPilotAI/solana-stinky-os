@@ -62,7 +62,7 @@ export type DeveloperCorrelationMotifs = {
   multi_entity_constellation_count?: number;
   records?: DeveloperCorrelationMotifRecord[];
   motif_is_not_ownership_or_coordination?: true;
-  motif_is_not_risk_or_quality_score?: true;
+  motif_is_not_risk_or_quality_inference?: true;
   interpretation?: "DESCRIPTIVE_EVIDENCE_ONLY" | string;
   ownership_inferred?: false;
   coordination_inferred?: false;
