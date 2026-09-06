@@ -20,7 +20,7 @@ from stinky_api.entity_history_synthesis import synthesize_entity_history
 from stinky_api.funding_history import funding_history_for_entity
 from stinky_api.historical_outcome_calibration import calibrate_historical_outcomes
 from stinky_api.historical_outcome_comparison import historical_outcomes_for_analogues
-from stinky_api.market_outcome_analysis import analyze_market_lifecycle
+from stinky_api.market_outcome_analysis import analyze_market_lifecycle, market_path_signature
 from stinky_api.market_outcome_history import market_lifecycle_for_mint
 
 
@@ -138,6 +138,7 @@ async def entity_network_for_investigation(
     if as_of is not None:
         market_outcome_analysis["as_of"] = market_lifecycle.get("as_of")
         market_outcome_analysis["temporal_cutoff_enforced"] = market_lifecycle.get("temporal_cutoff_enforced", False)
+    market_path = market_path_signature(market_outcome_analysis)
 
     try:
         analogue_kwargs = {"limit": analogue_limit, "candidate_limit": analogue_candidate_limit}
@@ -160,6 +161,7 @@ async def entity_network_for_investigation(
     graph["history"] = history
     graph["market_lifecycle"] = market_lifecycle
     graph["market_outcome_analysis"] = market_outcome_analysis
+    graph["market_path_signature"] = market_path
     graph["historical_analogues"] = historical_analogues
     graph["historical_outcome_comparison"] = historical_outcomes
     graph["historical_outcome_calibration"] = historical_calibration
