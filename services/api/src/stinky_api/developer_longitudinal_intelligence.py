@@ -109,11 +109,19 @@ async def developer_longitudinal_intelligence(
 
     launch_source = history.get("launch_history") if isinstance(history, dict) else None
     source_records = launch_source.get("records") if isinstance(launch_source, dict) else None
-    source_records = source_records if isinstance(source_records, list) else []
+    source_records = [dict(row) for row in source_records if isinstance(row, dict)] if isinstance(source_records, list) else []
+
+    reference_mint_inferred = False
     current_mint = str(current_mint or "").strip() or None
+    if current_mint is None and source_records:
+        inferred = str(source_records[0].get("mint") or "").strip()
+        if inferred:
+            current_mint = inferred
+            reference_mint_inferred = True
+
     launches = [
-        dict(row) for row in source_records
-        if isinstance(row, dict) and (current_mint is None or str(row.get("mint") or "") != current_mint)
+        row for row in source_records
+        if current_mint is None or str(row.get("mint") or "") != current_mint
     ][:launch_limit]
 
     entity_wallet_rows = graph.get("wallets") if isinstance(graph, dict) else None
@@ -137,9 +145,11 @@ async def developer_longitudinal_intelligence(
         })
 
     recurring_buyers: list[dict[str, Any]] = []
+    early_buyer_query_status = "NOT_APPLICABLE"
     if launches:
         historical_mints = [str(row.get("mint")) for row in launches if row.get("mint")]
         if historical_mints:
+            early_buyer_query_status = "UNKNOWN"
             cutoff_clause = "AND mb.bought_at <= :as_of" if cutoff is not None else ""
             params: dict[str, Any] = {
                 "mints": historical_mints,
@@ -176,6 +186,7 @@ async def developer_longitudinal_intelligence(
                     item["ownership_inferred"] = False
                     item["coordination_inferred"] = False
                     recurring_buyers.append(item)
+                early_buyer_query_status = "OBSERVED"
             except Exception:
                 recurring_buyers = []
 
@@ -191,6 +202,8 @@ async def developer_longitudinal_intelligence(
     result: dict[str, Any] = {
         "status": "OBSERVED" if launches or associated_wallets or funding_history else "NEW-UNKNOWN",
         "entity_id": str(entity_id),
+        "reference_mint": current_mint,
+        "reference_mint_inferred_from_latest_visible_launch": reference_mint_inferred,
         "current_mint_excluded_from_history": current_mint is not None,
         "history_state": history_state,
         "fresh_entity_interpretation": "NEW-UNKNOWN" if not launches else None,
@@ -213,6 +226,7 @@ async def developer_longitudinal_intelligence(
             "intent_inferred": False,
         },
         "recurring_early_buyers": {
+            "status": early_buyer_query_status,
             "count": len(recurring_buyers),
             "records": recurring_buyers,
             "coordination_inferred": False,
@@ -222,6 +236,12 @@ async def developer_longitudinal_intelligence(
             "launch_limit": launch_limit,
             "early_buyer_limit": early_buyer_limit,
             "funding_observation_count": len(funding_history),
+        },
+        "provenance": {
+            "evidence_source": "developer_longitudinal",
+            "evidence_basis": "entity_launches+entity_wallets+wallet_funding_observations+migration_buyers",
+            "reference_mint": current_mint,
+            "as_of": cutoff.isoformat() if cutoff is not None else None,
         },
         "interpretation": "DESCRIPTIVE_EVIDENCE_ONLY",
         "risk_inferred": False,
