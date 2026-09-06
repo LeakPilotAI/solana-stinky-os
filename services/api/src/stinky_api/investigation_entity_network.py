@@ -20,6 +20,7 @@ from stinky_api.entity_history_synthesis import synthesize_entity_history
 from stinky_api.funding_history import funding_history_for_entity
 from stinky_api.historical_outcome_calibration import calibrate_historical_outcomes
 from stinky_api.historical_outcome_comparison import historical_outcomes_for_analogues
+from stinky_api.market_outcome_analysis import analyze_market_lifecycle
 from stinky_api.market_outcome_history import market_lifecycle_for_mint
 
 
@@ -27,6 +28,7 @@ def _unknown(*, status: str, wallet_limit: int, relationship_limit: int) -> dict
     return {
         "status": status, "entity": None, "wallets": [], "relationships": [], "funding_history": [],
         "market_lifecycle": {"status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN", "mint": None, "records": [], "missing": ["market_outcome_observations"], "bounded": {"limit": relationship_limit}, "evidence_only": True},
+        "market_outcome_analysis": {"status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN", "observed_horizons": [], "observed_record_count": 0, "metrics": {}, "missing": ["market_outcome_observations"], "bounded": {"limit": relationship_limit}, "evidence_only": True},
         "historical_analogues": {"status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN", "records": [], "missing": ["entity_history"], "evidence_only": True},
         "historical_outcome_comparison": {"status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN", "records": [], "missing": ["entity_history"], "evidence_only": True},
         "historical_outcome_calibration": {"status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN", "analogue_count": 0, "analogue_with_launches": 0, "launch_count_observed": 0, "outcomes_known": 0, "outcomes_unknown": 0, "completed_count": 0, "outcome_coverage": None, "missing": ["entity_history"], "evidence_only": True},
@@ -129,6 +131,14 @@ async def entity_network_for_investigation(
             lifecycle_kwargs["as_of"] = as_of
         market_lifecycle = await market_lifecycle_for_mint(session, resolved_mint, **lifecycle_kwargs)
 
+    market_outcome_analysis = analyze_market_lifecycle(
+        market_lifecycle.get("records", []),
+        limit=market_lifecycle_limit,
+    )
+    if as_of is not None:
+        market_outcome_analysis["as_of"] = market_lifecycle.get("as_of")
+        market_outcome_analysis["temporal_cutoff_enforced"] = market_lifecycle.get("temporal_cutoff_enforced", False)
+
     try:
         analogue_kwargs = {"limit": analogue_limit, "candidate_limit": analogue_candidate_limit}
         if as_of is not None:
@@ -149,6 +159,7 @@ async def entity_network_for_investigation(
     graph["funding_history"] = funding_history
     graph["history"] = history
     graph["market_lifecycle"] = market_lifecycle
+    graph["market_outcome_analysis"] = market_outcome_analysis
     graph["historical_analogues"] = historical_analogues
     graph["historical_outcome_comparison"] = historical_outcomes
     graph["historical_outcome_calibration"] = historical_calibration
