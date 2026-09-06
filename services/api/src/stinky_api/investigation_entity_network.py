@@ -62,7 +62,6 @@ def _unknown(*, status: str, wallet_limit: int, relationship_limit: int) -> dict
             "market_pattern_history_limit": relationship_limit,
             "market_pattern_outcome_occurrence_limit": relationship_limit,
             "market_pattern_calibration_memory_limit": relationship_limit,
-            "market_pattern_regime_pattern_limit": relationship_limit,
         },
         "evidence_only": True,
         "missing": ["entity_history"],
