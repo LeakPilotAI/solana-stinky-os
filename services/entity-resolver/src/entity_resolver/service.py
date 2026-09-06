@@ -1,4 +1,4 @@
-﻿"""Entity resolver service – batch + event-driven entity intelligence."""
+"""Entity resolver service – batch + event-driven entity intelligence."""
 
 from __future__ import annotations
 
@@ -184,6 +184,33 @@ class EntityService:
         }
         return source, destination, observed_at, amount_lamports, signature, evidence
 
+    async def _capture_phase10_evidence(self, mint: str) -> None:
+        """Persist current descriptive developer/correlation snapshots after migration.
+
+        This is prospective capture only. Failure is visible later as missing evidence
+        and must not prevent the canonical migration event from being acknowledged.
+        """
+        mint = str(mint or "").strip()
+        if not mint:
+            return
+        base = settings.api_base_url.rstrip("/")
+        try:
+            response = await self._http.get(
+                f"{base}/v1/entity-graph/investigation/{mint}/calibration"
+            )
+            response.raise_for_status()
+            logger.info(
+                "entity.phase10_snapshot_capture_completed",
+                mint=mint,
+                status_code=response.status_code,
+            )
+        except Exception as exc:
+            logger.warning(
+                "entity.phase10_snapshot_capture_failed",
+                mint=mint,
+                error=str(exc)[:200],
+            )
+
     async def _observe_wallet_funding(self, wallet: str) -> None:
         """Capture recent inbound SOL transfers for an observed buyer wallet once per run."""
         if not wallet or wallet in self._funding_scanned_wallets:
@@ -278,8 +305,34 @@ class EntityService:
 
         elif et == "token.migrated":
             creator = payload.get("creator") or payload.get("deployer")
+            mint = payload.get("mint") or payload.get("token") or payload.get("address")
             if creator:
-                await self._resolver.ensure_deployer_observed(creator)
+                entity_id = await self._resolver.ensure_deployer_observed(creator)
+                inserted = await self._launch_history.record_launch(
+                    entity_id=entity_id,
+                    deployer_wallet=creator,
+                    event_id=f"migrated:{msg_id}",
+                    mint=mint,
+                    observed_at=self._event_timestamp(event),
+                )
+                if inserted:
+                    fingerprint = await self._behavior.refresh_entity(entity_id)
+                    logger.info(
+                        "entity.migration_launch_recorded",
+                        entity_id=entity_id,
+                        deployer=creator,
+                        mint=mint,
+                        cadence_bucket=fingerprint["cadence_bucket"],
+                    )
+                else:
+                    logger.debug(
+                        "entity.migration_launch_duplicate",
+                        event_id=msg_id,
+                        deployer=creator,
+                        mint=mint,
+                    )
+                if mint:
+                    await self._capture_phase10_evidence(str(mint))
 
         elif et == "post_migration.buy":
             wallet = payload.get("wallet")
