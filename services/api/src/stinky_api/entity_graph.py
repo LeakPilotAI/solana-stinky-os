@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from stinky_api.cross_investigation_calibration_change_feed import calibration_change_feed
 from stinky_api.db import get_session
 
 router = APIRouter(prefix="/v1/entity-graph", tags=["entity-graph"])
@@ -184,6 +185,22 @@ async def _assemble(
         result["as_of"] = cutoff.isoformat()
         result["temporal_cutoff_enforced"] = True
     return result
+
+
+@router.get("/calibration-changes")
+async def cross_investigation_calibration_changes(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    limit: int = Query(50, ge=1, le=200),
+    as_of: datetime | None = Query(None),
+    include_unchanged: bool = Query(False),
+) -> dict[str, Any]:
+    """Latest factual calibration-synthesis change per observed pattern."""
+    return await calibration_change_feed(
+        session,
+        limit=limit,
+        as_of=as_of,
+        include_unchanged=include_unchanged,
+    )
 
 
 @router.get("/investigation/{mint}/calibration")
