@@ -14,6 +14,8 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from stinky_api.historical_launch_outcome_provenance import historical_launch_outcome_provenance
+
 AUTHORITY = {
     "interpretation": "DESCRIPTIVE_EVIDENCE_ONLY",
     "predictive_authority": False,
@@ -47,8 +49,10 @@ def _outcome_visible(status: Any, meta: Any, cutoff: datetime | None) -> tuple[s
     status_value = raw if raw in {"RUNNER", "HELD", "FADE", "UNKNOWN"} else "UNKNOWN"
     observed = meta.get("observed_at") if isinstance(meta, dict) else None
     observed_dt = _parse(observed) if observed else None
+    ingested = meta.get("ingested_at") if isinstance(meta, dict) else None
+    ingested_dt = _parse(ingested) if ingested else None
     if cutoff is not None and status_value != "UNKNOWN":
-        if observed_dt is None or observed_dt > cutoff:
+        if observed_dt is None or observed_dt > cutoff or ingested_dt is None or ingested_dt > cutoff:
             return "UNKNOWN", _iso(observed)
     return status_value, _iso(observed)
 
@@ -75,16 +79,22 @@ async def motif_outcome_context(
     cutoff = _parse(as_of)
     if as_of is not None and cutoff is None:
         return {"status": "UNKNOWN", "entity_id": entity_key, "records": [], "missing": ["valid_as_of"], **AUTHORITY}
+    reference_provenance = None
+    if current_mint:
+        try:
+            reference_provenance = await historical_launch_outcome_provenance(session, current_mint, as_of=cutoff, observation_limit=20)
+        except Exception:
+            reference_provenance = {"status": "UNKNOWN", "mint": current_mint, "outcome": "UNKNOWN", "observations": [], "missing": ["reference_launch_outcome_provenance"], **AUTHORITY}
 
     motifs = [m for m in (network_motifs.get("records") or []) if isinstance(m, dict)] if isinstance(network_motifs, dict) else []
     if not motifs:
         return {"status": "NEW-UNKNOWN", "entity_id": entity_key, "records": [], "motif_analogue_count": 0, "launch_analogue_count": 0,
-                "outcome_counts": {"RUNNER": 0, "HELD": 0, "FADE": 0, "UNKNOWN": 0},
+                "outcome_counts": {"RUNNER": 0, "HELD": 0, "FADE": 0, "UNKNOWN": 0}, "reference_launch_outcome_provenance": reference_provenance,
                 "analogue_history_is_not_prediction": True, "bounded": {"launch_limit": launch_limit}, **AUTHORITY}
 
     related_ids = sorted({str(e) for m in motifs for e in (m.get("other_entity_ids") or []) if e})
     if not related_ids:
-        return {"status": "UNKNOWN", "entity_id": entity_key, "records": [], "missing": ["motif_related_entities"], **AUTHORITY}
+        return {"status": "UNKNOWN", "entity_id": entity_key, "records": [], "reference_launch_outcome_provenance": reference_provenance, "missing": ["motif_related_entities"], **AUTHORITY}
 
     params: dict[str, Any] = {"entity_ids": related_ids, "limit": launch_limit, "current_mint": current_mint}
     clause = "AND l.observed_at <= :as_of" if cutoff is not None else ""
@@ -101,15 +111,16 @@ async def motif_outcome_context(
             LIMIT :limit
         """), params)).mappings().all()
     except Exception:
-        return {"status": "UNKNOWN", "entity_id": entity_key, "records": [], "missing": ["historical_motif_launch_outcomes"], **AUTHORITY}
+        return {"status": "UNKNOWN", "entity_id": entity_key, "records": [], "reference_launch_outcome_provenance": reference_provenance, "missing": ["historical_motif_launch_outcomes"], **AUTHORITY}
 
     launches: list[dict[str, Any]] = []
     for row in rows:
         outcome, outcome_observed_at = _outcome_visible(row.get("outcome_status"), row.get("outcome_meta"), cutoff)
+        meta = row.get("outcome_meta") if isinstance(row.get("outcome_meta"), dict) else {}
         launches.append({
             "entity_id": row.get("entity_id"), "mint": row.get("mint"), "deployer_wallet": row.get("deployer_wallet"),
             "launch_observed_at": _iso(row.get("observed_at")), "outcome": outcome,
-            "outcome_observed_at": outcome_observed_at, "ingested_at": _iso(row.get("created_at")),
+            "outcome_observed_at": outcome_observed_at, "outcome_ingested_at": _iso(meta.get("ingested_at")), "ingested_at": _iso(row.get("created_at")),
         })
 
     by_entity: dict[str, list[dict[str, Any]]] = {}
@@ -130,7 +141,7 @@ async def motif_outcome_context(
     result = {
         "status": "OBSERVED" if analogues else "UNKNOWN",
         "entity_id": entity_key, "motif_analogue_count": len(analogues), "launch_analogue_count": len(launches),
-        "outcome_counts": _counts(launches), "records": analogues,
+        "outcome_counts": _counts(launches), "records": analogues, "reference_launch_outcome_provenance": reference_provenance,
         "analogue_history_is_not_prediction": True,
         "bounded": {"launch_limit": launch_limit, "related_entity_count": len(related_ids)},
         **AUTHORITY,
