@@ -1,9 +1,4 @@
-"""Hydrate investigation responses with bounded entity-network evidence.
-
-This adapter bridges the canonical investigation result to the entity graph
-store without putting API/database concerns into stinky-core intelligence.
-The network is descriptive evidence only; missing entities remain UNKNOWN.
-"""
+"""Hydrate investigation responses with bounded entity-network evidence."""
 
 from __future__ import annotations
 
@@ -23,19 +18,37 @@ from stinky_api.historical_outcome_comparison import historical_outcomes_for_ana
 from stinky_api.market_outcome_analysis import analyze_market_lifecycle, market_path_signature
 from stinky_api.market_outcome_history import market_lifecycle_for_mint
 from stinky_api.market_pattern_history import market_pattern_history, persist_market_pattern_occurrence
+from stinky_api.market_pattern_outcome_calibration import calibrate_market_pattern_outcomes
 
 
 def _unknown(*, status: str, wallet_limit: int, relationship_limit: int) -> dict[str, Any]:
+    unknown_status = "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN"
     return {
-        "status": status, "entity": None, "wallets": [], "relationships": [], "funding_history": [],
-        "market_lifecycle": {"status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN", "mint": None, "records": [], "missing": ["market_outcome_observations"], "bounded": {"limit": relationship_limit}, "evidence_only": True},
-        "market_outcome_analysis": {"status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN", "observed_horizons": [], "observed_record_count": 0, "metrics": {}, "missing": ["market_outcome_observations"], "bounded": {"limit": relationship_limit}, "evidence_only": True},
-        "market_pattern_history": {"status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN", "pattern_hash": None, "occurrence_count": 0, "distinct_market_count": 0, "records": [], "missing": ["market_path_pattern_occurrences"], "bounded": {"limit": relationship_limit}, "evidence_only": True},
-        "historical_analogues": {"status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN", "records": [], "missing": ["entity_history"], "evidence_only": True},
-        "historical_outcome_comparison": {"status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN", "records": [], "missing": ["entity_history"], "evidence_only": True},
-        "historical_outcome_calibration": {"status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN", "analogue_count": 0, "analogue_with_launches": 0, "launch_count_observed": 0, "outcomes_known": 0, "outcomes_unknown": 0, "completed_count": 0, "outcome_coverage": None, "missing": ["entity_history"], "evidence_only": True},
-        "bounded": {"wallet_limit": wallet_limit, "relationship_limit": relationship_limit, "funding_observation_limit": relationship_limit, "analogue_limit": 10, "analogue_candidate_limit": 500, "outcome_launch_limit_per_analogue": 20, "market_lifecycle_limit": relationship_limit, "market_pattern_history_limit": relationship_limit},
-        "evidence_only": True, "missing": ["entity_history"],
+        "status": status,
+        "entity": None,
+        "wallets": [],
+        "relationships": [],
+        "funding_history": [],
+        "market_lifecycle": {"status": unknown_status, "mint": None, "records": [], "missing": ["market_outcome_observations"], "bounded": {"limit": relationship_limit}, "evidence_only": True},
+        "market_outcome_analysis": {"status": unknown_status, "observed_horizons": [], "observed_record_count": 0, "metrics": {}, "missing": ["market_outcome_observations"], "bounded": {"limit": relationship_limit}, "evidence_only": True},
+        "market_pattern_history": {"status": unknown_status, "pattern_hash": None, "occurrence_count": 0, "distinct_market_count": 0, "records": [], "missing": ["market_path_pattern_occurrences"], "bounded": {"limit": relationship_limit}, "evidence_only": True},
+        "market_pattern_outcome_calibration": {"status": unknown_status, "pattern_hash": None, "occurrence_count": 0, "occurrences_with_followup": 0, "occurrences_without_followup": 0, "followup_coverage": None, "horizon_coverage": {}, "records": [], "missing": ["market_pattern_followup_evidence"], "bounded": {"occurrence_limit": relationship_limit}, "evidence_only": True},
+        "historical_analogues": {"status": unknown_status, "records": [], "missing": ["entity_history"], "evidence_only": True},
+        "historical_outcome_comparison": {"status": unknown_status, "records": [], "missing": ["entity_history"], "evidence_only": True},
+        "historical_outcome_calibration": {"status": unknown_status, "analogue_count": 0, "analogue_with_launches": 0, "launch_count_observed": 0, "outcomes_known": 0, "outcomes_unknown": 0, "completed_count": 0, "outcome_coverage": None, "missing": ["entity_history"], "evidence_only": True},
+        "bounded": {
+            "wallet_limit": wallet_limit,
+            "relationship_limit": relationship_limit,
+            "funding_observation_limit": relationship_limit,
+            "analogue_limit": 10,
+            "analogue_candidate_limit": 500,
+            "outcome_launch_limit_per_analogue": 20,
+            "market_lifecycle_limit": relationship_limit,
+            "market_pattern_history_limit": relationship_limit,
+            "market_pattern_outcome_occurrence_limit": relationship_limit,
+        },
+        "evidence_only": True,
+        "missing": ["entity_history"],
     }
 
 
@@ -60,6 +73,7 @@ async def entity_network_for_investigation(
     outcome_launch_limit_per_analogue = max(1, min(100, int(outcome_launch_limit_per_analogue)))
     market_lifecycle_limit = relationship_limit
     market_pattern_history_limit = relationship_limit
+    market_pattern_outcome_occurrence_limit = relationship_limit
 
     resolved_entity_id: UUID | None = None
     if entity_id:
@@ -69,9 +83,7 @@ async def entity_network_for_investigation(
             resolved_entity_id = None
     if resolved_entity_id is None and creator_wallet:
         try:
-            row = (await session.execute(text("""
-                SELECT entity_id FROM entity_wallets WHERE wallet = :wallet LIMIT 1
-            """), {"wallet": str(creator_wallet).strip()})).first()
+            row = (await session.execute(text("SELECT entity_id FROM entity_wallets WHERE wallet = :wallet LIMIT 1"), {"wallet": str(creator_wallet).strip()})).first()
         except Exception:
             return _unknown(status="UNKNOWN", wallet_limit=wallet_limit, relationship_limit=relationship_limit)
         if row and row[0]:
@@ -104,12 +116,9 @@ async def entity_network_for_investigation(
     if resolved_mint is None:
         try:
             mint_row = (await session.execute(text("""
-                SELECT mint
-                FROM entity_launches
-                WHERE entity_id = :entity_id
-                  AND mint IS NOT NULL
-                ORDER BY observed_at DESC, id DESC
-                LIMIT 1
+                SELECT mint FROM entity_launches
+                WHERE entity_id = :entity_id AND mint IS NOT NULL
+                ORDER BY observed_at DESC, id DESC LIMIT 1
             """), {"entity_id": resolved_entity_id})).first()
             if mint_row and mint_row[0]:
                 resolved_mint = str(mint_row[0]).strip()
@@ -117,37 +126,31 @@ async def entity_network_for_investigation(
             resolved_mint = None
 
     if resolved_mint is None:
-        market_lifecycle = {
-            "status": "UNKNOWN",
-            "mint": None,
-            "records": [],
-            "missing": ["mint"],
-            "bounded": {"limit": market_lifecycle_limit},
-            "evidence_only": True,
-        }
+        market_lifecycle = {"status": "UNKNOWN", "mint": None, "records": [], "missing": ["mint"], "bounded": {"limit": market_lifecycle_limit}, "evidence_only": True}
     else:
         lifecycle_kwargs: dict[str, Any] = {"limit": market_lifecycle_limit}
         if as_of is not None:
             lifecycle_kwargs["as_of"] = as_of
         market_lifecycle = await market_lifecycle_for_mint(session, resolved_mint, **lifecycle_kwargs)
 
-    market_outcome_analysis = analyze_market_lifecycle(
-        market_lifecycle.get("records", []),
-        limit=market_lifecycle_limit,
-    )
+    market_outcome_analysis = analyze_market_lifecycle(market_lifecycle.get("records", []), limit=market_lifecycle_limit)
     if as_of is not None:
         market_outcome_analysis["as_of"] = market_lifecycle.get("as_of")
         market_outcome_analysis["temporal_cutoff_enforced"] = market_lifecycle.get("temporal_cutoff_enforced", False)
     market_path = market_path_signature(market_outcome_analysis)
 
     pattern_history = {
-        "status": "UNKNOWN",
-        "pattern_hash": None,
-        "occurrence_count": 0,
-        "distinct_market_count": 0,
-        "records": [],
+        "status": "UNKNOWN", "pattern_hash": None, "occurrence_count": 0,
+        "distinct_market_count": 0, "records": [],
         "missing": ["market_path_pattern_occurrences"],
-        "bounded": {"limit": market_pattern_history_limit},
+        "bounded": {"limit": market_pattern_history_limit}, "evidence_only": True,
+    }
+    pattern_outcome_calibration = {
+        "status": "UNKNOWN", "pattern_hash": None, "occurrence_count": 0,
+        "occurrences_with_followup": 0, "occurrences_without_followup": 0,
+        "followup_coverage": None, "horizon_coverage": {}, "records": [],
+        "missing": ["market_pattern_followup_evidence"],
+        "bounded": {"occurrence_limit": market_pattern_outcome_occurrence_limit},
         "evidence_only": True,
     }
     if resolved_mint and market_path.get("status") == "OBSERVED":
@@ -162,9 +165,12 @@ async def entity_network_for_investigation(
             )
             if pattern_hash:
                 history_kwargs: dict[str, Any] = {"limit": market_pattern_history_limit}
+                calibration_kwargs: dict[str, Any] = {"occurrence_limit": market_pattern_outcome_occurrence_limit}
                 if as_of is not None:
                     history_kwargs["as_of"] = as_of
+                    calibration_kwargs["as_of"] = as_of
                 pattern_history = await market_pattern_history(session, pattern_hash, **history_kwargs)
+                pattern_outcome_calibration = await calibrate_market_pattern_outcomes(session, pattern_hash, **calibration_kwargs)
         except Exception:
             pass
 
@@ -191,6 +197,7 @@ async def entity_network_for_investigation(
     graph["market_outcome_analysis"] = market_outcome_analysis
     graph["market_path_signature"] = market_path
     graph["market_pattern_history"] = pattern_history
+    graph["market_pattern_outcome_calibration"] = pattern_outcome_calibration
     graph["historical_analogues"] = historical_analogues
     graph["historical_outcome_comparison"] = historical_outcomes
     graph["historical_outcome_calibration"] = historical_calibration
@@ -198,6 +205,7 @@ async def entity_network_for_investigation(
     graph["bounded"]["launch_history_limit"] = relationship_limit
     graph["bounded"]["market_lifecycle_limit"] = market_lifecycle_limit
     graph["bounded"]["market_pattern_history_limit"] = market_pattern_history_limit
+    graph["bounded"]["market_pattern_outcome_occurrence_limit"] = market_pattern_outcome_occurrence_limit
     graph["bounded"]["analogue_limit"] = analogue_limit
     graph["bounded"]["analogue_candidate_limit"] = analogue_candidate_limit
     graph["bounded"]["outcome_launch_limit_per_analogue"] = outcome_launch_limit_per_analogue
