@@ -32,6 +32,16 @@ type Desk = {
   investigations?: Array<Record<string, unknown>>;
 };
 
+type CalibrationChangeItem = {
+  pattern_hash?: string;
+  mint?: string | null;
+  observed_at?: string | null;
+  change_status?: string;
+  change_kinds?: string[];
+  current_calibration_state?: string | null;
+  evidence_status?: string | null;
+};
+
 function tone(s: string | undefined) {
   const u = (s || "UNKNOWN").toUpperCase();
   if (["UP", "CONNECTED", "OBSERVING", "SENT", "FIRED", "OBSERVED", "LIVE"].includes(u)) return "text-emerald-400";
@@ -53,6 +63,8 @@ function Cell({ label, value, hint }: { label: string; value?: string | number |
 
 export default function OperatorPage() {
   const [desk, setDesk] = useState<Desk | null>(null);
+  const [changes, setChanges] = useState<CalibrationChangeItem[]>([]);
+  const [changeStatus, setChangeStatus] = useState("UNKNOWN");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -60,9 +72,20 @@ export default function OperatorPage() {
     let c = false;
     (async () => {
       try {
-        const d = (await api.operator()) as Desk;
+        const [d, feed] = await Promise.all([
+          api.operator(),
+          fetch("/api/stinky/v1/entity-graph/calibration-changes?limit=50", {
+            cache: "no-store",
+            signal: AbortSignal.timeout(12_000),
+          })
+            .then((r) => (r.ok ? r.json() : null))
+            .catch(() => null),
+        ]);
         if (!c) {
-          setDesk(d);
+          setDesk(d as Desk);
+          const f = (feed || {}) as { status?: string; items?: CalibrationChangeItem[] };
+          setChanges(Array.isArray(f.items) ? f.items : []);
+          setChangeStatus(String(f.status || "UNKNOWN"));
           setError(null);
         }
       } catch (e) {
@@ -118,6 +141,61 @@ export default function OperatorPage() {
             <Cell label="Discord delivery" value={desk.discord?.delivery} />
             <Cell label="Quality" value={desk.quality_state?.current} />
           </section>
+
+          <section className="overflow-hidden rounded-md border border-terminal-border">
+            <header className="flex items-center justify-between border-b border-terminal-border px-3 py-2">
+              <div>
+                <div className="text-[9px] font-semibold uppercase tracking-wider text-terminal-dim">
+                  Calibration evidence changes · {changes.length}
+                </div>
+                <div className="mt-0.5 text-[10px] text-terminal-muted">
+                  Cross-investigation factual deltas only. No score, forecast, risk grade, or trade signal.
+                </div>
+              </div>
+              <span className={`text-[10px] ${tone(changeStatus)}`}>{changeStatus}</span>
+            </header>
+            {changes.length === 0 ? (
+              <p className="px-3 py-5 text-center text-[11px] text-terminal-muted">
+                No changed synthesis snapshots are visible yet.
+              </p>
+            ) : (
+              <table className="w-full text-left text-[10px]">
+                <thead className="text-[9px] uppercase tracking-wider text-terminal-muted">
+                  <tr>
+                    <th className="px-3 py-2">Mint</th>
+                    <th className="px-2 py-2">Latest change</th>
+                    <th className="px-2 py-2">Calibration state</th>
+                    <th className="px-2 py-2">Evidence</th>
+                    <th className="px-2 py-2">Observed</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {changes.map((r) => (
+                    <tr key={`${r.pattern_hash}-${r.observed_at}`} className="border-t border-terminal-border/60">
+                      <td className="px-3 py-1.5 font-mono">
+                        {r.mint ? (
+                          <Link href={`/tokens/${r.mint}`} className="hover:text-terminal-accent">
+                            {shortAddr(r.mint, 5)}
+                          </Link>
+                        ) : (
+                          "UNKNOWN"
+                        )}
+                      </td>
+                      <td className="px-2 py-1.5 text-terminal-dim">
+                        {(r.change_kinds || []).join(", ") || r.change_status || "UNKNOWN"}
+                      </td>
+                      <td className="px-2 py-1.5">{r.current_calibration_state || "UNKNOWN"}</td>
+                      <td className="px-2 py-1.5">{r.evidence_status || "UNKNOWN"}</td>
+                      <td className="px-2 py-1.5 font-mono text-terminal-muted">
+                        {r.observed_at ? r.observed_at.slice(0, 19) : "UNKNOWN"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </section>
+
           <section className="grid gap-2 md:grid-cols-2">
             <div className="rounded-md border border-terminal-border px-3 py-2 text-[11px]">
               <div className="text-[9px] uppercase tracking-wider text-terminal-dim">Last observation</div>
