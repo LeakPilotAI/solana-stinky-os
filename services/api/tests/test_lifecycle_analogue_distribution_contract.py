@@ -27,7 +27,7 @@ def test_no_prediction_or_trade_authority_is_introduced():
     assert '"trade_signal": false' in source
 
 
-def test_command_center_hot_poll_is_not_coupled_to_lifecycle_analogue_queries():
-    command_center = (ROOT / "src" / "stinky_api" / "command_center.py").read_text(encoding="utf-8")
-    assert "lifecycle_analogue_distribution" not in command_center
-    assert "load_lifecycle_memories_for_mints" not in command_center
+def test_command_center_hot_poll_entrypoint_is_not_coupled_to_lifecycle_analogue_queries():
+    api_main = (ROOT / "src" / "stinky_api" / "main.py").read_text(encoding="utf-8")
+    assert "lifecycle_analogue_distribution" not in api_main
+    assert "load_lifecycle_memories_for_mints" not in api_main
