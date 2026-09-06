@@ -62,24 +62,7 @@ export const api = {
       { timeoutMs: 8_000 }
     ),
   walletsSuccess: (limit = 50) =>
-    getJson<{
-      available?: boolean;
-      engine?: string;
-      message?: string;
-      items: Array<{
-        wallet: string;
-        early_entries?: number;
-        early_on_mega?: number;
-        early_on_runner?: number;
-        early_on_mid?: number;
-        early_on_fade?: number;
-        success_rate?: number | null;
-        sample_size?: number;
-        last_success_at?: string | null;
-        updated_at?: string | null;
-      }>;
-      count: number;
-    }>(`/v1/wallets/success?limit=${limit}`, { timeoutMs: 8_000 }),
+    getJson<any>(`/v1/wallets/success?limit=${limit}`, { timeoutMs: 8_000 }),
   wallet: (address: string) =>
     getJson<WalletDetail>(`/v1/wallets/${encodeURIComponent(address)}`, {
       timeoutMs: 10_000,
@@ -96,6 +79,11 @@ export const api = {
     getJson<Record<string, unknown>>(`/v1/tokens/${encodeURIComponent(mint)}`, {
       timeoutMs: 10_000,
     }),
+  investigationCalibration: (mint: string) =>
+    getJson<Record<string, unknown>>(
+      `/v1/entity-graph/investigation/${encodeURIComponent(mint)}/calibration`,
+      { timeoutMs: 20_000 }
+    ),
   patterns: (limit = 40) =>
     getJson<PatternsResponse>(`/v1/patterns?limit=${limit}`, {
       timeoutMs: 15_000,

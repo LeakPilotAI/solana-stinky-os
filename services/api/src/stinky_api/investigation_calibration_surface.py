@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from stinky_api.market_pattern_calibration_synthesis import synthesize_market_pattern_calibration_evidence
 from stinky_api.market_pattern_calibration_transitions import describe_calibration_state_transitions
 from stinky_api.market_pattern_conditional_performance import summarize_conditional_pattern_performance
 from stinky_api.market_pattern_regime_memory import calibration_regime_memory
@@ -19,6 +20,7 @@ SURFACE_KEYS = (
     "market_pattern_regime_segmentation",
     "market_pattern_conditional_performance",
     "market_pattern_regime_stability",
+    "market_pattern_calibration_synthesis",
 )
 
 
@@ -81,7 +83,38 @@ def unknown_calibration_surface(
             "regime_assignment_leakage_permitted": False,
             "evidence_only": True,
         },
+        "market_pattern_calibration_synthesis": {
+            "status": status,
+            "pattern_hash": pattern_hash,
+            "evidence_status": "INSUFFICIENT_EVIDENCE",
+            "chain_status": {},
+            "observed_layer_count": 0,
+            "layer_count": 7,
+            "current_calibration_state": "INSUFFICIENT_EVIDENCE",
+            "transition_count": 0,
+            "missing": ["calibration_evidence_chain"],
+            "interpretation": "DESCRIPTIVE_EVIDENCE_ONLY",
+            "predictive_authority": False,
+            "trade_signal": False,
+            "shared_cause_inferred": False,
+            "evidence_only": True,
+        },
     }
+
+
+def _synthesize(surface: dict[str, dict[str, Any]], *, rolling: dict[str, Any], memory: dict[str, Any]) -> None:
+    try:
+        surface["market_pattern_calibration_synthesis"] = synthesize_market_pattern_calibration_evidence(
+            rolling=rolling,
+            memory=memory,
+            transitions=surface["market_pattern_calibration_transitions"],
+            regime_memory=surface["market_pattern_regime_memory"],
+            segmentation=surface["market_pattern_regime_segmentation"],
+            conditional_performance=surface["market_pattern_conditional_performance"],
+            stability=surface["market_pattern_regime_stability"],
+        )
+    except Exception:
+        pass
 
 
 async def build_investigation_calibration_surface(
@@ -90,6 +123,7 @@ async def build_investigation_calibration_surface(
     pattern_hash: str | None,
     calibration: dict[str, Any],
     calibration_memory: dict[str, Any],
+    rolling_calibration: dict[str, Any] | None = None,
     as_of: Any = None,
     occurrence_limit: int = 500,
     pattern_limit: int = 500,
@@ -99,6 +133,7 @@ async def build_investigation_calibration_surface(
     pattern_hash = str(pattern_hash or "").strip() or None
     occurrence_limit = max(1, min(int(occurrence_limit), 500))
     pattern_limit = max(1, min(int(pattern_limit), 2000))
+    rolling = rolling_calibration if isinstance(rolling_calibration, dict) else {}
     surface = unknown_calibration_surface(
         status="UNKNOWN",
         pattern_hash=pattern_hash,
@@ -126,6 +161,7 @@ async def build_investigation_calibration_surface(
         pass
 
     if not pattern_hash:
+        _synthesize(surface, rolling=rolling, memory=calibration_memory)
         return surface
 
     segmentation_kwargs: dict[str, Any] = {
@@ -160,4 +196,5 @@ async def build_investigation_calibration_surface(
     except Exception:
         pass
 
+    _synthesize(surface, rolling=rolling, memory=calibration_memory)
     return surface

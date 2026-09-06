@@ -15,6 +15,7 @@ export interface Counts {
   tracks?: number;
   buyers?: number;
   entities?: number;
+  wallets?: number;
   wallets_perf?: number;
 }
 
@@ -142,14 +143,12 @@ export interface TrendingResponse {
 }
 
 export interface CommandCenterData {
-
   pipeline?: {
     available?: boolean;
     tables?: Record<string, number | null>;
     maintain_last_utc?: string | null;
   };
   alert_precision?: AlertPrecision;
-
   status: string;
   counts: Counts;
   runners: Runner[];
@@ -250,7 +249,6 @@ export interface EntityDetail {
   }>;
 }
 
-
 export interface PatternItem {
   id: string;
   kind: string;
@@ -274,7 +272,6 @@ export interface PatternsResponse {
   items: PatternItem[];
   total: number;
 }
-
 
 export interface GraphNode {
   id: string;
@@ -329,7 +326,6 @@ export interface GraphEgo {
   }>;
 }
 
-
 export interface TimeMachineSeriesPoint {
   day: string;
   launches?: number;
@@ -382,8 +378,8 @@ export interface TimeMachineResponse {
   };
   series?: TimeMachineSeriesPoint[];
   events?: TimeMachineEvent[];
+  score_series?: Array<Record<string, unknown>>;
 }
-
 
 export interface ResearchItem {
   type: string;
@@ -407,7 +403,6 @@ export interface ResearchResponse {
   items?: ResearchItem[];
   presets?: Array<{ id: string; label: string }>;
 }
-
 
 export interface OutcomesResponse {
   available: boolean;

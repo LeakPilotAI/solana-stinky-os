@@ -13,6 +13,7 @@ export default function TokenPage() {
   const [recipe, setRecipe] = useState<Record<string, unknown> | null>(null);
   const [quality, setQuality] = useState<Record<string, unknown> | null>(null);
   const [coord, setCoord] = useState<Record<string, unknown> | null>(null);
+  const [calibration, setCalibration] = useState<Record<string, unknown> | null>(null);
 
   useEffect(() => {
     if (!mint) return;
@@ -27,6 +28,7 @@ export default function TokenPage() {
       })
       .catch(() => setQuality(null));
     api.coordinationCase(mint).then(setCoord).catch(() => setCoord(null));
+    api.investigationCalibration(mint).then(setCalibration).catch(() => setCalibration(null));
   }, [mint]);
 
   if (!data) {
@@ -55,6 +57,16 @@ export default function TokenPage() {
     delta?: number;
     reason?: string;
   }>;
+  const calibrationSummary = ((calibration?.calibration || {}) as Record<string, unknown>);
+  const calibrationRegimeMemory = ((calibrationSummary.regime_memory || {}) as Record<string, unknown>);
+  const calibrationGeneralization = ((calibrationSummary.chronological_generalization || {}) as Record<string, unknown>);
+  const stateCounts = ((calibrationRegimeMemory.state_counts || {}) as Record<string, unknown>);
+  const stableRegimes = Array.isArray(calibrationGeneralization.stable_regimes)
+    ? (calibrationGeneralization.stable_regimes as string[])
+    : [];
+  const unstableRegimes = Array.isArray(calibrationGeneralization.unstable_regimes)
+    ? (calibrationGeneralization.unstable_regimes as string[])
+    : [];
 
   const name = (launch.name || alert.name || shortAddr(mint)) as string;
   const symbol = (launch.symbol || alert.symbol || "") as string;
@@ -87,6 +99,61 @@ export default function TokenPage() {
           </div>
         </div>
       )}
+
+      {calibration && (
+        <div className="panel p-4 text-[11px]">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-terminal-muted">
+                Calibration evidence
+              </div>
+              <p className="mt-1 text-terminal-dim">
+                Historical calibration only. Descriptive evidence — not a score, forecast, risk grade, or trade signal.
+              </p>
+            </div>
+            <div className="text-right">
+              <div className="text-[9px] uppercase text-terminal-muted">Evidence chain</div>
+              <div className="font-semibold text-terminal-fg">
+                {String(calibrationSummary.evidence_status || "INSUFFICIENT_EVIDENCE")}
+              </div>
+            </div>
+          </div>
+          <dl className="mt-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
+            <div>
+              <dt className="text-terminal-muted">Current state</dt>
+              <dd>{String(calibrationSummary.current_calibration_state || "INSUFFICIENT_EVIDENCE")}</dd>
+            </div>
+            <div>
+              <dt className="text-terminal-muted">Transitions</dt>
+              <dd className="tabular">{String(calibrationSummary.transition_count ?? 0)}</dd>
+            </div>
+            <div>
+              <dt className="text-terminal-muted">Cross-pattern evidence</dt>
+              <dd className="tabular">{String(calibrationRegimeMemory.pattern_count ?? 0)} patterns</dd>
+            </div>
+            <div>
+              <dt className="text-terminal-muted">Generalization</dt>
+              <dd>
+                {stableRegimes.length || unstableRegimes.length
+                  ? `${stableRegimes.length} stable / ${unstableRegimes.length} unstable`
+                  : "INSUFFICIENT_EVIDENCE"}
+              </dd>
+            </div>
+          </dl>
+          <p className="mt-2 text-[10px] text-terminal-muted">
+            Regime states: STABLE {String(stateCounts.STABLE ?? 0)} · IMPROVING {String(stateCounts.IMPROVING ?? 0)} · DEGRADING {String(stateCounts.DEGRADING ?? 0)} · INSUFFICIENT {String(stateCounts.INSUFFICIENT_EVIDENCE ?? 0)}
+          </p>
+          {Array.isArray(calibrationSummary.missing) && calibrationSummary.missing.length > 0 && (
+            <p className="mt-1 text-[10px] text-terminal-dim">
+              Missing: {(calibrationSummary.missing as string[]).slice(0, 6).join(", ")}
+            </p>
+          )}
+          <p className="mt-1 text-[10px] text-terminal-dim">
+            predictive_authority false · trade_signal false · shared_cause_inferred false
+          </p>
+        </div>
+      )}
+
       <div className="panel p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
