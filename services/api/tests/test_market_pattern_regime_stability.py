@@ -1,3 +1,5 @@
+import pytest
+
 from stinky_api.market_pattern_regime_stability import assess_regime_conditioned_stability
 
 
@@ -77,7 +79,7 @@ def test_stability_flags_large_later_drift_as_unstable():
 
     regime = result["regimes"]["DEGRADING_DOMINANT"]
     assert regime["stability_status"] == "UNSTABLE"
-    assert regime["median_drift_pct_points"] == 60.0
+    assert regime["median_drift_pct_points"] == pytest.approx(60.0)
     assert "DEGRADING_DOMINANT" in result["unstable_regimes"]
 
 
