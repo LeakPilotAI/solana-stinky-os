@@ -76,7 +76,6 @@ def _unknown(*, status: str, wallet_limit: int, relationship_limit: int) -> dict
             "wallet_limit": wallet_limit,
             "relationship_limit": relationship_limit,
             "funding_observation_limit": relationship_limit,
-            "developer_correlation_limit": relationship_limit,
             "analogue_limit": 10,
             "analogue_candidate_limit": 500,
             "outcome_launch_limit_per_analogue": 20,
