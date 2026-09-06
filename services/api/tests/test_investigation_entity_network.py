@@ -22,6 +22,9 @@ async def test_unknown_investigation_entity_is_explicit_and_bounded():
     assert result["market_pattern_history"]["status"] == "NEW-UNKNOWN"
     assert result["market_pattern_outcome_calibration"]["status"] == "NEW-UNKNOWN"
     assert result["market_pattern_outcome_distribution"]["status"] == "NEW-UNKNOWN"
+    assert result["market_pattern_calibration_readiness"]["status"] == "NEW-UNKNOWN"
+    assert result["market_pattern_rolling_calibration"]["status"] == "NEW-UNKNOWN"
+    assert result["market_pattern_calibration_memory"]["status"] == "NEW-UNKNOWN"
     assert result["historical_analogues"]["status"] == "NEW-UNKNOWN"
     assert result["historical_outcome_comparison"]["status"] == "NEW-UNKNOWN"
     assert result["historical_outcome_calibration"]["status"] == "NEW-UNKNOWN"
@@ -32,6 +35,7 @@ async def test_unknown_investigation_entity_is_explicit_and_bounded():
         "market_lifecycle_limit": 500,
         "market_pattern_history_limit": 500,
         "market_pattern_outcome_occurrence_limit": 500,
+        "market_pattern_calibration_memory_limit": 500,
         "analogue_limit": 10,
         "analogue_candidate_limit": 500,
         "outcome_launch_limit_per_analogue": 20,
@@ -116,6 +120,9 @@ async def test_known_entity_includes_historical_outcomes_and_calibration(monkeyp
     assert result["market_pattern_outcome_calibration"]["occurrences_without_followup"] == 1
     assert result["market_pattern_outcome_distribution"]["status"] == "OBSERVED"
     assert result["market_pattern_outcome_distribution"]["horizons"]["1h"]["evidence_status"] == "INSUFFICIENT_EVIDENCE"
+    assert result["market_pattern_calibration_readiness"]["readiness_status"] == "INSUFFICIENT_EVIDENCE"
+    assert result["market_pattern_rolling_calibration"]["trend_status"] == "INSUFFICIENT_EVIDENCE"
+    assert result["market_pattern_calibration_memory"]["status"] == "UNKNOWN"
     assert result["historical_outcome_comparison"]["status"] == "OBSERVED"
     assert result["historical_outcome_comparison"]["records"][0]["completed_count"] == 1
     assert result["historical_outcome_comparison"]["records"][0]["outcomes_unknown"] == 1
@@ -129,5 +136,6 @@ async def test_known_entity_includes_historical_outcomes_and_calibration(monkeyp
     assert result["bounded"]["outcome_launch_limit_per_analogue"] == 20
     assert result["bounded"]["market_pattern_history_limit"] == 20
     assert result["bounded"]["market_pattern_outcome_occurrence_limit"] == 20
+    assert result["bounded"]["market_pattern_calibration_memory_limit"] == 20
     assert result["historical_outcome_comparison"]["evidence_only"] is True
     assert result["historical_outcome_calibration"]["evidence_only"] is True
