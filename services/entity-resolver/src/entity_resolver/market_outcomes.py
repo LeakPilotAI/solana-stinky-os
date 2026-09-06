@@ -63,12 +63,11 @@ class MarketOutcomeStore:
 
     async def ensure_schema(self) -> None:
         migration_dir = Path(__file__).resolve().parents[2] / "migrations"
-        migration_paths = (
-            migration_dir / "007_market_outcome_observations.sql",
-            migration_dir / "008_market_outcome_ingestion.sql",
-            migration_dir / "009_market_path_patterns.sql",
-            migration_dir / "010_market_pattern_calibration_memory.sql",
-        )
+        migration_007 = migration_dir / "007_market_outcome_observations.sql"
+        migration_008 = migration_dir / "008_market_outcome_ingestion.sql"
+        migration_009 = migration_dir / "009_market_path_patterns.sql"
+        migration_010 = migration_dir / "010_market_pattern_calibration_memory.sql"
+        migration_paths = (migration_007, migration_008, migration_009, migration_010)
         async with self._sessions() as session:
             for migration in migration_paths:
                 if not migration.exists():
