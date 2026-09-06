@@ -62,24 +62,7 @@ export const api = {
       { timeoutMs: 8_000 }
     ),
   walletsSuccess: (limit = 50) =>
-    getJson<{
-      available?: boolean;
-      engine?: string;
-      message?: string;
-      items: Array<{
-        wallet: string;
-        early_entries?: number;
-        early_on_mega?: number;
-        early_on_runner?: number;
-        early_on_mid?: number;
-        early_on_fade?: number;
-        success_rate?: number | null;
-        sample_size?: number;
-        last_success_at?: string | null;
-        updated_at?: string | null;
-      }>;
-      count: number;
-    }>(`/v1/wallets/success?limit=${limit}`, { timeoutMs: 8_000 }),
+    getJson<any>(`/v1/wallets/success?limit=${limit}`, { timeoutMs: 8_000 }),
   wallet: (address: string) =>
     getJson<WalletDetail>(`/v1/wallets/${encodeURIComponent(address)}`, {
       timeoutMs: 10_000,
@@ -225,31 +208,34 @@ export function shortAddr(addr?: string | null, n = 4): string {
 }
 
 export function fmtUsd(v?: number | null): string {
-  if (v == null || !Number.isFinite(v)) return "—";
-  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}m`;
-  if (v >= 1_000) return `$${(v / 1_000).toFixed(1)}k`;
-  return `$${v.toFixed(2)}`;
+  if (v == null || Number.isNaN(Number(v))) return "?";
+  const n = Number(v);
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 1_000) return `$${(n / 1_000).toFixed(1)}k`;
+  return `$${n.toFixed(0)}`;
 }
 
-export function fmtPct(v?: number | null, digits = 0): string {
-  if (v == null || !Number.isFinite(v)) return "—";
-  const pct = Math.abs(v) <= 1 ? v * 100 : v;
-  return `${pct.toFixed(digits)}%`;
+export function fmtPct(v?: number | null): string {
+  if (v == null || Number.isNaN(Number(v))) return "?";
+  const n = Number(v);
+  const p = n <= 1 ? n * 100 : n;
+  return `${p.toFixed(0)}%`;
 }
 
 export function ageFrom(iso?: string | null): string {
-  if (!iso) return "—";
-  const ms = Date.now() - Date.parse(iso);
-  if (!Number.isFinite(ms)) return "—";
-  if (ms < 60_000) return `${Math.max(0, Math.floor(ms / 1000))}s`;
-  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m`;
-  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h`;
-  return `${Math.floor(ms / 86_400_000)}d`;
+  if (!iso) return "?";
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return "?";
+  const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h`;
+  return `${Math.floor(s / 86400)}d`;
 }
 
-export async function copyText(value: string): Promise<boolean> {
+export async function copyText(text: string): Promise<boolean> {
   try {
-    await navigator.clipboard.writeText(value);
+    await navigator.clipboard.writeText(text);
     return true;
   } catch {
     return false;
