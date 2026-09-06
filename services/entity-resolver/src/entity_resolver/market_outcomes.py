@@ -64,6 +64,7 @@ class MarketOutcomeStore:
         migration_dir = Path(__file__).resolve().parents[2] / "migrations"
         migration_007 = migration_dir / "007_market_outcome_observations.sql"
         migration_008 = migration_dir / "008_market_outcome_ingestion.sql"
+        migration_009 = migration_dir / "009_market_path_patterns.sql"
         async with self._sessions() as session:
             if not migration_007.exists():
                 raise FileNotFoundError(f"market outcome migration missing: {migration_007}")
@@ -78,6 +79,14 @@ class MarketOutcomeStore:
             # 008 contains a PL/pgSQL function body with internal semicolons;
             # execute the migration as one statement rather than splitting it.
             await session.execute(text(migration_008.read_text(encoding="utf-8")))
+
+            if not migration_009.exists():
+                raise FileNotFoundError(f"market path pattern migration missing: {migration_009}")
+            sql_009 = migration_009.read_text(encoding="utf-8")
+            for statement in sql_009.split(";"):
+                statement = statement.strip()
+                if statement:
+                    await session.execute(text(statement))
             await session.commit()
 
     async def record_observation(
