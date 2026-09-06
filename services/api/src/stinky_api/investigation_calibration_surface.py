@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from stinky_api.market_pattern_calibration_synthesis import synthesize_market_pattern_calibration_evidence
+from stinky_api.market_pattern_calibration_synthesis_audit import (
+    persist_synthesis_snapshot,
+    synthesis_audit_history,
+)
 from stinky_api.market_pattern_calibration_transitions import describe_calibration_state_transitions
 from stinky_api.market_pattern_conditional_performance import summarize_conditional_pattern_performance
 from stinky_api.market_pattern_regime_memory import calibration_regime_memory
@@ -21,6 +26,7 @@ SURFACE_KEYS = (
     "market_pattern_conditional_performance",
     "market_pattern_regime_stability",
     "market_pattern_calibration_synthesis",
+    "market_pattern_calibration_synthesis_audit",
 )
 
 
@@ -99,6 +105,21 @@ def unknown_calibration_surface(
             "shared_cause_inferred": False,
             "evidence_only": True,
         },
+        "market_pattern_calibration_synthesis_audit": {
+            "status": status,
+            "pattern_hash": pattern_hash,
+            "snapshot_count": 0,
+            "records": [],
+            "changes": [],
+            "latest_change": None,
+            "missing": ["market_pattern_calibration_synthesis_snapshots"],
+            "bounded": {"limit": min(bounded, 100)},
+            "interpretation": "DESCRIPTIVE_EVIDENCE_ONLY",
+            "predictive_authority": False,
+            "trade_signal": False,
+            "shared_cause_inferred": False,
+            "evidence_only": True,
+        },
     }
 
 
@@ -112,6 +133,46 @@ def _synthesize(surface: dict[str, dict[str, Any]], *, rolling: dict[str, Any], 
             segmentation=surface["market_pattern_regime_segmentation"],
             conditional_performance=surface["market_pattern_conditional_performance"],
             stability=surface["market_pattern_regime_stability"],
+        )
+    except Exception:
+        pass
+
+
+async def _attach_audit(
+    session: AsyncSession,
+    surface: dict[str, dict[str, Any]],
+    *,
+    pattern_hash: str | None,
+    as_of: Any,
+    limit: int,
+) -> None:
+    if not pattern_hash:
+        return
+    summary = surface.get("market_pattern_calibration_synthesis", {})
+    try:
+        observed_at = None
+        if as_of is not None:
+            observed_at = as_of
+            if isinstance(observed_at, str):
+                raw = observed_at[:-1] + "+00:00" if observed_at.endswith("Z") else observed_at
+                observed_at = datetime.fromisoformat(raw)
+                if observed_at.tzinfo is None:
+                    observed_at = observed_at.replace(tzinfo=timezone.utc)
+        await persist_synthesis_snapshot(session, summary, observed_at=observed_at)
+    except Exception:
+        pass
+    try:
+        audit_as_of = as_of
+        if isinstance(audit_as_of, str):
+            raw = audit_as_of[:-1] + "+00:00" if audit_as_of.endswith("Z") else audit_as_of
+            audit_as_of = datetime.fromisoformat(raw)
+            if audit_as_of.tzinfo is None:
+                audit_as_of = audit_as_of.replace(tzinfo=timezone.utc)
+        surface["market_pattern_calibration_synthesis_audit"] = await synthesis_audit_history(
+            session,
+            pattern_hash,
+            limit=min(max(1, int(limit)), 100),
+            as_of=audit_as_of,
         )
     except Exception:
         pass
@@ -197,4 +258,11 @@ async def build_investigation_calibration_surface(
         pass
 
     _synthesize(surface, rolling=rolling, memory=calibration_memory)
+    await _attach_audit(
+        session,
+        surface,
+        pattern_hash=pattern_hash,
+        as_of=as_of,
+        limit=occurrence_limit,
+    )
     return surface

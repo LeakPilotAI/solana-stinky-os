@@ -192,7 +192,7 @@ async def investigation_calibration_evidence(
     session: Annotated[AsyncSession, Depends(get_session)],
     as_of: datetime | None = Query(None),
 ) -> dict[str, Any]:
-    """Compact calibration evidence for one stored investigation mint."""
+    """Compact calibration evidence and immutable change audit for one stored investigation mint."""
     from stinky_api.investigation_entity_network import entity_network_for_investigation
 
     mint = str(mint or "").strip()
@@ -260,10 +260,27 @@ async def investigation_calibration_evidence(
             "trade_signal": False,
             "evidence_only": True,
         }
+    audit = network.get("market_pattern_calibration_synthesis_audit")
+    if not isinstance(audit, dict):
+        audit = {
+            "status": "UNKNOWN",
+            "pattern_hash": synthesis.get("pattern_hash"),
+            "snapshot_count": 0,
+            "records": [],
+            "changes": [],
+            "latest_change": None,
+            "missing": ["market_pattern_calibration_synthesis_snapshots"],
+            "interpretation": "DESCRIPTIVE_EVIDENCE_ONLY",
+            "predictive_authority": False,
+            "trade_signal": False,
+            "evidence_only": True,
+        }
     return {
         "mint": mint,
         "status": synthesis.get("status", "UNKNOWN"),
         "calibration": synthesis,
+        "audit": audit,
+        "latest_change": audit.get("latest_change"),
         "evidence_only": True,
         "predictive_authority": False,
         "trade_signal": False,
