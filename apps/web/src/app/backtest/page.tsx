@@ -54,6 +54,14 @@ export default function BacktestPage() {
   const bt = backtest || {};
   const oc = outcomes || {};
   const items = (Array.isArray(oc.items) ? oc.items : []) as AnyObj[];
+  const funnelStats: Array<[string, unknown]> = [
+    ["Migrations", funnelCounts.migrations ?? funnelCounts.token_migrated],
+    ["Tracks", funnelCounts.tracks ?? funnelCounts.migration_tracks],
+    ["Buyers", funnelCounts.buyers ?? funnelCounts.migration_buyers],
+    ["Alerts", funnelCounts.alerts ?? funnelCounts.alert_candidate],
+    ["With volume", funnelCounts.with_volume],
+    ["Gated", funnelCounts.gated ?? funnelCounts.gate_passed],
+  ];
 
   return (
     <div className="flex h-full flex-col gap-3 overflow-auto bg-[#050705] p-3 lg:p-4">
@@ -98,22 +106,14 @@ export default function BacktestPage() {
         <div className="py-12 text-center text-sm text-terminal-muted">Loading measured metrics…</div>
       )}
 
-      {/* Funnel */}
       <section className="rounded-xl border border-terminal-border bg-[#0a0e0a] p-4">
         <h2 className="text-[11px] font-semibold uppercase tracking-wider text-terminal-muted">
           Replay funnel
         </h2>
         <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-6">
-          {[
-            ["Migrations", funnelCounts.migrations ?? funnelCounts.token_migrated],
-            ["Tracks", funnelCounts.tracks ?? funnelCounts.migration_tracks],
-            ["Buyers", funnelCounts.buyers ?? funnelCounts.migration_buyers],
-            ["Alerts", funnelCounts.alerts ?? funnelCounts.alert_candidate],
-            ["With volume", funnelCounts.with_volume],
-            ["Gated", funnelCounts.gated ?? funnelCounts.gate_passed],
-          ].map(([label, val]) => (
+          {funnelStats.map(([label, val]) => (
             <div
-              key={String(label)}
+              key={label}
               className="rounded-lg border border-terminal-border/70 bg-[#0d120d] px-3 py-2"
             >
               <div className="text-[9px] uppercase tracking-wide text-terminal-muted">
@@ -132,7 +132,6 @@ export default function BacktestPage() {
         )}
       </section>
 
-      {/* Precision / backtest */}
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         <section className="rounded-xl border border-terminal-border bg-[#0a0e0a] p-4">
           <h2 className="text-[11px] font-semibold uppercase tracking-wider text-terminal-muted">
@@ -186,7 +185,6 @@ export default function BacktestPage() {
         </section>
       </div>
 
-      {/* Outcome rows */}
       <section className="min-h-0 flex-1 overflow-hidden rounded-xl border border-terminal-border bg-[#0a0e0a]">
         <div className="flex items-center justify-between border-b border-terminal-border px-4 py-2.5">
           <h2 className="text-[11px] font-semibold uppercase tracking-wider">
