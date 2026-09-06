@@ -21,6 +21,7 @@ async def test_unknown_investigation_entity_is_explicit_and_bounded():
     assert result["market_outcome_analysis"]["status"] == "NEW-UNKNOWN"
     assert result["market_pattern_history"]["status"] == "NEW-UNKNOWN"
     assert result["market_pattern_outcome_calibration"]["status"] == "NEW-UNKNOWN"
+    assert result["market_pattern_outcome_distribution"]["status"] == "NEW-UNKNOWN"
     assert result["historical_analogues"]["status"] == "NEW-UNKNOWN"
     assert result["historical_outcome_comparison"]["status"] == "NEW-UNKNOWN"
     assert result["historical_outcome_calibration"]["status"] == "NEW-UNKNOWN"
@@ -113,6 +114,8 @@ async def test_known_entity_includes_historical_outcomes_and_calibration(monkeyp
     assert result["market_pattern_outcome_calibration"]["status"] == "OBSERVED"
     assert result["market_pattern_outcome_calibration"]["followup_coverage"] == 0.5
     assert result["market_pattern_outcome_calibration"]["occurrences_without_followup"] == 1
+    assert result["market_pattern_outcome_distribution"]["status"] == "OBSERVED"
+    assert result["market_pattern_outcome_distribution"]["horizons"]["1h"]["evidence_status"] == "INSUFFICIENT_EVIDENCE"
     assert result["historical_outcome_comparison"]["status"] == "OBSERVED"
     assert result["historical_outcome_comparison"]["records"][0]["completed_count"] == 1
     assert result["historical_outcome_comparison"]["records"][0]["outcomes_unknown"] == 1
