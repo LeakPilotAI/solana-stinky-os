@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import { api, fmtUsd, shortAddr } from "@/lib/api/client";
 import { CopyButton } from "@/components/ui/CopyButton";
@@ -55,6 +56,12 @@ export default function TokenPage() {
   const developerAudit = ((calibration?.developer_audit || {}) as Record<string, unknown>);
   const developerLatestChange = ((calibration?.developer_latest_change || developerAudit.latest_change || {}) as Record<string, unknown>);
   const developerLatestChanges = Array.isArray(developerLatestChange.changes) ? (developerLatestChange.changes as Array<Record<string, unknown>>) : [];
+  const developerCorrelation = ((calibration?.developer_correlation || {}) as Record<string, unknown>);
+  const sharedFunders = Array.isArray(developerCorrelation.shared_funders) ? (developerCorrelation.shared_funders as Array<Record<string, unknown>>) : [];
+  const walletReuse = Array.isArray(developerCorrelation.cross_entity_wallet_reuse) ? (developerCorrelation.cross_entity_wallet_reuse as Array<Record<string, unknown>>) : [];
+  const deployerBuyer = Array.isArray(developerCorrelation.deployer_buyer_recurrence) ? (developerCorrelation.deployer_buyer_recurrence as Array<Record<string, unknown>>) : [];
+  const sharedStructures = Array.isArray(developerCorrelation.shared_relationship_structures) ? (developerCorrelation.shared_relationship_structures as Array<Record<string, unknown>>) : [];
+  const relatedEntityIds = Array.from(new Set([...sharedFunders, ...walletReuse, ...sharedStructures].map((r) => String(r.other_entity_id || "").trim()).filter(Boolean))).slice(0, 12);
 
   const name = (launch.name || alert.name || shortAddr(mint)) as string;
   const symbol = (launch.symbol || alert.symbol || "") as string;
@@ -77,6 +84,12 @@ export default function TokenPage() {
       {Array.isArray(developer.missing) && developer.missing.length > 0 && <p className="mt-1 text-[10px] text-terminal-dim">Missing: {(developer.missing as string[]).join(", ")}</p>}
       <div className="mt-3 border-t border-terminal-border/60 pt-2"><div className="flex flex-wrap items-center justify-between gap-2"><div className="text-[9px] uppercase tracking-wide text-terminal-muted">Developer audit trail</div><div className="text-[10px] text-terminal-dim">{String(developerAudit.snapshot_count ?? 0)} snapshots</div></div><p className="mt-1 text-[10px] text-terminal-muted">Latest: {String(developerLatestChange.status || "INITIAL_SNAPSHOT")}</p>{developerLatestChanges.slice(0, 6).map((change, i) => <p key={i} className="mt-1 text-[10px] text-terminal-dim">{String(change.kind || "CHANGE")}{change.field ? ` · ${String(change.field)}` : ""}{Array.isArray(change.fields) && change.fields.length ? ` · ${(change.fields as string[]).join(", ")}` : ""}</p>)}{developerLatestChanges.length === 0 && <p className="mt-1 text-[10px] text-terminal-dim">No prior factual developer delta recorded.</p>}</div>
       <p className="mt-2 text-[10px] text-terminal-dim">risk_inferred false · quality_inferred false · predictive_authority false · trade_signal false</p></div>}
+
+    {calibration && <div className="panel p-4 text-[11px]"><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="text-[10px] font-semibold uppercase tracking-wider text-terminal-muted">Developer correlation graph</div><p className="mt-1 text-terminal-dim">Observed overlap only. Shared funders, wallet reuse, buyer recurrence, or relationship structures do not prove common ownership or coordination.</p></div><div className="text-right"><div className="text-[9px] uppercase text-terminal-muted">Correlation state</div><div className="font-semibold text-terminal-fg">{String(developerCorrelation.status || "NEW-UNKNOWN")}</div></div></div>
+      <dl className="mt-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-4"><div><dt className="text-terminal-muted">Shared funders</dt><dd className="tabular">{sharedFunders.length}</dd></div><div><dt className="text-terminal-muted">Wallet reuse</dt><dd className="tabular">{walletReuse.length}</dd></div><div><dt className="text-terminal-muted">Deployer→buyer recurrence</dt><dd className="tabular">{deployerBuyer.length}</dd></div><div><dt className="text-terminal-muted">Shared structures</dt><dd className="tabular">{sharedStructures.length}</dd></div></dl>
+      {relatedEntityIds.length > 0 ? <div className="mt-3"><div className="text-[9px] uppercase tracking-wide text-terminal-muted">Related developer entities</div><div className="mt-1 flex flex-wrap gap-2">{relatedEntityIds.map((entityId) => <Link key={entityId} href={`/entities/${entityId}`} className="rounded border border-terminal-border px-2 py-1 font-mono text-[10px] hover:text-terminal-accent">{shortAddr(entityId, 5)}</Link>)}</div></div> : <p className="mt-3 text-[10px] text-terminal-dim">No cross-entity correlation evidence observed yet.</p>}
+      {Array.isArray(developerCorrelation.missing) && developerCorrelation.missing.length > 0 && <p className="mt-2 text-[10px] text-terminal-dim">UNKNOWN sources: {(developerCorrelation.missing as string[]).join(", ")}</p>}
+      <p className="mt-2 text-[10px] text-terminal-dim">ownership_inferred false · coordination_inferred false · intent_inferred false · risk_inferred false · trade_signal false</p></div>}
 
     <div className="panel p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h1 className="text-lg font-semibold">{name}{symbol ? ` · ${symbol}` : ""}</h1><div className="mt-1 flex flex-wrap items-center gap-2 text-xs"><code className="mono text-terminal-dim">{mint}</code><CopyButton value={mint} label="Copy CA" /></div><div className="mt-2 flex flex-wrap gap-3 text-xs text-terminal-dim"><a className="hover:text-terminal-accent" href={`https://axiom.trade/t/${mint}`} target="_blank" rel="noreferrer">Axiom</a><a className="hover:text-terminal-accent" href={`https://dexscreener.com/solana/${mint}`} target="_blank" rel="noreferrer">DexScreener</a><a className="hover:text-terminal-accent" href={`https://solscan.io/token/${mint}`} target="_blank" rel="noreferrer">Solscan</a></div></div><div className="text-right"><div className="text-2xs uppercase text-terminal-muted">Stinky Score</div><div className="text-3xl font-semibold tabular">{alert.has_intelligence && score != null ? Number(score).toFixed(0) : "UNK"}<span className="text-base text-terminal-muted">/100</span></div><div className="text-xs text-terminal-dim">{alert.has_intelligence ? `Confidence ${conf != null ? `${(Number(conf) <= 1 ? Number(conf) * 100 : Number(conf)).toFixed(0)}%` : "—"}` : "INSUFFICIENT EVIDENCE — not a grade"}</div></div></div></div>
 
