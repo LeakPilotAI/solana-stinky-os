@@ -10,12 +10,35 @@ def test_prospective_corpus_is_read_only_and_dual_time():
     assert "insert into" not in lowered
     assert "update " not in lowered
     assert "delete from" not in lowered
-    assert "l.event_id LIKE 'migrated:%'" in source
+    assert "e.event_type = 'token.migrated'" in source
+    assert "DISTINCT ON (e.payload->>'mint')" in source
+    assert "e.ingested_at <= e.occurred_at + make_interval" in source
+    assert "l.event_id LIKE 'migrated:%'" not in source
     assert 'r.get("observed_at") <= feature_as_of' in source
     assert 'r.get("ingested_at") <= feature_as_of' in source
-    assert '"query_count_max": 4' in source
+    assert '"query_count_max": 5' in source
     assert '"predictive_authority": False' in source
     assert '"trade_signal": False' in source
+
+
+def test_migration_cohort_deduplicates_and_joins_existing_launch_identity():
+    source = (API_ROOT / "src" / "stinky_api" / "prospective_phase10_corpus.py").read_text(encoding="utf-8")
+    assert "canonical_migrations" in source
+    assert "ORDER BY e.payload->>'mint', e.occurred_at ASC, e.ingested_at ASC" in source
+    assert "LEFT JOIN entity_launches l" in source
+    assert "l.mint = m.mint" in source
+    assert "l.deployer_wallet = m.creator" in source
+    assert '"entity_launch_event_id_required": False' in source
+    assert '"migration_events_deduplicated_by": "mint"' in source
+    assert '"migration_anchor": "earliest dual-time-visible token.migrated event per mint"' in source
+
+
+def test_feature_horizon_is_anchored_to_migration_not_original_launch():
+    source = (API_ROOT / "src" / "stinky_api" / "prospective_phase10_corpus.py").read_text(encoding="utf-8")
+    assert "m.migration_observed_at + make_interval(secs => :feature_seconds) AS feature_as_of" in source
+    assert '"migration_observed_at"' in source
+    assert '"migration_ingested_at"' in source
+    assert '"launch_event_id"' in source
 
 
 def test_collector_emits_sparse_durable_feature_snapshots():
