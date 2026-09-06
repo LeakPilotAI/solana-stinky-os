@@ -20,5 +20,18 @@ SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
+    """Yield one request-scoped transaction and durably commit successful writes.
+
+    Several evidence-only GET surfaces intentionally persist immutable audit
+    snapshots. SQLAlchemy sessions do not auto-commit when the context closes,
+    so without an explicit successful-request commit those snapshot INSERTs are
+    rolled back even when the HTTP response is 200. Read-only requests are
+    unaffected by committing an otherwise clean transaction.
+    """
     async with SessionLocal() as session:
-        yield session
+        try:
+            yield session
+            await session.commit()
+        except BaseException:
+            await session.rollback()
+            raise
