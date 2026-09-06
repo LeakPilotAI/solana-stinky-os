@@ -15,6 +15,7 @@ export interface Counts {
   tracks?: number;
   buyers?: number;
   entities?: number;
+  wallets?: number;
   wallets_perf?: number;
 }
 
@@ -396,7 +397,7 @@ export interface ResearchResponse {
   engine?: string;
   kind?: string;
   query?: string;
-  preset?: string;
+  preset?: string | null;
   explanation?: string;
   count?: number;
   items?: ResearchItem[];
