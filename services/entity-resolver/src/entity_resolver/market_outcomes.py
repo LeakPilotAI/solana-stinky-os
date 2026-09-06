@@ -8,6 +8,7 @@ trading authority. Missing measurements remain UNKNOWN to downstream layers.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import orjson
@@ -60,17 +61,23 @@ class MarketOutcomeStore:
         await self._engine.dispose()
 
     async def ensure_schema(self) -> None:
-        from pathlib import Path
-
-        path = Path(__file__).resolve().parents[2] / "migrations" / "007_market_outcome_observations.sql"
-        if not path.exists():
-            raise FileNotFoundError(f"market outcome migration missing: {path}")
-        sql = path.read_text(encoding="utf-8")
+        migration_dir = Path(__file__).resolve().parents[2] / "migrations"
+        migration_007 = migration_dir / "007_market_outcome_observations.sql"
+        migration_008 = migration_dir / "008_market_outcome_ingestion.sql"
         async with self._sessions() as session:
-            for statement in sql.split(";"):
+            if not migration_007.exists():
+                raise FileNotFoundError(f"market outcome migration missing: {migration_007}")
+            sql_007 = migration_007.read_text(encoding="utf-8")
+            for statement in sql_007.split(";"):
                 statement = statement.strip()
                 if statement:
                     await session.execute(text(statement))
+
+            if not migration_008.exists():
+                raise FileNotFoundError(f"market outcome ingestion migration missing: {migration_008}")
+            # 008 contains a PL/pgSQL function body with internal semicolons;
+            # execute the migration as one statement rather than splitting it.
+            await session.execute(text(migration_008.read_text(encoding="utf-8")))
             await session.commit()
 
     async def record_observation(
