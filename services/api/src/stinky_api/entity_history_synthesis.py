@@ -122,8 +122,10 @@ async def synthesize_entity_history(session: AsyncSession, entity_id: UUID, *, g
                     "signature": item.get("outcome_signature"), "producer": item.get("outcome_producer"),
                     "payload": item.get("outcome_event_payload") if isinstance(item.get("outcome_event_payload"), dict) else {},
                 }
-            item["outcome_status"] = canonical_outcome_from_event(event)
-            item["outcome_resolution_basis"] = "immutable_post_migration_tracking_completed_event" if item["outcome_status"] != "UNKNOWN" else "UNKNOWN"
+            resolved_outcome = canonical_outcome_from_event(event)
+            item["outcome_state"] = resolved_outcome
+            item["outcome_status"] = None if resolved_outcome == "UNKNOWN" else resolved_outcome
+            item["outcome_resolution_basis"] = "immutable_post_migration_tracking_completed_event" if resolved_outcome != "UNKNOWN" else "UNKNOWN"
             item["outcome_evidence_basis"] = "events:post_migration.tracking_completed" if event is not None else "UNKNOWN"
             item["mutable_outcome_status_is_historical_authority"] = False
             item["observed_at"] = _iso(item.get("observed_at")); item["created_at"] = _iso(item.get("created_at")); item["ingested_at"] = item.get("created_at")
