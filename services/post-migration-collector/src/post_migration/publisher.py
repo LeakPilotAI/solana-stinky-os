@@ -18,8 +18,9 @@ from post_migration.models import MarketSnapshot, ObservedTrade, WalletPerforman
 logger = structlog.get_logger(__name__)
 
 # High-frequency ticks already live in wallet_trades / market_snapshots.
-# Putting them on Redis + HTTP fills the stream until the 512m Redis OOM
-# at the default hourly RDB snapshot (~1 hour).
+# Putting every tick on Redis + HTTP fills the stream until the 512m Redis OOM
+# at the default hourly RDB snapshot (~1 hour). Sparse Phase-10 feature snapshots
+# explicitly bypass these sets through _emit(..., force_durable=True).
 _SKIP_STREAM = {
     EventType.POST_MIGRATION_BUY,
     EventType.POST_MIGRATION_SELL,
@@ -50,8 +51,11 @@ class EventPublisher:
             await self._transport.close()
         await self._http.aclose()
 
-    async def _emit(self, event: Event) -> None:
-        if self._connected and event.event_type not in _SKIP_STREAM:
+    async def _emit(self, event: Event, *, force_durable: bool = False) -> None:
+        stream_allowed = force_durable or event.event_type not in _SKIP_STREAM
+        http_allowed = force_durable or event.event_type not in _SKIP_HTTP
+
+        if self._connected and stream_allowed:
             try:
                 await self._transport.publish(event)
                 metrics.inc("events_emitted")
@@ -59,7 +63,7 @@ class EventPublisher:
                 logger.error("publisher.redis_failed", error=str(exc))
                 metrics.inc("errors")
 
-        if settings.event_log_url and event.event_type not in _SKIP_HTTP:
+        if settings.event_log_url and http_allowed:
             try:
                 body = {
                     "event_type": event.event_type.value,
@@ -137,26 +141,62 @@ class EventPublisher:
             )
         )
 
+    @staticmethod
+    def _market_payload(snap: MarketSnapshot) -> dict[str, Any]:
+        return {
+            "mint": snap.mint,
+            "price_usd": snap.price_usd,
+            "liquidity_usd": snap.liquidity_usd,
+            "volume_m5_usd": snap.volume_m5_usd,
+            "volume_h1_usd": snap.volume_h1_usd,
+            "volume_h24_usd": snap.volume_h24_usd,
+            "fdv_usd": snap.fdv_usd,
+            "market_cap_usd": snap.market_cap_usd,
+            "pair_address": snap.pair_address,
+            "dex_id": snap.dex_id,
+            "source": snap.source,
+        }
+
     async def market_snapshot(self, snap: MarketSnapshot) -> None:
+        """Handle ordinary high-frequency snapshots without durable stream fanout."""
         await self._emit(
             Event(
                 event_type=EventType.POST_MIGRATION_MARKET_SNAPSHOT,
                 block_time=snap.captured_at,
-                payload={
-                    "mint": snap.mint,
-                    "price_usd": snap.price_usd,
-                    "liquidity_usd": snap.liquidity_usd,
-                    "volume_m5_usd": snap.volume_m5_usd,
-                    "volume_h1_usd": snap.volume_h1_usd,
-                    "volume_h24_usd": snap.volume_h24_usd,
-                    "fdv_usd": snap.fdv_usd,
-                    "market_cap_usd": snap.market_cap_usd,
-                    "pair_address": snap.pair_address,
-                    "dex_id": snap.dex_id,
-                    "source": snap.source,
-                },
+                payload=self._market_payload(snap),
                 producer=settings.service_name,
             )
+        )
+
+    async def phase10_feature_snapshot(
+        self,
+        snap: MarketSnapshot,
+        *,
+        feature_horizon: str,
+        horizon_seconds: int,
+        anchor_observed_at: datetime,
+    ) -> None:
+        """Emit one sparse research-grade snapshot for a Phase-10 feature cutoff.
+
+        Unlike ordinary market ticks, this event is intentionally durable in both
+        Redis and Event Log so downstream ingestion time is independently recorded.
+        The actual observation time remains snap.captured_at.
+        """
+        payload = {
+            **self._market_payload(snap),
+            "phase10_feature": True,
+            "feature_horizon": feature_horizon,
+            "horizon_seconds": int(horizon_seconds),
+            "anchor_observed_at": anchor_observed_at.isoformat(),
+        }
+        await self._emit(
+            Event(
+                event_type=EventType.POST_MIGRATION_MARKET_SNAPSHOT,
+                block_time=snap.captured_at,
+                payload=payload,
+                producer=settings.service_name,
+            ),
+            force_durable=True,
         )
 
     async def performance_updated(self, perf: WalletPerformance) -> None:

@@ -20,6 +20,12 @@ from post_migration.trade_parser import rank_early_buyers
 
 logger = structlog.get_logger(__name__)
 
+_PHASE10_FEATURE_HORIZONS: tuple[tuple[str, int], ...] = (
+    ("5m", 300),
+    ("15m", 900),
+    ("30m", 1800),
+)
+
 
 class MintTracker:
     """Tracks one migrated mint: early buyers, continuous trades, market snapshots."""
@@ -53,6 +59,54 @@ class MintTracker:
         self.track_id: UUID | None = None
         self._seen_trade_keys: set[tuple[str, str, str]] = set()
         self._wallets_touched: set[str] = set()
+        self._phase10_horizons_emitted: set[str] = set()
+
+    async def _capture_phase10_feature_snapshot(self, snap: Any) -> None:
+        """Durably emit one pre-cutoff snapshot for each research horizon.
+
+        The feature represents evidence Genesis genuinely possessed by the horizon,
+        not an interpolated measurement at the exact horizon. A bounded lead window
+        ensures the durable event can be ingested before feature_as_of. If tracking
+        starts late or misses the window, the feature remains absent/UNKNOWN.
+        """
+        captured_at = getattr(snap, "captured_at", None)
+        if not isinstance(captured_at, datetime):
+            return
+        if captured_at.tzinfo is None:
+            captured_at = captured_at.replace(tzinfo=timezone.utc)
+        anchor = self.migration_at
+        if anchor.tzinfo is None:
+            anchor = anchor.replace(tzinfo=timezone.utc)
+        age_seconds = (captured_at - anchor).total_seconds()
+        if age_seconds < 0:
+            return
+
+        lead_window = max(
+            30.0,
+            float(settings.market_snapshot_interval_sec)
+            + float(settings.track_poll_interval_sec),
+        )
+        for horizon, target_seconds in _PHASE10_FEATURE_HORIZONS:
+            if horizon in self._phase10_horizons_emitted:
+                continue
+            seconds_remaining = float(target_seconds) - age_seconds
+            if 0.0 <= seconds_remaining <= lead_window:
+                await self._publisher.phase10_feature_snapshot(
+                    snap,
+                    feature_horizon=horizon,
+                    horizon_seconds=target_seconds,
+                    anchor_observed_at=anchor,
+                )
+                self._phase10_horizons_emitted.add(horizon)
+                metrics.inc("phase10_feature_snapshots")
+                logger.info(
+                    "track.phase10_feature_snapshot",
+                    mint=self.mint,
+                    horizon=horizon,
+                    captured_at=captured_at.isoformat(),
+                    feature_as_of=(anchor.timestamp() + target_seconds),
+                    seconds_remaining=round(seconds_remaining, 3),
+                )
 
     async def run(self) -> None:
         milestones = [
@@ -144,11 +198,9 @@ class MintTracker:
                             candidates=len(ranked),
                             buys_seen=len(buys),
                         )
-                        # Only stop once we actually persist buyers
                         if n > 0:
                             early_done = True
                     else:
-                        # Keep trying for early_buyer_window_sec (default 15m)
                         if elapsed > settings.early_buyer_window_sec:
                             early_done = True
                             logger.warning(
@@ -172,6 +224,7 @@ class MintTracker:
                     if snap:
                         await self._store.save_market_snapshot(snap)
                         await self._publisher.market_snapshot(snap)
+                        await self._capture_phase10_feature_snapshot(snap)
                         metrics.inc("market_snapshots")
                     last_market = elapsed
 
