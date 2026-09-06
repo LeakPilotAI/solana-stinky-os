@@ -25,8 +25,8 @@ def test_audit_is_read_only_and_dual_time_fail_closed():
     assert "insert into" not in lowered
     assert "update " not in lowered
     assert "delete from" not in lowered
-    assert '"captured_at_is_not_ingested_at": true' in source
-    assert '"only_dual_time_proven_is_reconstructable": true' in source
+    assert '"captured_at_is_not_ingested_at": true' in lowered
+    assert '"only_dual_time_proven_is_reconstructable": true' in lowered
     assert "event[\"ingested_at\"] <= feature_as_of" in source
 
 
