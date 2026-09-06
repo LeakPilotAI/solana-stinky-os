@@ -60,6 +60,11 @@ export default function TokenPage() {
   const calibrationSummary = ((calibration?.calibration || {}) as Record<string, unknown>);
   const calibrationRegimeMemory = ((calibrationSummary.regime_memory || {}) as Record<string, unknown>);
   const calibrationGeneralization = ((calibrationSummary.chronological_generalization || {}) as Record<string, unknown>);
+  const calibrationAudit = ((calibration?.audit || {}) as Record<string, unknown>);
+  const latestChange = ((calibration?.latest_change || calibrationAudit.latest_change || {}) as Record<string, unknown>);
+  const latestChanges = Array.isArray(latestChange.changes)
+    ? (latestChange.changes as Array<Record<string, unknown>>)
+    : [];
   const stateCounts = ((calibrationRegimeMemory.state_counts || {}) as Record<string, unknown>);
   const stableRegimes = Array.isArray(calibrationGeneralization.stable_regimes)
     ? (calibrationGeneralization.stable_regimes as string[])
@@ -148,7 +153,30 @@ export default function TokenPage() {
               Missing: {(calibrationSummary.missing as string[]).slice(0, 6).join(", ")}
             </p>
           )}
-          <p className="mt-1 text-[10px] text-terminal-dim">
+          <div className="mt-3 border-t border-terminal-border/60 pt-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-[9px] uppercase tracking-wide text-terminal-muted">Audit trail</div>
+              <div className="text-[10px] text-terminal-dim">
+                {String(calibrationAudit.snapshot_count ?? 0)} snapshots
+              </div>
+            </div>
+            <p className="mt-1 text-[10px] text-terminal-muted">
+              Latest: {String(latestChange.status || "INITIAL_SNAPSHOT")}
+            </p>
+            {latestChanges.slice(0, 6).map((change, i) => (
+              <p key={i} className="mt-1 text-[10px] text-terminal-dim">
+                {String(change.kind || "CHANGE")}
+                {change.field ? ` · ${String(change.field)}` : ""}
+                {Array.isArray(change.fields) && change.fields.length
+                  ? ` · ${(change.fields as string[]).join(", ")}`
+                  : ""}
+              </p>
+            ))}
+            {latestChanges.length === 0 && (
+              <p className="mt-1 text-[10px] text-terminal-dim">No prior factual delta recorded.</p>
+            )}
+          </div>
+          <p className="mt-2 text-[10px] text-terminal-dim">
             predictive_authority false · trade_signal false · shared_cause_inferred false
           </p>
         </div>
@@ -166,30 +194,9 @@ export default function TokenPage() {
               <CopyButton value={mint} label="Copy CA" />
             </div>
             <div className="mt-2 flex flex-wrap gap-3 text-xs text-terminal-dim">
-              <a
-                className="hover:text-terminal-accent"
-                href={`https://axiom.trade/t/${mint}`}
-                target="_blank"
-                rel="noreferrer"
-              >
-                Axiom
-              </a>
-              <a
-                className="hover:text-terminal-accent"
-                href={`https://dexscreener.com/solana/${mint}`}
-                target="_blank"
-                rel="noreferrer"
-              >
-                DexScreener
-              </a>
-              <a
-                className="hover:text-terminal-accent"
-                href={`https://solscan.io/token/${mint}`}
-                target="_blank"
-                rel="noreferrer"
-              >
-                Solscan
-              </a>
+              <a className="hover:text-terminal-accent" href={`https://axiom.trade/t/${mint}`} target="_blank" rel="noreferrer">Axiom</a>
+              <a className="hover:text-terminal-accent" href={`https://dexscreener.com/solana/${mint}`} target="_blank" rel="noreferrer">DexScreener</a>
+              <a className="hover:text-terminal-accent" href={`https://solscan.io/token/${mint}`} target="_blank" rel="noreferrer">Solscan</a>
             </div>
           </div>
           <div className="text-right">
@@ -200,11 +207,7 @@ export default function TokenPage() {
             </div>
             <div className="text-xs text-terminal-dim">
               {alert.has_intelligence
-                ? `Confidence ${
-                    conf != null
-                      ? `${(Number(conf) <= 1 ? Number(conf) * 100 : Number(conf)).toFixed(0)}%`
-                      : "—"
-                  }`
+                ? `Confidence ${conf != null ? `${(Number(conf) <= 1 ? Number(conf) * 100 : Number(conf)).toFixed(0)}%` : "—"}`
                 : "INSUFFICIENT EVIDENCE — not a grade"}
             </div>
           </div>
@@ -213,21 +216,14 @@ export default function TokenPage() {
 
       <div className="grid gap-4 md:grid-cols-2">
         <div className="panel p-3">
-          <h2 className="text-2xs uppercase tracking-wide text-terminal-muted">
-            Why this score
-          </h2>
+          <h2 className="text-2xs uppercase tracking-wide text-terminal-muted">Why this score</h2>
           {explanation.length === 0 ? (
-            <p className="mt-2 text-xs text-terminal-dim">
-              No score_explanation on stored alert for this mint.
-            </p>
+            <p className="mt-2 text-xs text-terminal-dim">No score_explanation on stored alert for this mint.</p>
           ) : (
             <ul className="mt-2 space-y-1 text-xs">
               {explanation.map((e, i) => (
                 <li key={i} className="flex gap-2">
-                  <span className="tabular text-terminal-dim">
-                    {e.delta != null && e.delta >= 0 ? "+" : ""}
-                    {e.delta}
-                  </span>
+                  <span className="tabular text-terminal-dim">{e.delta != null && e.delta >= 0 ? "+" : ""}{e.delta}</span>
                   <span>{e.reason}</span>
                 </li>
               ))}
@@ -235,74 +231,26 @@ export default function TokenPage() {
           )}
         </div>
         <div className="panel p-3">
-          <h2 className="text-2xs uppercase tracking-wide text-terminal-muted">
-            Migration track
-          </h2>
+          <h2 className="text-2xs uppercase tracking-wide text-terminal-muted">Migration track</h2>
           <dl className="mt-2 grid grid-cols-2 gap-2 text-xs">
-            <div>
-              <dt className="text-terminal-muted">Status</dt>
-              <dd>{(track.status as string) || "—"}</dd>
-            </div>
-            <div>
-              <dt className="text-terminal-muted">Buyers captured</dt>
-              <dd className="tabular">{(track.buyers_captured as number) ?? "—"}</dd>
-            </div>
-            <div>
-              <dt className="text-terminal-muted">Pool</dt>
-              <dd className="mono">{shortAddr(track.pool as string)}</dd>
-            </div>
-            <div>
-              <dt className="text-terminal-muted">Creator</dt>
-              <dd className="mono">{shortAddr(track.creator as string)}</dd>
-            </div>
+            <div><dt className="text-terminal-muted">Status</dt><dd>{(track.status as string) || "—"}</dd></div>
+            <div><dt className="text-terminal-muted">Buyers captured</dt><dd className="tabular">{(track.buyers_captured as number) ?? "—"}</dd></div>
+            <div><dt className="text-terminal-muted">Pool</dt><dd className="mono">{shortAddr(track.pool as string)}</dd></div>
+            <div><dt className="text-terminal-muted">Creator</dt><dd className="mono">{shortAddr(track.creator as string)}</dd></div>
           </dl>
-          {alert.volume_m5_usd != null && (
-            <p className="mt-2 text-xs">
-              Alert vol 5m: {fmtUsd(Number(alert.volume_m5_usd))}
-            </p>
-          )}
+          {alert.volume_m5_usd != null && <p className="mt-2 text-xs">Alert vol 5m: {fmtUsd(Number(alert.volume_m5_usd))}</p>}
         </div>
       </div>
 
       {happened && (
         <div className="panel p-3">
           <h2 className="text-2xs uppercase tracking-wide text-terminal-muted">What happened next</h2>
-          <p className="mt-1 text-[11px] text-terminal-dim">
-            Stored ticks only. Missing offsets stay UNKNOWN. Outcome is later, not a decision input.
-          </p>
+          <p className="mt-1 text-[11px] text-terminal-dim">Stored ticks only. Missing offsets stay UNKNOWN. Outcome is later, not a decision input.</p>
           <dl className="mt-2 grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
-            <div>
-              <dt className="text-terminal-muted">Peak 5m vol</dt>
-              <dd className="tabular">
-                {happened.peak_volume == null && happened.peakVolume == null
-                  ? "UNKNOWN"
-                  : fmtUsd(Number(happened.peak_volume ?? happened.peakVolume))}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-terminal-muted">Peak price</dt>
-              <dd className="tabular">
-                {happened.peak_price == null && happened.peakPrice == null
-                  ? "UNKNOWN"
-                  : String(happened.peak_price ?? happened.peakPrice)}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-terminal-muted">Later outcome</dt>
-              <dd>
-                {(() => {
-                  const oc = happened.outcome;
-                  if (oc && typeof oc === "object" && oc !== null && "label" in oc) {
-                    return String((oc as { label?: string }).label || "UNKNOWN");
-                  }
-                  return typeof oc === "string" ? oc : "UNKNOWN";
-                })()}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-terminal-muted">Source</dt>
-              <dd>{String(happened.source || "—")}</dd>
-            </div>
+            <div><dt className="text-terminal-muted">Peak 5m vol</dt><dd className="tabular">{happened.peak_volume == null && happened.peakVolume == null ? "UNKNOWN" : fmtUsd(Number(happened.peak_volume ?? happened.peakVolume))}</dd></div>
+            <div><dt className="text-terminal-muted">Peak price</dt><dd className="tabular">{happened.peak_price == null && happened.peakPrice == null ? "UNKNOWN" : String(happened.peak_price ?? happened.peakPrice)}</dd></div>
+            <div><dt className="text-terminal-muted">Later outcome</dt><dd>{(() => { const oc = happened.outcome; if (oc && typeof oc === "object" && oc !== null && "label" in oc) return String((oc as { label?: string }).label || "UNKNOWN"); return typeof oc === "string" ? oc : "UNKNOWN"; })()}</dd></div>
+            <div><dt className="text-terminal-muted">Source</dt><dd>{String(happened.source || "—")}</dd></div>
           </dl>
         </div>
       )}
@@ -310,38 +258,15 @@ export default function TokenPage() {
       {quality && (
         <div className="panel p-3">
           <h2 className="text-2xs uppercase tracking-wide text-terminal-muted">Quality state</h2>
-          <p className="mt-1 text-[11px] text-terminal-dim">
-            Setup after Gate 1. Not a buy. Missing later ticks stay UNKNOWN.
-          </p>
+          <p className="mt-1 text-[11px] text-terminal-dim">Setup after Gate 1. Not a buy. Missing later ticks stay UNKNOWN.</p>
           <dl className="mt-2 grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
-            <div>
-              <dt className="text-terminal-muted">State</dt>
-              <dd>{String(quality.state || "UNKNOWN")}</dd>
-            </div>
-            <div>
-              <dt className="text-terminal-muted">Previous</dt>
-              <dd>{String(quality.previous_state || "UNKNOWN")}</dd>
-            </div>
-            <div>
-              <dt className="text-terminal-muted">Severity</dt>
-              <dd>{String(quality.severity || "—")}</dd>
-            </div>
-            <div>
-              <dt className="text-terminal-muted">Evidence</dt>
-              <dd>{String(quality.evidence_quality || "UNKNOWN")}</dd>
-            </div>
+            <div><dt className="text-terminal-muted">State</dt><dd>{String(quality.state || "UNKNOWN")}</dd></div>
+            <div><dt className="text-terminal-muted">Previous</dt><dd>{String(quality.previous_state || "UNKNOWN")}</dd></div>
+            <div><dt className="text-terminal-muted">Severity</dt><dd>{String(quality.severity || "—")}</dd></div>
+            <div><dt className="text-terminal-muted">Evidence</dt><dd>{String(quality.evidence_quality || "UNKNOWN")}</dd></div>
           </dl>
-          {Array.isArray(quality.why) &&
-            (quality.why as Array<{ explanation?: string }>).map((w, i) => (
-              <p key={i} className="mt-1 text-[11px] text-terminal-muted">
-                {typeof w === "string" ? w : w.explanation}
-              </p>
-            ))}
-          {Array.isArray(quality.unknown) && (quality.unknown as string[]).length > 0 && (
-            <p className="mt-1 text-[11px] text-terminal-dim">
-              UNKNOWN: {(quality.unknown as string[]).join(", ")}
-            </p>
-          )}
+          {Array.isArray(quality.why) && (quality.why as Array<{ explanation?: string }>).map((w, i) => <p key={i} className="mt-1 text-[11px] text-terminal-muted">{typeof w === "string" ? w : w.explanation}</p>)}
+          {Array.isArray(quality.unknown) && (quality.unknown as string[]).length > 0 && <p className="mt-1 text-[11px] text-terminal-dim">UNKNOWN: {(quality.unknown as string[]).join(", ")}</p>}
         </div>
       )}
 
@@ -349,49 +274,18 @@ export default function TokenPage() {
         <div className="panel p-3">
           <h2 className="text-2xs uppercase tracking-wide text-terminal-muted">Runner recipe</h2>
           <p className="mt-1 text-[11px] text-terminal-dim">{String(recipe.note || "Not a probability.")}</p>
-          <p className="mt-2 text-xs text-terminal-muted">
-            Analogues {String(recipe.analogue_count ?? 0)} · RUNNER {String(recipe.runner_count ?? 0)} / FADE{" "}
-            {String(recipe.fade_count ?? 0)} / HELD {String(recipe.held_count ?? 0)}
-          </p>
-          {recipe.sample_sufficient !== true && (
-            <p className="mt-1 text-[11px] text-terminal-muted">
-              UNKNOWN — need 5 or more historical analogues as-of.
-            </p>
-          )}
+          <p className="mt-2 text-xs text-terminal-muted">Analogues {String(recipe.analogue_count ?? 0)} · RUNNER {String(recipe.runner_count ?? 0)} / FADE {String(recipe.fade_count ?? 0)} / HELD {String(recipe.held_count ?? 0)}</p>
+          {recipe.sample_sufficient !== true && <p className="mt-1 text-[11px] text-terminal-muted">UNKNOWN — need 5 or more historical analogues as-of.</p>}
         </div>
       )}
 
       <div className="panel overflow-x-auto">
-        <div className="border-b border-terminal-border px-3 py-2 text-2xs uppercase text-terminal-muted">
-          Early buyers
-        </div>
+        <div className="border-b border-terminal-border px-3 py-2 text-2xs uppercase text-terminal-muted">Early buyers</div>
         <table className="w-full text-left text-xs">
-          <thead className="text-2xs text-terminal-muted">
-            <tr className="border-b border-terminal-border">
-              <th className="px-3 py-2">Rank</th>
-              <th className="px-2 py-2">Wallet</th>
-              <th className="px-2 py-2">SOL</th>
-              <th className="px-2 py-2">Meaningful</th>
-            </tr>
-          </thead>
+          <thead className="text-2xs text-terminal-muted"><tr className="border-b border-terminal-border"><th className="px-3 py-2">Rank</th><th className="px-2 py-2">Wallet</th><th className="px-2 py-2">SOL</th><th className="px-2 py-2">Meaningful</th></tr></thead>
           <tbody>
-            {buyers.length === 0 && (
-              <tr>
-                <td colSpan={4} className="px-3 py-6 text-terminal-muted">
-                  No migration_buyers for this mint.
-                </td>
-              </tr>
-            )}
-            {buyers.map((b) => (
-              <tr key={String(b.rank)} className="border-b border-terminal-border/40">
-                <td className="px-3 py-1.5 tabular">{String(b.rank)}</td>
-                <td className="px-2 py-1.5 mono">{shortAddr(b.wallet as string, 6)}</td>
-                <td className="px-2 py-1.5 tabular">
-                  {b.sol_spent != null ? Number(b.sol_spent).toFixed(3) : "—"}
-                </td>
-                <td className="px-2 py-1.5">{b.is_meaningful ? "yes" : "no"}</td>
-              </tr>
-            ))}
+            {buyers.length === 0 && <tr><td colSpan={4} className="px-3 py-6 text-terminal-muted">No migration_buyers for this mint.</td></tr>}
+            {buyers.map((b) => <tr key={String(b.rank)} className="border-b border-terminal-border/40"><td className="px-3 py-1.5 tabular">{String(b.rank)}</td><td className="px-2 py-1.5 mono">{shortAddr(b.wallet as string, 6)}</td><td className="px-2 py-1.5 tabular">{b.sol_spent != null ? Number(b.sol_spent).toFixed(3) : "—"}</td><td className="px-2 py-1.5">{b.is_meaningful ? "yes" : "no"}</td></tr>)}
           </tbody>
         </table>
       </div>
