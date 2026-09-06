@@ -7,6 +7,8 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from stinky_api.market_lifecycle_memory import build_market_lifecycle_memory
+
 AUTHORITY = {"interpretation": "DESCRIPTIVE_EVIDENCE_ONLY", "predictive_authority": False, "trade_signal": False, "risk_inferred": False, "quality_inferred": False, "evidence_only": True}
 
 
@@ -34,13 +36,14 @@ async def historical_launch_outcome_provenance(session: AsyncSession, mint: str,
     try:
         launch = (await session.execute(text(f"""
             SELECT l.entity_id::text AS entity_id, l.mint, l.event_id, l.observed_at AS launch_observed_at,
-                   l.outcome_status, l.outcome_meta, l.created_at AS launch_ingested_at,
+                   l.outcome_status AS mutable_outcome_status, l.outcome_meta, l.created_at AS launch_ingested_at,
                    oe.event_id::text AS outcome_event_id, oe.event_type AS outcome_event_type,
                    oe.occurred_at AS outcome_event_observed_at, oe.ingested_at AS outcome_event_ingested_at,
-                   oe.signature AS outcome_event_signature, oe.producer AS outcome_event_producer
+                   oe.signature AS outcome_event_signature, oe.producer AS outcome_event_producer,
+                   oe.payload AS outcome_event_payload
             FROM entity_launches l
             LEFT JOIN LATERAL (
-                SELECT e.event_id, e.event_type, e.occurred_at, e.ingested_at, e.signature, e.producer
+                SELECT e.event_id, e.event_type, e.occurred_at, e.ingested_at, e.signature, e.producer, e.payload
                 FROM events e
                 WHERE e.event_type = 'post_migration.tracking_completed'
                   AND e.payload->>'mint' = l.mint {event_cutoff}
@@ -54,12 +57,6 @@ async def historical_launch_outcome_provenance(session: AsyncSession, mint: str,
         result = {"status": "UNKNOWN", "mint": mint, "outcome": "UNKNOWN", "observations": [], "missing": ["entity_launch"], **AUTHORITY}
         if cutoff: result.update({"as_of": cutoff.isoformat(), "temporal_cutoff_enforced": True})
         return result
-    meta = launch.get("outcome_meta") if isinstance(launch.get("outcome_meta"), dict) else {}
-    raw_outcome = str(launch.get("outcome_status") or "UNKNOWN").upper(); outcome = raw_outcome if raw_outcome in {"RUNNER", "HELD", "FADE", "UNKNOWN"} else "UNKNOWN"
-    observed_raw = meta.get("observed_at") or launch.get("outcome_event_observed_at"); ingested_raw = meta.get("ingested_at") or launch.get("outcome_event_ingested_at")
-    outcome_observed = _parse(observed_raw); outcome_ingested = _parse(ingested_raw)
-    visible = outcome == "UNKNOWN" or (outcome_observed is not None and outcome_ingested is not None and (cutoff is None or (outcome_observed <= cutoff and outcome_ingested <= cutoff)))
-    if not visible: outcome = "UNKNOWN"
     try:
         rows = (await session.execute(text(f"""
             SELECT id, horizon, horizon_seconds, anchor_observed_at, observed_at, ingested_at,
@@ -73,15 +70,41 @@ async def historical_launch_outcome_provenance(session: AsyncSession, mint: str,
         item = dict(row)
         for key in ("anchor_observed_at", "observed_at", "ingested_at"): item[key] = _iso(item.get(key))
         observations.append(item)
-    source_event = meta.get("source_event") or launch.get("outcome_event_type")
-    event_id = meta.get("event_id") or launch.get("outcome_event_id"); signature = meta.get("signature") or launch.get("outcome_event_signature")
+
+    outcome_event = None
+    if launch.get("outcome_event_id"):
+        outcome_event = {
+            "event_id": launch.get("outcome_event_id"),
+            "event_type": launch.get("outcome_event_type"),
+            "occurred_at": launch.get("outcome_event_observed_at"),
+            "ingested_at": launch.get("outcome_event_ingested_at"),
+            "signature": launch.get("outcome_event_signature"),
+            "producer": launch.get("outcome_event_producer"),
+            "payload": launch.get("outcome_event_payload") if isinstance(launch.get("outcome_event_payload"), dict) else {},
+        }
+    lifecycle = build_market_lifecycle_memory(mint=mint, observations=observations, outcome_event=outcome_event, as_of=cutoff)
+    outcome = lifecycle.get("outcome", "UNKNOWN")
+    meta = launch.get("outcome_meta") if isinstance(launch.get("outcome_meta"), dict) else {}
     result = {
-        "status": "OBSERVED" if outcome != "UNKNOWN" else "UNKNOWN", "mint": mint, "entity_id": launch.get("entity_id"), "launch_event_id": launch.get("event_id"),
+        "status": "OBSERVED" if lifecycle.get("status") == "OBSERVED" else "UNKNOWN",
+        "mint": mint, "entity_id": launch.get("entity_id"), "launch_event_id": launch.get("event_id"),
         "launch_observed_at": _iso(launch.get("launch_observed_at")), "launch_ingested_at": _iso(launch.get("launch_ingested_at")),
-        "outcome": outcome, "outcome_observed_at": _iso(observed_raw), "outcome_ingested_at": _iso(ingested_raw),
-        "outcome_source_event": source_event, "outcome_event_id": event_id, "outcome_signature": signature, "outcome_producer": launch.get("outcome_event_producer"),
-        "outcome_metadata": meta, "observations": observations, "observation_count": len(observations), "unknown_before_resolution": outcome_observed is not None,
-        "missing": [key for key, value in (("outcome_observed_at", observed_raw), ("outcome_ingested_at", ingested_raw), ("outcome_event_id", event_id), ("outcome_source_event", source_event)) if value is None],
+        "outcome": outcome,
+        "outcome_resolution_basis": lifecycle.get("outcome_resolution_basis"),
+        "mutable_outcome_status": launch.get("mutable_outcome_status"),
+        "mutable_outcome_status_is_historical_authority": False,
+        "outcome_observed_at": lifecycle.get("outcome_event", {}).get("occurred_at") if isinstance(lifecycle.get("outcome_event"), dict) else None,
+        "outcome_ingested_at": lifecycle.get("outcome_event", {}).get("ingested_at") if isinstance(lifecycle.get("outcome_event"), dict) else None,
+        "outcome_source_event": lifecycle.get("outcome_event", {}).get("event_type") if isinstance(lifecycle.get("outcome_event"), dict) else None,
+        "outcome_event_id": lifecycle.get("outcome_event", {}).get("event_id") if isinstance(lifecycle.get("outcome_event"), dict) else None,
+        "outcome_signature": lifecycle.get("outcome_event", {}).get("signature") if isinstance(lifecycle.get("outcome_event"), dict) else None,
+        "outcome_producer": lifecycle.get("outcome_event", {}).get("producer") if isinstance(lifecycle.get("outcome_event"), dict) else None,
+        "outcome_metadata": meta,
+        "observations": observations,
+        "observation_count": len(observations),
+        "lifecycle_memory": lifecycle,
+        "unknown_before_resolution": lifecycle.get("unknown_before_resolution", False),
+        "missing": [key for key, value in (("outcome_event", lifecycle.get("outcome_event")),) if not value],
         "bounded": {"observation_limit": observation_limit}, **AUTHORITY,
     }
     if cutoff: result.update({"as_of": cutoff.isoformat(), "temporal_cutoff_enforced": True})
