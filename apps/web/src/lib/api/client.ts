@@ -255,3 +255,16 @@ export async function copyText(value: string): Promise<boolean> {
     return false;
   }
 }
+
+export function tierClass(tier?: string): string {
+  switch (tier) {
+    case "high":
+      return "text-terminal-accent";
+    case "medium":
+      return "text-terminal-info";
+    case "emerging":
+      return "text-terminal-warn";
+    default:
+      return "text-terminal-muted";
+  }
+}
