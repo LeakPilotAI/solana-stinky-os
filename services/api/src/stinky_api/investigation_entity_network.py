@@ -15,6 +15,10 @@ from stinky_api.entity_history_synthesis import synthesize_entity_history
 from stinky_api.funding_history import funding_history_for_entity
 from stinky_api.historical_outcome_calibration import calibrate_historical_outcomes
 from stinky_api.historical_outcome_comparison import historical_outcomes_for_analogues
+from stinky_api.investigation_calibration_surface import (
+    build_investigation_calibration_surface,
+    unknown_calibration_surface,
+)
 from stinky_api.market_outcome_analysis import analyze_market_lifecycle, market_path_signature
 from stinky_api.market_outcome_history import market_lifecycle_for_mint
 from stinky_api.market_pattern_calibration_memory import (
@@ -30,7 +34,7 @@ from stinky_api.market_pattern_rolling_calibration import track_rolling_pattern_
 
 def _unknown(*, status: str, wallet_limit: int, relationship_limit: int) -> dict[str, Any]:
     unknown_status = "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN"
-    return {
+    result = {
         "status": status,
         "entity": None,
         "wallets": [],
@@ -62,6 +66,8 @@ def _unknown(*, status: str, wallet_limit: int, relationship_limit: int) -> dict
         "evidence_only": True,
         "missing": ["entity_history"],
     }
+    result.update(unknown_calibration_surface(status=unknown_status, limit=relationship_limit))
+    return result
 
 
 async def entity_network_for_investigation(
@@ -87,6 +93,7 @@ async def entity_network_for_investigation(
     market_pattern_history_limit = relationship_limit
     market_pattern_outcome_occurrence_limit = relationship_limit
     market_pattern_calibration_memory_limit = relationship_limit
+    market_pattern_regime_pattern_limit = relationship_limit
 
     resolved_entity_id: UUID | None = None
     if entity_id:
@@ -214,6 +221,25 @@ async def entity_network_for_investigation(
         except Exception:
             pass
 
+    surface_pattern_hash = str(
+        pattern_outcome_calibration.get("pattern_hash") or rolling_pattern_hash or ""
+    ).strip() or None
+    try:
+        calibration_surface = await build_investigation_calibration_surface(
+            session,
+            pattern_hash=surface_pattern_hash,
+            calibration=pattern_outcome_calibration,
+            calibration_memory=pattern_calibration_memory,
+            as_of=as_of,
+            occurrence_limit=market_pattern_outcome_occurrence_limit,
+            pattern_limit=market_pattern_regime_pattern_limit,
+        )
+    except Exception:
+        calibration_surface = unknown_calibration_surface(
+            pattern_hash=surface_pattern_hash,
+            limit=market_pattern_outcome_occurrence_limit,
+        )
+
     try:
         analogue_kwargs = {"limit": analogue_limit, "candidate_limit": analogue_candidate_limit}
         if as_of is not None:
@@ -242,6 +268,7 @@ async def entity_network_for_investigation(
     graph["market_pattern_calibration_readiness"] = pattern_calibration_readiness
     graph["market_pattern_rolling_calibration"] = pattern_rolling_calibration
     graph["market_pattern_calibration_memory"] = pattern_calibration_memory
+    graph.update(calibration_surface)
     graph["historical_analogues"] = historical_analogues
     graph["historical_outcome_comparison"] = historical_outcomes
     graph["historical_outcome_calibration"] = historical_calibration
@@ -251,6 +278,7 @@ async def entity_network_for_investigation(
     graph["bounded"]["market_pattern_history_limit"] = market_pattern_history_limit
     graph["bounded"]["market_pattern_outcome_occurrence_limit"] = market_pattern_outcome_occurrence_limit
     graph["bounded"]["market_pattern_calibration_memory_limit"] = market_pattern_calibration_memory_limit
+    graph["bounded"]["market_pattern_regime_pattern_limit"] = market_pattern_regime_pattern_limit
     graph["bounded"]["analogue_limit"] = analogue_limit
     graph["bounded"]["analogue_candidate_limit"] = analogue_candidate_limit
     graph["bounded"]["outcome_launch_limit_per_analogue"] = outcome_launch_limit_per_analogue
