@@ -11,6 +11,8 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from stinky_api.developer_correlation_repetition import analyze_correlation_repetition
+
 
 def _parse_as_of(value: datetime | str | None) -> datetime | None:
     if value is None:
@@ -31,6 +33,11 @@ def _iso(value: Any) -> Any:
     return value.isoformat() if hasattr(value, "isoformat") else value
 
 
+def _with_repetition(result: dict[str, Any]) -> dict[str, Any]:
+    result["repetition_analysis"] = analyze_correlation_repetition(result)
+    return result
+
+
 async def correlate_developer_identity(
     session: AsyncSession,
     entity_id: UUID,
@@ -43,16 +50,16 @@ async def correlate_developer_identity(
     limit = max(1, min(200, int(limit)))
     cutoff = _parse_as_of(as_of)
     if as_of is not None and cutoff is None:
-        return {"status": "UNKNOWN", "entity_id": str(entity_id), "missing": ["valid_as_of"], "evidence_only": True,
-                "ownership_inferred": False, "coordination_inferred": False, "predictive_authority": False, "trade_signal": False}
+        return _with_repetition({"status": "UNKNOWN", "entity_id": str(entity_id), "missing": ["valid_as_of"], "evidence_only": True,
+                "ownership_inferred": False, "coordination_inferred": False, "predictive_authority": False, "trade_signal": False})
 
     wallets = sorted({str(r.get("wallet")) for r in (graph.get("wallets") or []) if isinstance(r, dict) and r.get("wallet")})
     if not wallets:
-        return {"status": "NEW-UNKNOWN", "entity_id": str(entity_id), "wallets": [], "shared_funders": [],
+        return _with_repetition({"status": "NEW-UNKNOWN", "entity_id": str(entity_id), "wallets": [], "shared_funders": [],
                 "cross_entity_wallet_reuse": [], "deployer_buyer_recurrence": [], "shared_relationship_structures": [],
                 "missing": ["entity_wallets"], "bounded": {"limit": limit}, "interpretation": "DESCRIPTIVE_EVIDENCE_ONLY",
                 "ownership_inferred": False, "coordination_inferred": False, "risk_inferred": False, "quality_inferred": False,
-                "predictive_authority": False, "trade_signal": False, "evidence_only": True}
+                "predictive_authority": False, "trade_signal": False, "evidence_only": True})
 
     time_clause_f = "AND f.observed_at <= :as_of" if cutoff else ""
     time_clause_l = "AND l.observed_at <= :as_of" if cutoff else ""
@@ -139,7 +146,9 @@ async def correlate_developer_identity(
             SELECT wr.relationship_kind,
                    CASE WHEN wa.entity_id = :entity_id THEN wb.entity_id::text ELSE wa.entity_id::text END AS other_entity_id,
                    COUNT(*)::int AS edge_count,
-                   SUM(COALESCE(wr.observation_count,0))::int AS observation_count
+                   SUM(COALESCE(wr.observation_count,0))::int AS observation_count,
+                   MIN(wr.first_seen_at) AS first_observed_at,
+                   MAX(wr.last_seen_at) AS last_observed_at
             FROM wallet_relationships wr
             LEFT JOIN entity_wallets wa ON wa.wallet = wr.wallet_a
             LEFT JOIN entity_wallets wb ON wb.wallet = wr.wallet_b
@@ -150,7 +159,8 @@ async def correlate_developer_identity(
             ORDER BY COUNT(*) DESC, SUM(COALESCE(wr.observation_count,0)) DESC
             LIMIT :limit
         """), {**params, "as_of": cutoff})).mappings().all()
-        structures = [{**dict(r), "relationship": "SHARED_RELATIONSHIP_STRUCTURE_OBSERVED", "ownership_inferred": False, "coordination_inferred": False} for r in rows]
+        structures = [{**dict(r), "first_observed_at": _iso(r.get("first_observed_at")), "last_observed_at": _iso(r.get("last_observed_at")),
+                       "relationship": "SHARED_RELATIONSHIP_STRUCTURE_OBSERVED", "ownership_inferred": False, "coordination_inferred": False} for r in rows]
     except Exception:
         missing.append("shared_relationship_structures")
 
@@ -170,4 +180,4 @@ async def correlate_developer_identity(
     }
     if cutoff:
         result["as_of"] = cutoff.isoformat(); result["temporal_cutoff_enforced"] = True
-    return result
+    return _with_repetition(result)
