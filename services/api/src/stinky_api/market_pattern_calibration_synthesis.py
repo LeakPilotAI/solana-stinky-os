@@ -50,6 +50,11 @@ def synthesize_market_pattern_calibration_evidence(
         or ""
     ).strip() or None
 
+    persisted_rolling_observed = _status(memory) == "OBSERVED" and bool(memory.get("records"))
+    rolling_status = _status(rolling)
+    if rolling_status != "OBSERVED" and persisted_rolling_observed:
+        rolling_status = "OBSERVED"
+
     current_state = (
         transitions.get("current_state")
         if _status(transitions) == "OBSERVED"
@@ -81,7 +86,7 @@ def synthesize_market_pattern_calibration_evidence(
     insufficient_regimes = insufficient_regimes if isinstance(insufficient_regimes, list) else []
 
     chain_status = {
-        "rolling": _status(rolling),
+        "rolling": rolling_status,
         "memory": _status(memory),
         "transitions": _status(transitions),
         "regime_memory": _status(regime_memory),
