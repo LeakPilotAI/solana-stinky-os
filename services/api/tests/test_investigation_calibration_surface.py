@@ -5,6 +5,7 @@ from stinky_api.investigation_calibration_surface import (
     build_investigation_calibration_surface,
     unknown_calibration_surface,
 )
+from stinky_api.investigation_entity_network import entity_network_for_investigation
 
 
 def test_unknown_surface_is_explicit_evidence_only_and_bounded():
@@ -15,6 +16,25 @@ def test_unknown_surface_is_explicit_evidence_only_and_bounded():
     assert surface["market_pattern_regime_segmentation"]["future_regime_leakage_permitted"] is False
     assert surface["market_pattern_regime_stability"]["future_evaluation_leakage_permitted"] is False
     assert all(value["evidence_only"] is True for value in surface.values())
+
+
+@pytest.mark.asyncio
+async def test_unknown_investigation_response_exposes_full_calibration_surface():
+    class ExplodingSession:
+        async def execute(self, *args, **kwargs):
+            raise AssertionError("database should not be queried")
+
+    result = await entity_network_for_investigation(ExplodingSession())
+    expected = {
+        "market_pattern_calibration_transitions",
+        "market_pattern_regime_memory",
+        "market_pattern_regime_segmentation",
+        "market_pattern_conditional_performance",
+        "market_pattern_regime_stability",
+    }
+    assert expected.issubset(result)
+    assert all(result[key]["status"] == "NEW-UNKNOWN" for key in expected)
+    assert all(result[key]["evidence_only"] is True for key in expected)
 
 
 @pytest.mark.asyncio
