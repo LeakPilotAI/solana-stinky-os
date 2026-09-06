@@ -37,10 +37,27 @@ async def test_calibration_endpoint_resolves_creator_and_returns_compact_synthes
                 "trade_signal": False,
                 "evidence_only": True,
             },
+            "developer_identity_correlation": {
+                "status": "OBSERVED",
+                "entity_id": "entity-1",
+                "shared_funders": [{"other_entity_id": "entity-2"}],
+                "cross_entity_wallet_reuse": [],
+                "deployer_buyer_recurrence": [],
+                "shared_relationship_structures": [],
+                "ownership_inferred": False,
+                "coordination_inferred": False,
+                "intent_inferred": False,
+                "risk_inferred": False,
+                "quality_inferred": False,
+                "predictive_authority": False,
+                "trade_signal": False,
+                "evidence_only": True,
+            },
             "history": {
                 "sources": {
                     "developer_longitudinal": {
                         "status": "OBSERVED",
+                        "entity_id": "entity-1",
                         "history_state": "KNOWN_HISTORY",
                         "launch_history": {"historical_launch_count": 3},
                         "associated_wallets": {"count": 2},
@@ -68,6 +85,10 @@ async def test_calibration_endpoint_resolves_creator_and_returns_compact_synthes
     assert result["calibration"]["evidence_status"] == "PARTIAL_EVIDENCE"
     assert result["developer"]["history_state"] == "KNOWN_HISTORY"
     assert result["developer"]["launch_history"]["historical_launch_count"] == 3
+    assert result["developer_correlation"]["status"] == "OBSERVED"
+    assert result["developer_correlation"]["shared_funders"][0]["other_entity_id"] == "entity-2"
+    assert result["developer_correlation"]["ownership_inferred"] is False
+    assert result["developer_correlation"]["coordination_inferred"] is False
     assert result["developer"]["risk_inferred"] is False
     assert result["developer"]["quality_inferred"] is False
     assert result["predictive_authority"] is False
@@ -89,6 +110,9 @@ async def test_calibration_endpoint_preserves_unknown_synthesis_and_fresh_develo
     assert result["calibration"]["trade_signal"] is False
     assert result["developer"]["history_state"] == "NEW-UNKNOWN"
     assert result["developer"]["fresh_entity_interpretation"] == "NEW-UNKNOWN"
+    assert result["developer_correlation"]["status"] == "UNKNOWN"
+    assert result["developer_correlation"]["ownership_inferred"] is False
+    assert result["developer_correlation"]["coordination_inferred"] is False
     assert result["developer"]["risk_inferred"] is False
     assert result["developer"]["quality_inferred"] is False
     assert result["developer"]["predictive_authority"] is False
