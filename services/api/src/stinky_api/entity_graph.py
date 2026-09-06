@@ -214,13 +214,45 @@ async def cross_developer_changes(
     return await developer_change_feed(session, limit=limit, as_of=as_of, include_unchanged=include_unchanged)
 
 
+@router.get("/developer-correlation/{entity_id}")
+async def developer_correlation_for_entity(
+    entity_id: UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    as_of: datetime | None = Query(None),
+    limit: int = Query(100, ge=1, le=200),
+) -> dict[str, Any]:
+    """Return bounded correlation evidence from the canonical investigation graph."""
+    from stinky_api.investigation_entity_network import entity_network_for_investigation
+
+    network = await entity_network_for_investigation(
+        session,
+        entity_id=str(entity_id),
+        wallet_limit=min(100, limit),
+        relationship_limit=limit,
+        as_of=as_of,
+    )
+    correlation = network.get("developer_identity_correlation")
+    if not isinstance(correlation, dict):
+        correlation = {
+            "status": "UNKNOWN", "entity_id": str(entity_id), "wallets": [],
+            "shared_funders": [], "cross_entity_wallet_reuse": [],
+            "deployer_buyer_recurrence": [], "shared_relationship_structures": [],
+            "missing": ["developer_identity_correlation"],
+            "bounded": {"limit": limit}, "interpretation": "DESCRIPTIVE_EVIDENCE_ONLY",
+            "ownership_inferred": False, "coordination_inferred": False, "intent_inferred": False,
+            "risk_inferred": False, "quality_inferred": False,
+            "predictive_authority": False, "trade_signal": False, "evidence_only": True,
+        }
+    return correlation
+
+
 @router.get("/investigation/{mint}/calibration")
 async def investigation_calibration_evidence(
     mint: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     as_of: datetime | None = Query(None),
 ) -> dict[str, Any]:
-    """Compact calibration, audit, and developer evidence for one investigation mint."""
+    """Compact calibration, audit, developer, and correlation evidence for one investigation mint."""
     from stinky_api.investigation_entity_network import entity_network_for_investigation
 
     mint = str(mint or "").strip()
@@ -281,6 +313,17 @@ async def investigation_calibration_evidence(
             "risk_inferred": False, "quality_inferred": False, "predictive_authority": False,
             "trade_signal": False, "evidence_only": True,
         }
+    correlation = network.get("developer_identity_correlation")
+    if not isinstance(correlation, dict):
+        correlation = {
+            "status": "UNKNOWN", "entity_id": developer.get("entity_id"), "wallets": [],
+            "shared_funders": [], "cross_entity_wallet_reuse": [], "deployer_buyer_recurrence": [],
+            "shared_relationship_structures": [], "missing": ["developer_identity_correlation"],
+            "interpretation": "DESCRIPTIVE_EVIDENCE_ONLY", "ownership_inferred": False,
+            "coordination_inferred": False, "intent_inferred": False, "risk_inferred": False,
+            "quality_inferred": False, "predictive_authority": False, "trade_signal": False,
+            "evidence_only": True,
+        }
 
     developer_audit: dict[str, Any]
     developer_entity_id = str(developer.get("entity_id") or "").strip()
@@ -303,7 +346,10 @@ async def investigation_calibration_evidence(
         "developer": developer,
         "developer_audit": developer_audit,
         "developer_latest_change": developer_audit.get("latest_change"),
+        "developer_correlation": correlation,
         "evidence_only": True,
+        "ownership_inferred": False,
+        "coordination_inferred": False,
         "risk_inferred": False,
         "quality_inferred": False,
         "predictive_authority": False,
