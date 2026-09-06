@@ -1,9 +1,4 @@
-"""Hydrate investigation responses with bounded entity-network evidence.
-
-This adapter bridges the canonical investigation result to the entity graph
-store without putting API/database concerns into stinky-core intelligence.
-The network is descriptive evidence only; missing entities remain UNKNOWN.
-"""
+"""Hydrate investigation responses with bounded entity-network evidence."""
 
 from __future__ import annotations
 
@@ -20,36 +15,23 @@ from stinky_api.entity_history_synthesis import synthesize_entity_history
 from stinky_api.funding_history import funding_history_for_entity
 from stinky_api.historical_outcome_calibration import calibrate_historical_outcomes
 from stinky_api.historical_outcome_comparison import historical_outcomes_for_analogues
-from stinky_api.market_outcome_analysis import analyze_market_lifecycle
+from stinky_api.market_outcome_analysis import analyze_market_lifecycle, market_path_signature
 from stinky_api.market_outcome_history import market_lifecycle_for_mint
 
 
 def _unknown(*, status: str, wallet_limit: int, relationship_limit: int) -> dict[str, Any]:
-    return {
-        "status": status, "entity": None, "wallets": [], "relationships": [], "funding_history": [],
-        "market_lifecycle": {"status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN", "mint": None, "records": [], "missing": ["market_outcome_observations"], "bounded": {"limit": relationship_limit}, "evidence_only": True},
-        "market_outcome_analysis": {"status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN", "observed_horizons": [], "observed_record_count": 0, "metrics": {}, "missing": ["market_outcome_observations"], "bounded": {"limit": relationship_limit}, "evidence_only": True},
-        "historical_analogues": {"status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN", "records": [], "missing": ["entity_history"], "evidence_only": True},
-        "historical_outcome_comparison": {"status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN", "records": [], "missing": ["entity_history"], "evidence_only": True},
-        "historical_outcome_calibration": {"status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN", "analogue_count": 0, "analogue_with_launches": 0, "launch_count_observed": 0, "outcomes_known": 0, "outcomes_unknown": 0, "completed_count": 0, "outcome_coverage": None, "missing": ["entity_history"], "evidence_only": True},
-        "bounded": {"wallet_limit": wallet_limit, "relationship_limit": relationship_limit, "funding_observation_limit": relationship_limit, "analogue_limit": 10, "analogue_candidate_limit": 500, "outcome_launch_limit_per_analogue": 20, "market_lifecycle_limit": relationship_limit},
-        "evidence_only": True, "missing": ["entity_history"],
-    }
+    return {"status": status, "entity": None, "wallets": [], "relationships": [], "funding_history": [],
+            "market_lifecycle": {"status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN", "mint": None, "records": [], "missing": ["market_outcome_observations"], "bounded": {"limit": relationship_limit}, "evidence_only": True},
+            "market_outcome_analysis": {"status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN", "observed_horizons": [], "observed_record_count": 0, "metrics": {}, "missing": ["market_outcome_observations"], "bounded": {"limit": relationship_limit}, "evidence_only": True},
+            "market_path_signature": {"status": "UNKNOWN", "signature": {}, "evidence_only": True},
+            "historical_analogues": {"status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN", "records": [], "missing": ["entity_history"], "evidence_only": True},
+            "historical_outcome_comparison": {"status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN", "records": [], "missing": ["entity_history"], "evidence_only": True},
+            "historical_outcome_calibration": {"status": "UNKNOWN" if status == "UNKNOWN" else "NEW-UNKNOWN", "analogue_count": 0, "analogue_with_launches": 0, "launch_count_observed": 0, "outcomes_known": 0, "outcomes_unknown": 0, "completed_count": 0, "outcome_coverage": None, "missing": ["entity_history"], "evidence_only": True},
+            "bounded": {"wallet_limit": wallet_limit, "relationship_limit": relationship_limit, "funding_observation_limit": relationship_limit, "analogue_limit": 10, "analogue_candidate_limit": 500, "outcome_launch_limit_per_analogue": 20, "market_lifecycle_limit": relationship_limit},
+            "evidence_only": True, "missing": ["entity_history"]}
 
 
-async def entity_network_for_investigation(
-    session: AsyncSession,
-    *,
-    entity_id: str | None = None,
-    creator_wallet: str | None = None,
-    mint: str | None = None,
-    wallet_limit: int = 100,
-    relationship_limit: int = 500,
-    analogue_limit: int = 10,
-    analogue_candidate_limit: int = 500,
-    outcome_launch_limit_per_analogue: int = 20,
-    as_of: datetime | str | None = None,
-) -> dict[str, Any]:
+async def entity_network_for_investigation(session: AsyncSession, *, entity_id: str | None = None, creator_wallet: str | None = None, mint: str | None = None, wallet_limit: int = 100, relationship_limit: int = 500, analogue_limit: int = 10, analogue_candidate_limit: int = 500, outcome_launch_limit_per_analogue: int = 20, as_of: datetime | str | None = None) -> dict[str, Any]:
     """Resolve creator entity and return bounded historical evidence at a cutoff."""
     wallet_limit = max(1, min(500, int(wallet_limit)))
     relationship_limit = max(1, min(500, int(relationship_limit)))
@@ -66,9 +48,7 @@ async def entity_network_for_investigation(
             resolved_entity_id = None
     if resolved_entity_id is None and creator_wallet:
         try:
-            row = (await session.execute(text("""
-                SELECT entity_id FROM entity_wallets WHERE wallet = :wallet LIMIT 1
-            """), {"wallet": str(creator_wallet).strip()})).first()
+            row = (await session.execute(text("SELECT entity_id FROM entity_wallets WHERE wallet = :wallet LIMIT 1"), {"wallet": str(creator_wallet).strip()})).first()
         except Exception:
             return _unknown(status="UNKNOWN", wallet_limit=wallet_limit, relationship_limit=relationship_limit)
         if row and row[0]:
@@ -80,95 +60,61 @@ async def entity_network_for_investigation(
         return _unknown(status="NEW-UNKNOWN", wallet_limit=wallet_limit, relationship_limit=relationship_limit)
 
     try:
-        assemble_kwargs: dict[str, Any] = {}
-        if as_of is not None:
-            assemble_kwargs["as_of"] = as_of
+        assemble_kwargs = {"as_of": as_of} if as_of is not None else {}
         graph = await _assemble(session, resolved_entity_id, wallet_limit, relationship_limit, **assemble_kwargs)
         if graph is None:
             return _unknown(status="UNKNOWN", wallet_limit=wallet_limit, relationship_limit=relationship_limit)
         funding_kwargs = {"wallet_limit": wallet_limit, "observation_limit": relationship_limit}
-        if as_of is not None:
-            funding_kwargs["as_of"] = as_of
+        if as_of is not None: funding_kwargs["as_of"] = as_of
         funding_history = await funding_history_for_entity(session, resolved_entity_id, **funding_kwargs)
         history_kwargs = {"graph": graph, "funding_history": funding_history, "launch_limit": relationship_limit}
-        if as_of is not None:
-            history_kwargs["as_of"] = as_of
+        if as_of is not None: history_kwargs["as_of"] = as_of
         history = await synthesize_entity_history(session, resolved_entity_id, **history_kwargs)
     except Exception:
         return _unknown(status="UNKNOWN", wallet_limit=wallet_limit, relationship_limit=relationship_limit)
 
-    # Market lifecycle evidence is market-level rather than entity-level. When
-    # the caller does not supply the candidate mint, use the newest observed
-    # entity launch as the explicit evidence anchor; no mint is fabricated.
     resolved_mint = str(mint or "").strip() or None
     if resolved_mint is None:
         try:
-            mint_row = (await session.execute(text("""
-                SELECT mint
-                FROM entity_launches
-                WHERE entity_id = :entity_id
-                  AND mint IS NOT NULL
-                ORDER BY observed_at DESC, id DESC
-                LIMIT 1
-            """), {"entity_id": resolved_entity_id})).first()
-            if mint_row and mint_row[0]:
-                resolved_mint = str(mint_row[0]).strip()
+            row = (await session.execute(text("SELECT mint FROM entity_launches WHERE entity_id = :entity_id AND mint IS NOT NULL ORDER BY observed_at DESC, id DESC LIMIT 1"), {"entity_id": resolved_entity_id})).first()
+            if row and row[0]: resolved_mint = str(row[0]).strip()
         except Exception:
             resolved_mint = None
-
     if resolved_mint is None:
-        market_lifecycle = {
-            "status": "UNKNOWN",
-            "mint": None,
-            "records": [],
-            "missing": ["mint"],
-            "bounded": {"limit": market_lifecycle_limit},
-            "evidence_only": True,
-        }
+        market_lifecycle = {"status": "UNKNOWN", "mint": None, "records": [], "missing": ["mint"], "bounded": {"limit": market_lifecycle_limit}, "evidence_only": True}
     else:
-        lifecycle_kwargs: dict[str, Any] = {"limit": market_lifecycle_limit}
-        if as_of is not None:
-            lifecycle_kwargs["as_of"] = as_of
+        lifecycle_kwargs = {"limit": market_lifecycle_limit}
+        if as_of is not None: lifecycle_kwargs["as_of"] = as_of
         market_lifecycle = await market_lifecycle_for_mint(session, resolved_mint, **lifecycle_kwargs)
 
-    market_outcome_analysis = analyze_market_lifecycle(
-        market_lifecycle.get("records", []),
-        limit=market_lifecycle_limit,
-    )
+    market_outcome_analysis = analyze_market_lifecycle(market_lifecycle.get("records", []), limit=market_lifecycle_limit)
+    market_path = market_path_signature(market_outcome_analysis)
     if as_of is not None:
         market_outcome_analysis["as_of"] = market_lifecycle.get("as_of")
         market_outcome_analysis["temporal_cutoff_enforced"] = market_lifecycle.get("temporal_cutoff_enforced", False)
 
     try:
         analogue_kwargs = {"limit": analogue_limit, "candidate_limit": analogue_candidate_limit}
-        if as_of is not None:
-            analogue_kwargs["as_of"] = as_of
+        if as_of is not None: analogue_kwargs["as_of"] = as_of
         historical_analogues = await find_historical_analogues(session, resolved_entity_id, **analogue_kwargs)
     except Exception:
         historical_analogues = {"status": "UNKNOWN", "records": [], "missing": ["historical_analogues"], "evidence_basis": "unknown_query", "bounded": {"limit": analogue_limit, "candidate_limit": analogue_candidate_limit}, "evidence_only": True}
     try:
         outcome_kwargs = {"limit_per_entity": outcome_launch_limit_per_analogue}
-        if as_of is not None:
-            outcome_kwargs["as_of"] = as_of
+        if as_of is not None: outcome_kwargs["as_of"] = as_of
         historical_outcomes = await historical_outcomes_for_analogues(session, historical_analogues.get("records", []), **outcome_kwargs)
     except Exception:
         historical_outcomes = {"status": "UNKNOWN", "records": [], "missing": ["historical_outcome_comparison"], "evidence_basis": "unknown_query", "bounded": {"limit_per_entity": outcome_launch_limit_per_analogue}, "evidence_only": True}
     historical_calibration = calibrate_historical_outcomes(historical_outcomes)
 
-    graph["status"] = "KNOWN_ENTITY"
-    graph["funding_history"] = funding_history
-    graph["history"] = history
-    graph["market_lifecycle"] = market_lifecycle
-    graph["market_outcome_analysis"] = market_outcome_analysis
-    graph["historical_analogues"] = historical_analogues
-    graph["historical_outcome_comparison"] = historical_outcomes
-    graph["historical_outcome_calibration"] = historical_calibration
-    graph["bounded"]["funding_observation_limit"] = relationship_limit
-    graph["bounded"]["launch_history_limit"] = relationship_limit
-    graph["bounded"]["market_lifecycle_limit"] = market_lifecycle_limit
-    graph["bounded"]["analogue_limit"] = analogue_limit
-    graph["bounded"]["analogue_candidate_limit"] = analogue_candidate_limit
-    graph["bounded"]["outcome_launch_limit_per_analogue"] = outcome_launch_limit_per_analogue
+    graph.update({"status": "KNOWN_ENTITY", "funding_history": funding_history, "history": history,
+                  "market_lifecycle": market_lifecycle, "market_outcome_analysis": market_outcome_analysis,
+                  "market_path_signature": market_path, "historical_analogues": historical_analogues,
+                  "historical_outcome_comparison": historical_outcomes, "historical_outcome_calibration": historical_calibration})
+    graph["bounded"].update({"funding_observation_limit": relationship_limit, "launch_history_limit": relationship_limit,
+                              "market_lifecycle_limit": market_lifecycle_limit, "analogue_limit": analogue_limit,
+                              "analogue_candidate_limit": analogue_candidate_limit,
+                              "outcome_launch_limit_per_analogue": outcome_launch_limit_per_analogue})
     if as_of is not None:
         graph["as_of"] = historical_analogues.get("as_of")
         graph["temporal_cutoff_enforced"] = historical_analogues.get("temporal_cutoff_enforced", False)
