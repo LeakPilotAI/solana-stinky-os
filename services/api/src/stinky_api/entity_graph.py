@@ -16,6 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from stinky_api.cross_investigation_calibration_change_feed import calibration_change_feed
 from stinky_api.db import get_session
+from stinky_api.developer_longitudinal_audit import (
+    developer_audit_history,
+    developer_change_feed,
+    persist_developer_snapshot,
+)
 
 router = APIRouter(prefix="/v1/entity-graph", tags=["entity-graph"])
 
@@ -195,12 +200,18 @@ async def cross_investigation_calibration_changes(
     include_unchanged: bool = Query(False),
 ) -> dict[str, Any]:
     """Latest factual calibration-synthesis change per observed pattern."""
-    return await calibration_change_feed(
-        session,
-        limit=limit,
-        as_of=as_of,
-        include_unchanged=include_unchanged,
-    )
+    return await calibration_change_feed(session, limit=limit, as_of=as_of, include_unchanged=include_unchanged)
+
+
+@router.get("/developer-changes")
+async def cross_developer_changes(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    limit: int = Query(50, ge=1, le=200),
+    as_of: datetime | None = Query(None),
+    include_unchanged: bool = Query(False),
+) -> dict[str, Any]:
+    """Latest factual longitudinal-evidence delta per developer entity."""
+    return await developer_change_feed(session, limit=limit, as_of=as_of, include_unchanged=include_unchanged)
 
 
 @router.get("/investigation/{mint}/calibration")
@@ -219,95 +230,70 @@ async def investigation_calibration_evidence(
     creator_wallet: str | None = None
     entity_id: str | None = None
     try:
-        row = (
-            await session.execute(
-                text("""
-                    SELECT creator
-                    FROM migration_tracks
-                    WHERE mint = :mint AND creator IS NOT NULL
-                    ORDER BY migration_at DESC NULLS LAST
-                    LIMIT 1
-                """),
-                {"mint": mint},
-            )
-        ).first()
-        if row and row[0]:
-            creator_wallet = str(row[0]).strip() or None
+        row = (await session.execute(text("""
+            SELECT creator FROM migration_tracks
+            WHERE mint = :mint AND creator IS NOT NULL
+            ORDER BY migration_at DESC NULLS LAST LIMIT 1
+        """), {"mint": mint})).first()
+        if row and row[0]: creator_wallet = str(row[0]).strip() or None
     except Exception:
         creator_wallet = None
 
     if creator_wallet is None:
         try:
-            row = (
-                await session.execute(
-                    text("""
-                        SELECT entity_id::text
-                        FROM entity_launches
-                        WHERE mint = :mint AND entity_id IS NOT NULL
-                        ORDER BY observed_at DESC NULLS LAST, id DESC
-                        LIMIT 1
-                    """),
-                    {"mint": mint},
-                )
-            ).first()
-            if row and row[0]:
-                entity_id = str(row[0]).strip() or None
+            row = (await session.execute(text("""
+                SELECT entity_id::text FROM entity_launches
+                WHERE mint = :mint AND entity_id IS NOT NULL
+                ORDER BY observed_at DESC NULLS LAST, id DESC LIMIT 1
+            """), {"mint": mint})).first()
+            if row and row[0]: entity_id = str(row[0]).strip() or None
         except Exception:
             entity_id = None
 
     network = await entity_network_for_investigation(
-        session,
-        entity_id=entity_id,
-        creator_wallet=creator_wallet,
-        mint=mint,
-        wallet_limit=100,
-        relationship_limit=500,
-        as_of=as_of,
+        session, entity_id=entity_id, creator_wallet=creator_wallet, mint=mint,
+        wallet_limit=100, relationship_limit=500, as_of=as_of,
     )
     synthesis = network.get("market_pattern_calibration_synthesis")
     if not isinstance(synthesis, dict):
         synthesis = {
-            "status": "UNKNOWN",
-            "pattern_hash": None,
-            "evidence_status": "INSUFFICIENT_EVIDENCE",
-            "current_calibration_state": "INSUFFICIENT_EVIDENCE",
-            "missing": ["market_pattern_calibration_synthesis"],
-            "interpretation": "DESCRIPTIVE_EVIDENCE_ONLY",
-            "predictive_authority": False,
-            "trade_signal": False,
-            "evidence_only": True,
+            "status": "UNKNOWN", "pattern_hash": None,
+            "evidence_status": "INSUFFICIENT_EVIDENCE", "current_calibration_state": "INSUFFICIENT_EVIDENCE",
+            "missing": ["market_pattern_calibration_synthesis"], "interpretation": "DESCRIPTIVE_EVIDENCE_ONLY",
+            "predictive_authority": False, "trade_signal": False, "evidence_only": True,
         }
     audit = network.get("market_pattern_calibration_synthesis_audit")
     if not isinstance(audit, dict):
         audit = {
-            "status": "UNKNOWN",
-            "pattern_hash": synthesis.get("pattern_hash"),
-            "snapshot_count": 0,
-            "records": [],
-            "changes": [],
-            "latest_change": None,
+            "status": "UNKNOWN", "pattern_hash": synthesis.get("pattern_hash"), "snapshot_count": 0,
+            "records": [], "changes": [], "latest_change": None,
             "missing": ["market_pattern_calibration_synthesis_snapshots"],
-            "interpretation": "DESCRIPTIVE_EVIDENCE_ONLY",
-            "predictive_authority": False,
-            "trade_signal": False,
-            "evidence_only": True,
+            "interpretation": "DESCRIPTIVE_EVIDENCE_ONLY", "predictive_authority": False,
+            "trade_signal": False, "evidence_only": True,
         }
     history = network.get("history") if isinstance(network.get("history"), dict) else {}
     sources = history.get("sources") if isinstance(history, dict) else {}
     developer = sources.get("developer_longitudinal") if isinstance(sources, dict) else None
     if not isinstance(developer, dict):
         developer = {
-            "status": "NEW-UNKNOWN",
-            "history_state": "NEW-UNKNOWN",
-            "fresh_entity_interpretation": "NEW-UNKNOWN",
-            "missing": ["developer_longitudinal_evidence"],
-            "interpretation": "DESCRIPTIVE_EVIDENCE_ONLY",
-            "risk_inferred": False,
-            "quality_inferred": False,
-            "predictive_authority": False,
-            "trade_signal": False,
-            "evidence_only": True,
+            "status": "NEW-UNKNOWN", "history_state": "NEW-UNKNOWN", "fresh_entity_interpretation": "NEW-UNKNOWN",
+            "missing": ["developer_longitudinal_evidence"], "interpretation": "DESCRIPTIVE_EVIDENCE_ONLY",
+            "risk_inferred": False, "quality_inferred": False, "predictive_authority": False,
+            "trade_signal": False, "evidence_only": True,
         }
+
+    developer_audit: dict[str, Any]
+    developer_entity_id = str(developer.get("entity_id") or "").strip()
+    if developer_entity_id:
+        try:
+            if as_of is None:
+                await persist_developer_snapshot(session, developer)
+            developer_audit = await developer_audit_history(session, developer_entity_id, limit=20, as_of=as_of)
+        except Exception:
+            developer_audit = {"status": "UNKNOWN", "records": [], "changes": [], "latest_change": None, "missing": ["developer_longitudinal_snapshots"], "evidence_only": True}
+    else:
+        developer_audit = {"status": "NEW-UNKNOWN", "records": [], "changes": [], "latest_change": None, "missing": ["developer_entity_id"], "evidence_only": True}
+
     return {
         "mint": mint,
         "status": synthesis.get("status", "UNKNOWN"),
@@ -315,7 +301,11 @@ async def investigation_calibration_evidence(
         "audit": audit,
         "latest_change": audit.get("latest_change"),
         "developer": developer,
+        "developer_audit": developer_audit,
+        "developer_latest_change": developer_audit.get("latest_change"),
         "evidence_only": True,
+        "risk_inferred": False,
+        "quality_inferred": False,
         "predictive_authority": False,
         "trade_signal": False,
     }
