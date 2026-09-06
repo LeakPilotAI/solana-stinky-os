@@ -14,10 +14,10 @@ CREATE TABLE IF NOT EXISTS wallet_relationships (
     UNIQUE (wallet_a, wallet_b, relationship_kind)
 );
 
--- Legacy installations can already have wallet_relationships from before the
--- descriptive relationship evidence schema existed. CREATE TABLE IF NOT EXISTS
--- does not converge an existing table, so add every column required by current
--- reads/writes explicitly and preserve UNKNOWN provenance for old rows.
+-- Legacy installations can already have wallet_relationships from the older
+-- ADR-012 per-observation schema. CREATE TABLE IF NOT EXISTS does not converge
+-- an existing table, so add every column required by the current aggregate
+-- relationship store while preserving the older columns and evidence in place.
 ALTER TABLE wallet_relationships
     ADD COLUMN IF NOT EXISTS relationship_kind TEXT;
 ALTER TABLE wallet_relationships
@@ -35,21 +35,86 @@ ALTER TABLE wallet_relationships
 ALTER TABLE wallet_relationships
     ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ;
 
--- Historical relationship kind is not recoverable from the legacy schema.
--- Preserve that uncertainty rather than inferring funding, ownership,
--- coordination, intent, risk, quality, or any other stronger meaning.
+-- Bridge factual provenance from the ADR-012 schema only when those legacy
+-- columns actually exist. Dynamic SQL keeps this block safe on fresh schemas.
+-- kind and observed_at are direct stored facts, not inferred classifications or
+-- fabricated timestamps. The legacy columns remain present after convergence.
+DO $bridge$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'wallet_relationships'
+          AND column_name = 'kind'
+    ) THEN
+        EXECUTE 'UPDATE wallet_relationships
+                 SET relationship_kind = kind
+                 WHERE relationship_kind IS NULL
+                   AND kind IS NOT NULL';
+        EXECUTE 'UPDATE wallet_relationships
+                 SET relationship_kind = kind
+                 WHERE relationship_kind = ''legacy_unspecified''
+                   AND kind IS NOT NULL';
+        EXECUTE 'ALTER TABLE wallet_relationships ALTER COLUMN kind DROP NOT NULL';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'wallet_relationships'
+          AND column_name = 'observed_at'
+    ) THEN
+        EXECUTE 'UPDATE wallet_relationships
+                 SET first_seen_at = observed_at
+                 WHERE first_seen_at IS NULL
+                   AND observed_at IS NOT NULL';
+        EXECUTE 'UPDATE wallet_relationships
+                 SET last_seen_at = observed_at
+                 WHERE last_seen_at IS NULL
+                   AND observed_at IS NOT NULL';
+        EXECUTE 'ALTER TABLE wallet_relationships ALTER COLUMN observed_at DROP NOT NULL';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'wallet_relationships'
+          AND column_name = 'mint'
+    ) THEN
+        EXECUTE 'ALTER TABLE wallet_relationships ALTER COLUMN mint DROP NOT NULL';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'wallet_relationships'
+          AND column_name = 'reason'
+    ) THEN
+        EXECUTE 'ALTER TABLE wallet_relationships ALTER COLUMN reason DROP NOT NULL';
+    END IF;
+END
+$bridge$;
+
+-- Rows from an even older or partially migrated schema may have no recoverable
+-- kind at all. Preserve that uncertainty rather than inferring funding,
+-- ownership, coordination, intent, risk, quality, or another stronger meaning.
 UPDATE wallet_relationships
 SET relationship_kind = 'legacy_unspecified'
 WHERE relationship_kind IS NULL;
 
--- A pre-existing relationship row is one observed relationship fact at minimum;
--- this is a storage-count baseline, not a confidence/quality/risk inference.
+-- A pre-existing aggregate relationship row is one stored relationship fact at
+-- minimum. This is a storage-count baseline, not a confidence/quality/risk
+-- inference. Per-observation ADR-012 rows also remain individually preserved.
 UPDATE wallet_relationships
 SET observation_count = 1
 WHERE observation_count IS NULL;
 
--- Empty JSON means no structured evidence payload was preserved on the legacy
--- row. It does not add or infer evidence.
+-- Empty JSON means no structured evidence payload was preserved on the row. It
+-- does not add or infer evidence.
 UPDATE wallet_relationships
 SET evidence = '{}'::jsonb
 WHERE evidence IS NULL;
@@ -79,6 +144,7 @@ CREATE INDEX IF NOT EXISTS idx_wallet_relationships_kind ON wallet_relationships
 
 -- record_relationship() uses ON CONFLICT (wallet_a, wallet_b, relationship_kind).
 -- Fresh schemas already have the equivalent table constraint; this named index
--- supplies the same conflict arbiter for legacy tables without dropping data.
+-- supplies the same conflict arbiter for converged legacy tables without
+-- deleting or rewriting historical evidence rows.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_wallet_relationships_identity_unique
     ON wallet_relationships (wallet_a, wallet_b, relationship_kind);
