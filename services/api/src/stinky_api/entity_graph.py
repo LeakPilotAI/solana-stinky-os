@@ -209,7 +209,7 @@ async def investigation_calibration_evidence(
     session: Annotated[AsyncSession, Depends(get_session)],
     as_of: datetime | None = Query(None),
 ) -> dict[str, Any]:
-    """Compact calibration evidence and immutable change audit for one stored investigation mint."""
+    """Compact calibration, audit, and developer evidence for one investigation mint."""
     from stinky_api.investigation_entity_network import entity_network_for_investigation
 
     mint = str(mint or "").strip()
@@ -292,12 +292,29 @@ async def investigation_calibration_evidence(
             "trade_signal": False,
             "evidence_only": True,
         }
+    history = network.get("history") if isinstance(network.get("history"), dict) else {}
+    sources = history.get("sources") if isinstance(history, dict) else {}
+    developer = sources.get("developer_longitudinal") if isinstance(sources, dict) else None
+    if not isinstance(developer, dict):
+        developer = {
+            "status": "NEW-UNKNOWN",
+            "history_state": "NEW-UNKNOWN",
+            "fresh_entity_interpretation": "NEW-UNKNOWN",
+            "missing": ["developer_longitudinal_evidence"],
+            "interpretation": "DESCRIPTIVE_EVIDENCE_ONLY",
+            "risk_inferred": False,
+            "quality_inferred": False,
+            "predictive_authority": False,
+            "trade_signal": False,
+            "evidence_only": True,
+        }
     return {
         "mint": mint,
         "status": synthesis.get("status", "UNKNOWN"),
         "calibration": synthesis,
         "audit": audit,
         "latest_change": audit.get("latest_change"),
+        "developer": developer,
         "evidence_only": True,
         "predictive_authority": False,
         "trade_signal": False,
