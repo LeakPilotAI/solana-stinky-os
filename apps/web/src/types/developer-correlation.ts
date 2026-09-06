@@ -74,6 +74,44 @@ export type DeveloperCorrelationMotifs = {
   evidence_only?: true;
 };
 
+export type DeveloperMotifOutcomeLaunch = {
+  entity_id?: string;
+  mint?: string;
+  deployer_wallet?: string | null;
+  launch_observed_at?: string | null;
+  outcome?: "RUNNER" | "HELD" | "FADE" | "UNKNOWN" | string;
+  outcome_observed_at?: string | null;
+  ingested_at?: string | null;
+};
+
+export type DeveloperMotifOutcomeAnalogue = {
+  motif_kind?: string;
+  motif_state?: string;
+  component_kinds?: string[];
+  related_entity_ids?: string[];
+  historical_launch_count?: number;
+  outcome_counts?: Record<"RUNNER" | "HELD" | "FADE" | "UNKNOWN", number>;
+  launches?: DeveloperMotifOutcomeLaunch[];
+  analogue_basis?: string;
+  analogue_is_not_prediction?: true;
+};
+
+export type DeveloperMotifOutcomeContext = {
+  status?: string;
+  motif_analogue_count?: number;
+  launch_analogue_count?: number;
+  outcome_counts?: Record<"RUNNER" | "HELD" | "FADE" | "UNKNOWN", number>;
+  records?: DeveloperMotifOutcomeAnalogue[];
+  analogue_history_is_not_prediction?: true;
+  as_of?: string;
+  temporal_cutoff_enforced?: boolean;
+  predictive_authority?: false;
+  trade_signal?: false;
+  risk_inferred?: false;
+  quality_inferred?: false;
+  evidence_only?: true;
+};
+
 export type DeveloperCorrelationChange = {
   status?: string;
   changed?: boolean;
@@ -103,6 +141,7 @@ export type DeveloperIdentityCorrelation = {
   shared_relationship_structures?: DeveloperCorrelationRecord[];
   repetition_analysis?: DeveloperCorrelationRepetition;
   network_motifs?: DeveloperCorrelationMotifs;
+  motif_outcome_context?: DeveloperMotifOutcomeContext;
   missing?: string[];
   snapshot_count?: number;
   latest_change?: DeveloperCorrelationChange | null;

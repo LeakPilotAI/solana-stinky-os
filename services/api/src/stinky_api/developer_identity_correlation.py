@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from stinky_api.developer_correlation_motifs import analyze_network_motifs
 from stinky_api.developer_correlation_repetition import analyze_correlation_repetition
+from stinky_api.developer_motif_outcome_context import motif_outcome_context
 
 
 def _parse_as_of(value: datetime | str | None) -> datetime | None:
@@ -182,4 +183,15 @@ async def correlate_developer_identity(
     }
     if cutoff:
         result["as_of"] = cutoff.isoformat(); result["temporal_cutoff_enforced"] = True
-    return _with_repetition(result)
+    result = _with_repetition(result)
+    try:
+        result["motif_outcome_context"] = await motif_outcome_context(
+            session, entity_id, network_motifs=result.get("network_motifs") or {}, as_of=cutoff, launch_limit=limit
+        )
+    except Exception:
+        result["motif_outcome_context"] = {
+            "status": "UNKNOWN", "records": [], "missing": ["historical_motif_launch_outcomes"],
+            "interpretation": "DESCRIPTIVE_EVIDENCE_ONLY", "predictive_authority": False,
+            "trade_signal": False, "risk_inferred": False, "quality_inferred": False, "evidence_only": True,
+        }
+    return result
