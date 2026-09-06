@@ -14,6 +14,7 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from stinky_api.developer_longitudinal_intelligence import developer_longitudinal_intelligence
 from stinky_api.entity_history_contract import canonicalize_entity_history
 
 
@@ -96,6 +97,7 @@ async def synthesize_entity_history(
             "behavior_fingerprint": _unknown_source("invalid_as_of"),
             "wallet_relationships": _unknown_source("invalid_as_of"),
             "funding_history": _unknown_source("invalid_as_of"),
+            "developer_longitudinal": _unknown_source("invalid_as_of"),
             "evidence_only": True,
         })
 
@@ -191,18 +193,49 @@ async def synthesize_entity_history(
     ):
         source["provenance"] = _source_provenance(source, source_name=source_name, as_of=cutoff)
 
-    history = {
+    prehistory: dict[str, Any] = {
         "status": "KNOWN_ENTITY",
         "entity_id": str(entity_id),
         "launch_history": launch_history,
         "behavior_fingerprint": behavior,
         "wallet_relationships": relationships,
         "funding_history": funding,
+    }
+    try:
+        developer_longitudinal = await developer_longitudinal_intelligence(
+            session,
+            entity_id,
+            current_mint=None,
+            graph=graph,
+            history=prehistory,
+            funding_history=funding_history,
+            launch_limit=launch_limit,
+            early_buyer_limit=min(100, launch_limit),
+            as_of=cutoff,
+        )
+    except Exception:
+        developer_longitudinal = {
+            "status": "UNKNOWN",
+            "entity_id": str(entity_id),
+            "history_state": "UNKNOWN",
+            "missing": ["developer_longitudinal_evidence"],
+            "interpretation": "DESCRIPTIVE_EVIDENCE_ONLY",
+            "risk_inferred": False,
+            "quality_inferred": False,
+            "predictive_authority": False,
+            "trade_signal": False,
+            "evidence_only": True,
+        }
+
+    history = {
+        **prehistory,
+        "developer_longitudinal": developer_longitudinal,
         "bounded": {
             "launch_limit": launch_limit,
             "wallet_limit": graph.get("bounded", {}).get("wallet_limit"),
             "relationship_limit": graph.get("bounded", {}).get("relationship_limit"),
             "funding_observation_limit": graph.get("bounded", {}).get("funding_observation_limit"),
+            "developer_early_buyer_limit": min(100, launch_limit),
         },
         "evidence_only": True,
     }
