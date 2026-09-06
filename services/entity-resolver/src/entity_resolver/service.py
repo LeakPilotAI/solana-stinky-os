@@ -109,6 +109,25 @@ class EntityService:
                 backoff = min(backoff * 2, 30.0)
 
     @staticmethod
+    def _parse_stream_event(raw: str | bytes) -> dict[str, object]:
+        """Decode the canonical Redis stream event envelope.
+
+        Event producers may publish either the event object directly or wrap it as
+        ``{"event": {...}}``. The post-migration collector already accepts both
+        shapes; entity intelligence must use the same canonical decoding so live
+        migration identity evidence is not silently ACKed and discarded.
+        """
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            raise ValueError("stream event must decode to an object")
+        nested = parsed.get("event")
+        if isinstance(nested, dict):
+            return nested
+        return parsed
+
+    @staticmethod
     def _event_timestamp(event: dict[str, object]) -> datetime:
         payload = event.get("payload") or {}
         value = event.get("occurred_at") or event.get("observed_at")
@@ -275,7 +294,7 @@ class EntityService:
         if not raw:
             raise ValueError(f"event {msg_id} has no JSON payload")
 
-        event = json.loads(raw)
+        event = self._parse_stream_event(raw)
         et = event.get("event_type") or event.get("type")
         payload = event.get("payload") or {}
 
