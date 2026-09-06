@@ -8,6 +8,7 @@ trading authority. Missing measurements remain UNKNOWN to downstream layers.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import orjson
@@ -60,17 +61,20 @@ class MarketOutcomeStore:
         await self._engine.dispose()
 
     async def ensure_schema(self) -> None:
-        from pathlib import Path
-
-        path = Path(__file__).resolve().parents[2] / "migrations" / "007_market_outcome_observations.sql"
-        if not path.exists():
-            raise FileNotFoundError(f"market outcome migration missing: {path}")
-        sql = path.read_text(encoding="utf-8")
+        migration_dir = Path(__file__).resolve().parents[2] / "migrations"
+        paths = (
+            migration_dir / "007_market_outcome_observations.sql",
+            migration_dir / "008_market_outcome_ingestion.sql",
+        )
         async with self._sessions() as session:
-            for statement in sql.split(";"):
-                statement = statement.strip()
-                if statement:
-                    await session.execute(text(statement))
+            for path in paths:
+                if not path.exists():
+                    raise FileNotFoundError(f"market outcome migration missing: {path}")
+                sql = path.read_text(encoding="utf-8")
+                for statement in sql.split(";"):
+                    statement = statement.strip()
+                    if statement:
+                        await session.execute(text(statement))
             await session.commit()
 
     async def record_observation(
