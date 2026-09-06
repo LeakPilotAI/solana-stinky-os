@@ -56,6 +56,33 @@ def _canonical_repetition(evidence: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _canonical_motifs(evidence: dict[str, Any]) -> dict[str, Any]:
+    motifs = evidence.get("network_motifs") if isinstance(evidence.get("network_motifs"), dict) else {}
+    records: list[str] = []
+    for row in motifs.get("records") or []:
+        if not isinstance(row, dict):
+            continue
+        records.append("|".join([
+            str(row.get("motif_kind") or ""),
+            str(row.get("funder_wallet") or ""),
+            ",".join(sorted(str(x) for x in (row.get("other_entity_ids") or []) if x)),
+            ",".join(sorted(str(x) for x in (row.get("component_kinds") or []) if x)),
+            str(row.get("component_count")),
+            str(row.get("repeated_component_count")),
+            str(row.get("multi_launch_component_count")),
+            str(row.get("independent_observation_count")),
+            str(row.get("temporal_spread_seconds")),
+            str(row.get("motif_state") or ""),
+        ]))
+    return {
+        "motif_count": motifs.get("motif_count"),
+        "repeated_motif_count": motifs.get("repeated_motif_count"),
+        "multi_launch_motif_count": motifs.get("multi_launch_motif_count"),
+        "multi_entity_constellation_count": motifs.get("multi_entity_constellation_count"),
+        "records": sorted(records),
+    }
+
+
 def _canonical_payload(evidence: dict[str, Any]) -> dict[str, Any]:
     return {
         "entity_id": evidence.get("entity_id"), "status": evidence.get("status"),
@@ -65,6 +92,7 @@ def _canonical_payload(evidence: dict[str, Any]) -> dict[str, Any]:
         "deployer_buyer_recurrence": _keyed(evidence.get("deployer_buyer_recurrence") or [], ("wallet", "buyer_entity_id")),
         "shared_relationship_structures": _keyed(evidence.get("shared_relationship_structures") or [], ("relationship_kind", "other_entity_id")),
         "repetition_analysis": _canonical_repetition(evidence),
+        "network_motifs": _canonical_motifs(evidence),
         "missing": sorted(str(x) for x in (evidence.get("missing") or [])),
         **AUTHORITY,
     }
@@ -93,12 +121,9 @@ def describe_developer_correlation_change(previous: dict[str, Any] | None, curre
         if added: changes.append({"kind": added_kind, "field": field, "added": added, "removed": []})
         if removed: changes.append({"kind": removed_kind, "field": field, "added": [], "removed": removed})
     if prev.get("repetition_analysis") != cur.get("repetition_analysis"):
-        changes.append({
-            "kind": "REPETITION_EVIDENCE_CHANGED",
-            "before": prev.get("repetition_analysis"),
-            "after": cur.get("repetition_analysis"),
-            "interpretation": "DESCRIPTIVE_EVIDENCE_ONLY",
-        })
+        changes.append({"kind": "REPETITION_EVIDENCE_CHANGED", "before": prev.get("repetition_analysis"), "after": cur.get("repetition_analysis"), "interpretation": "DESCRIPTIVE_EVIDENCE_ONLY"})
+    if prev.get("network_motifs") != cur.get("network_motifs"):
+        changes.append({"kind": "NETWORK_MOTIF_EVIDENCE_CHANGED", "before": prev.get("network_motifs"), "after": cur.get("network_motifs"), "interpretation": "DESCRIPTIVE_EVIDENCE_ONLY"})
     before_missing, after_missing = set(prev.get("missing") or []), set(cur.get("missing") or [])
     if before_missing - after_missing: changes.append({"kind": "UNKNOWN_RESOLVED", "fields": sorted(before_missing - after_missing)})
     if after_missing - before_missing: changes.append({"kind": "UNKNOWN_INTRODUCED", "fields": sorted(after_missing - before_missing)})
@@ -197,10 +222,14 @@ async def developer_correlation_change_feed(session: AsyncSession, *, limit: int
             kind = str(item.get("kind") or "") if isinstance(item, dict) else ""
             if kind and kind not in kinds: kinds.append(kind)
         repetition = current.get("repetition_analysis") if isinstance(current.get("repetition_analysis"), dict) else {}
+        motifs = current.get("network_motifs") if isinstance(current.get("network_motifs"), dict) else {}
         items.append({"entity_id": row.get("entity_id"), "primary_wallet": row.get("primary_wallet"), "display_label": row.get("display_label"),
                       "correlation_status": current.get("status"), "evidence_hash": row.get("evidence_hash"),
                       "repeated_relationship_count": repetition.get("repeated_relationship_count"),
                       "multi_launch_relationship_count": repetition.get("multi_launch_relationship_count"),
+                      "motif_count": motifs.get("motif_count"), "repeated_motif_count": motifs.get("repeated_motif_count"),
+                      "multi_launch_motif_count": motifs.get("multi_launch_motif_count"),
+                      "multi_entity_constellation_count": motifs.get("multi_entity_constellation_count"),
                       "observed_at": row.get("observed_at").isoformat() if row.get("observed_at") else None,
                       "change_status": change.get("status"), "change_kinds": kinds, "changes": change.get("changes") or [], **AUTHORITY})
     result = {"status": "OBSERVED" if items else "UNKNOWN", "items": items, "count": len(items), "bounded": {"limit": limit}, **AUTHORITY}
