@@ -26,6 +26,7 @@ from stinky_api.developer_longitudinal_audit import (
     developer_change_feed,
     persist_developer_snapshot,
 )
+from stinky_api.developer_motif_outcome_audit import motif_outcome_change_feed
 
 router = APIRouter(prefix="/v1/entity-graph", tags=["entity-graph"])
 
@@ -158,6 +159,12 @@ async def cross_developer_changes(session: Annotated[AsyncSession, Depends(get_s
 async def cross_developer_correlation_changes(session: Annotated[AsyncSession, Depends(get_session)], limit: int = Query(50, ge=1, le=200), as_of: datetime | None = Query(None), include_unchanged: bool = Query(False)) -> dict[str, Any]:
     """Latest factual correlation-evidence delta per developer entity."""
     return await developer_correlation_change_feed(session, limit=limit, as_of=as_of, include_unchanged=include_unchanged)
+
+
+@router.get("/developer-motif-outcome-changes")
+async def cross_developer_motif_outcome_changes(session: Annotated[AsyncSession, Depends(get_session)], limit: int = Query(50, ge=1, le=200), as_of: datetime | None = Query(None), include_unchanged: bool = Query(False)) -> dict[str, Any]:
+    """Latest factual historical motif-outcome delta per developer entity."""
+    return await motif_outcome_change_feed(session, limit=limit, as_of=as_of, include_unchanged=include_unchanged)
 
 
 @router.get("/developer-correlation/{entity_id}")
