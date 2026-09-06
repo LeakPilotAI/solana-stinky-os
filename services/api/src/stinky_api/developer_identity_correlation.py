@@ -11,6 +11,7 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from stinky_api.developer_correlation_motifs import analyze_network_motifs
 from stinky_api.developer_correlation_repetition import analyze_correlation_repetition
 
 
@@ -35,6 +36,7 @@ def _iso(value: Any) -> Any:
 
 def _with_repetition(result: dict[str, Any]) -> dict[str, Any]:
     result["repetition_analysis"] = analyze_correlation_repetition(result)
+    result["network_motifs"] = analyze_network_motifs(result)
     return result
 
 
