@@ -9,6 +9,7 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from stinky_api.developer_identity_correlation import correlate_developer_identity
 from stinky_api.entity_graph import _assemble
 from stinky_api.entity_history_analogues import find_historical_analogues
 from stinky_api.entity_history_synthesis import synthesize_entity_history
@@ -40,6 +41,26 @@ def _unknown(*, status: str, wallet_limit: int, relationship_limit: int) -> dict
         "wallets": [],
         "relationships": [],
         "funding_history": [],
+        "developer_identity_correlation": {
+            "status": unknown_status,
+            "entity_id": None,
+            "wallets": [],
+            "shared_funders": [],
+            "cross_entity_wallet_reuse": [],
+            "deployer_buyer_recurrence": [],
+            "shared_relationship_structures": [],
+            "missing": ["entity_wallets"],
+            "bounded": {"limit": relationship_limit, "wallet_count": 0},
+            "interpretation": "DESCRIPTIVE_EVIDENCE_ONLY",
+            "ownership_inferred": False,
+            "coordination_inferred": False,
+            "intent_inferred": False,
+            "risk_inferred": False,
+            "quality_inferred": False,
+            "predictive_authority": False,
+            "trade_signal": False,
+            "evidence_only": True,
+        },
         "market_lifecycle": {"status": unknown_status, "mint": None, "records": [], "missing": ["market_outcome_observations"], "bounded": {"limit": relationship_limit}, "evidence_only": True},
         "market_outcome_analysis": {"status": unknown_status, "observed_horizons": [], "observed_record_count": 0, "metrics": {}, "missing": ["market_outcome_observations"], "bounded": {"limit": relationship_limit}, "evidence_only": True},
         "market_pattern_history": {"status": unknown_status, "pattern_hash": None, "occurrence_count": 0, "distinct_market_count": 0, "records": [], "missing": ["market_path_pattern_occurrences"], "bounded": {"limit": relationship_limit}, "evidence_only": True},
@@ -131,6 +152,36 @@ async def entity_network_for_investigation(
         history = await synthesize_entity_history(session, resolved_entity_id, **history_kwargs)
     except Exception:
         return _unknown(status="UNKNOWN", wallet_limit=wallet_limit, relationship_limit=relationship_limit)
+
+    try:
+        correlation = await correlate_developer_identity(
+            session,
+            resolved_entity_id,
+            graph=graph,
+            as_of=as_of,
+            limit=relationship_limit,
+        )
+    except Exception:
+        correlation = {
+            "status": "UNKNOWN",
+            "entity_id": str(resolved_entity_id),
+            "wallets": [str(r.get("wallet")) for r in graph.get("wallets", []) if isinstance(r, dict) and r.get("wallet")],
+            "shared_funders": [],
+            "cross_entity_wallet_reuse": [],
+            "deployer_buyer_recurrence": [],
+            "shared_relationship_structures": [],
+            "missing": ["developer_identity_correlation"],
+            "bounded": {"limit": relationship_limit},
+            "interpretation": "DESCRIPTIVE_EVIDENCE_ONLY",
+            "ownership_inferred": False,
+            "coordination_inferred": False,
+            "intent_inferred": False,
+            "risk_inferred": False,
+            "quality_inferred": False,
+            "predictive_authority": False,
+            "trade_signal": False,
+            "evidence_only": True,
+        }
 
     resolved_mint = str(mint or "").strip() or None
     if resolved_mint is None:
@@ -259,6 +310,7 @@ async def entity_network_for_investigation(
     graph["status"] = "KNOWN_ENTITY"
     graph["funding_history"] = funding_history
     graph["history"] = history
+    graph["developer_identity_correlation"] = correlation
     graph["market_lifecycle"] = market_lifecycle
     graph["market_outcome_analysis"] = market_outcome_analysis
     graph["market_path_signature"] = market_path
@@ -273,6 +325,7 @@ async def entity_network_for_investigation(
     graph["historical_outcome_comparison"] = historical_outcomes
     graph["historical_outcome_calibration"] = historical_calibration
     graph["bounded"]["funding_observation_limit"] = relationship_limit
+    graph["bounded"]["developer_correlation_limit"] = relationship_limit
     graph["bounded"]["launch_history_limit"] = relationship_limit
     graph["bounded"]["market_lifecycle_limit"] = market_lifecycle_limit
     graph["bounded"]["market_pattern_history_limit"] = market_pattern_history_limit
