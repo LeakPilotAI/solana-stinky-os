@@ -32,6 +32,16 @@ def _motifs():
     }]}
 
 
+def _assert_no_scoring_or_probability_keys(result):
+    serialized = str(result).lower()
+    for forbidden in ("risk_score", "quality_score", "ownership_probability", "coordination_probability", "expected_return_score", "confidence_score"):
+        assert forbidden not in serialized
+    assert result["predictive_authority"] is False
+    assert result["trade_signal"] is False
+    assert result["risk_inferred"] is False
+    assert result["quality_inferred"] is False
+
+
 @pytest.mark.asyncio
 async def test_historical_motif_outcomes_are_descriptive_and_counted():
     session = _Session([
@@ -48,10 +58,7 @@ async def test_historical_motif_outcomes_are_descriptive_and_counted():
     assert result["launch_analogue_count"] == 2
     assert result["outcome_counts"] == {"RUNNER": 1, "HELD": 0, "FADE": 1, "UNKNOWN": 0}
     assert result["analogue_history_is_not_prediction"] is True
-    assert result["predictive_authority"] is False
-    assert result["trade_signal"] is False
-    assert result["risk_inferred"] is False
-    assert result["quality_inferred"] is False
+    _assert_no_scoring_or_probability_keys(result)
 
 
 @pytest.mark.asyncio
@@ -96,10 +103,4 @@ async def test_no_motif_stays_new_unknown_without_fabricated_analogues():
     assert result["motif_analogue_count"] == 0
     assert result["launch_analogue_count"] == 0
     assert result["records"] == []
-
-
-def test_module_contract_has_no_prediction_probability_or_score_fields():
-    from pathlib import Path
-    text = Path("services/api/src/stinky_api/developer_motif_outcome_context.py").read_text().lower()
-    for forbidden in ("risk_score", "quality_score", "probability", "confidence_score"):
-        assert forbidden not in text
+    _assert_no_scoring_or_probability_keys(result)
