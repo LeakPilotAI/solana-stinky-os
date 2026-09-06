@@ -139,6 +139,11 @@ export const api = {
       timeoutMs: 12_000,
     });
   },
+  phase10Readiness: (datasetLimit = 200, featureHorizon = "5m") =>
+    getJson<Record<string, unknown>>(
+      `/v1/entity-graph/research/phase10-readiness?dataset_limit=${datasetLimit}&feature_horizon=${encodeURIComponent(featureHorizon)}&persist_current=true`,
+      { timeoutMs: 30_000 }
+    ),
   bookHealth: (body: Record<string, unknown> = {}) =>
     postJson<Record<string, unknown>>("/v1/book/health", body),
   bookDesk: (body: Record<string, unknown> = {}) =>

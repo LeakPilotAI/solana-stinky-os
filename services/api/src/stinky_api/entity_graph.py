@@ -27,6 +27,7 @@ from stinky_api.developer_longitudinal_audit import (
     persist_developer_snapshot,
 )
 from stinky_api.developer_motif_outcome_audit import motif_outcome_change_feed
+from stinky_api.live_phase10_readiness import run_live_phase10_readiness
 
 router = APIRouter(prefix="/v1/entity-graph", tags=["entity-graph"])
 
@@ -239,6 +240,24 @@ async def investigation_calibration_evidence(mint: str, session: Annotated[Async
             "developer_correlation_latest_change": correlation_audit.get("latest_change"),
             "evidence_only": True, "ownership_inferred": False, "coordination_inferred": False, "risk_inferred": False, "quality_inferred": False,
             "predictive_authority": False, "trade_signal": False}
+
+
+@router.get("/research/phase10-readiness")
+async def phase10_research_readiness(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    dataset_limit: int = Query(200, ge=50, le=500),
+    feature_horizon: str = Query("5m", pattern="^(launch|5m|15m|30m)$"),
+    as_of: datetime | None = Query(None),
+    persist_current: bool = Query(True),
+) -> dict[str, Any]:
+    """Operator-driven live Phase 10 evidence audit; never called by Command Center."""
+    return await run_live_phase10_readiness(
+        session,
+        dataset_limit=dataset_limit,
+        feature_horizon=feature_horizon,
+        as_of=as_of,
+        persist_current=persist_current,
+    )
 
 
 @router.get("/{entity_id}")
