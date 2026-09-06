@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from stinky_api.developer_correlation_motifs import analyze_network_motifs
 from stinky_api.developer_correlation_repetition import analyze_correlation_repetition
+from stinky_api.developer_motif_outcome_audit import motif_outcome_audit_history, persist_motif_outcome_snapshot
 from stinky_api.developer_motif_outcome_context import motif_outcome_context
 
 
@@ -185,12 +186,22 @@ async def correlate_developer_identity(
         result["as_of"] = cutoff.isoformat(); result["temporal_cutoff_enforced"] = True
     result = _with_repetition(result)
     try:
-        result["motif_outcome_context"] = await motif_outcome_context(
+        context = await motif_outcome_context(
             session, entity_id, network_motifs=result.get("network_motifs") or {}, as_of=cutoff, launch_limit=limit
         )
+        if cutoff is None:
+            await persist_motif_outcome_snapshot(session, context)
+        audit = await motif_outcome_audit_history(session, str(entity_id), limit=20, as_of=cutoff)
+        context["audit"] = audit
+        context["latest_change"] = audit.get("latest_change")
+        context["snapshot_count"] = audit.get("snapshot_count", 0)
+        result["motif_outcome_context"] = context
     except Exception:
         result["motif_outcome_context"] = {
-            "status": "UNKNOWN", "records": [], "missing": ["historical_motif_launch_outcomes"],
+            "status": "UNKNOWN", "entity_id": str(entity_id), "records": [], "snapshot_count": 0,
+            "audit": {"status": "UNKNOWN", "records": [], "changes": [], "latest_change": None, "snapshot_count": 0,
+                      "missing": ["developer_motif_outcome_snapshots"], "evidence_only": True},
+            "latest_change": None, "missing": ["historical_motif_launch_outcomes"],
             "interpretation": "DESCRIPTIVE_EVIDENCE_ONLY", "predictive_authority": False,
             "trade_signal": False, "risk_inferred": False, "quality_inferred": False, "evidence_only": True,
         }

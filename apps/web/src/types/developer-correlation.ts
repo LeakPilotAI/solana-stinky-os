@@ -96,12 +96,43 @@ export type DeveloperMotifOutcomeAnalogue = {
   analogue_is_not_prediction?: true;
 };
 
+export type DeveloperMotifOutcomeChange = {
+  status?: string;
+  changed?: boolean;
+  observed_at?: string | null;
+  evidence_hash?: string | null;
+  changes?: Array<{
+    kind?: string;
+    launch?: string;
+    before?: unknown;
+    after?: unknown;
+    fields?: string[];
+    added?: string[];
+    removed?: string[];
+  }>;
+};
+
+export type DeveloperMotifOutcomeAudit = {
+  status?: string;
+  entity_id?: string;
+  snapshot_count?: number;
+  latest_change?: DeveloperMotifOutcomeChange | null;
+  records?: Array<Record<string, unknown>>;
+  changes?: DeveloperMotifOutcomeChange[];
+  as_of?: string;
+  temporal_cutoff_enforced?: boolean;
+};
+
 export type DeveloperMotifOutcomeContext = {
   status?: string;
+  entity_id?: string;
   motif_analogue_count?: number;
   launch_analogue_count?: number;
   outcome_counts?: Record<"RUNNER" | "HELD" | "FADE" | "UNKNOWN", number>;
   records?: DeveloperMotifOutcomeAnalogue[];
+  snapshot_count?: number;
+  latest_change?: DeveloperMotifOutcomeChange | null;
+  audit?: DeveloperMotifOutcomeAudit;
   analogue_history_is_not_prediction?: true;
   as_of?: string;
   temporal_cutoff_enforced?: boolean;

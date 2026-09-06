@@ -71,19 +71,20 @@ async def motif_outcome_context(
     launch_limit: int = 100,
 ) -> dict[str, Any]:
     launch_limit = max(1, min(500, int(launch_limit)))
+    entity_key = str(entity_id)
     cutoff = _parse(as_of)
     if as_of is not None and cutoff is None:
-        return {"status": "UNKNOWN", "records": [], "missing": ["valid_as_of"], **AUTHORITY}
+        return {"status": "UNKNOWN", "entity_id": entity_key, "records": [], "missing": ["valid_as_of"], **AUTHORITY}
 
     motifs = [m for m in (network_motifs.get("records") or []) if isinstance(m, dict)] if isinstance(network_motifs, dict) else []
     if not motifs:
-        return {"status": "NEW-UNKNOWN", "records": [], "motif_analogue_count": 0, "launch_analogue_count": 0,
+        return {"status": "NEW-UNKNOWN", "entity_id": entity_key, "records": [], "motif_analogue_count": 0, "launch_analogue_count": 0,
                 "outcome_counts": {"RUNNER": 0, "HELD": 0, "FADE": 0, "UNKNOWN": 0},
                 "analogue_history_is_not_prediction": True, "bounded": {"launch_limit": launch_limit}, **AUTHORITY}
 
     related_ids = sorted({str(e) for m in motifs for e in (m.get("other_entity_ids") or []) if e})
     if not related_ids:
-        return {"status": "UNKNOWN", "records": [], "missing": ["motif_related_entities"], **AUTHORITY}
+        return {"status": "UNKNOWN", "entity_id": entity_key, "records": [], "missing": ["motif_related_entities"], **AUTHORITY}
 
     params: dict[str, Any] = {"entity_ids": related_ids, "limit": launch_limit, "current_mint": current_mint}
     clause = "AND l.observed_at <= :as_of" if cutoff is not None else ""
@@ -100,7 +101,7 @@ async def motif_outcome_context(
             LIMIT :limit
         """), params)).mappings().all()
     except Exception:
-        return {"status": "UNKNOWN", "records": [], "missing": ["historical_motif_launch_outcomes"], **AUTHORITY}
+        return {"status": "UNKNOWN", "entity_id": entity_key, "records": [], "missing": ["historical_motif_launch_outcomes"], **AUTHORITY}
 
     launches: list[dict[str, Any]] = []
     for row in rows:
@@ -128,7 +129,7 @@ async def motif_outcome_context(
 
     result = {
         "status": "OBSERVED" if analogues else "UNKNOWN",
-        "entity_id": str(entity_id), "motif_analogue_count": len(analogues), "launch_analogue_count": len(launches),
+        "entity_id": entity_key, "motif_analogue_count": len(analogues), "launch_analogue_count": len(launches),
         "outcome_counts": _counts(launches), "records": analogues,
         "analogue_history_is_not_prediction": True,
         "bounded": {"launch_limit": launch_limit, "related_entity_count": len(related_ids)},
