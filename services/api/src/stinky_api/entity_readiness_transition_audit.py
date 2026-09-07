@@ -129,25 +129,60 @@ async def ensure_entity_readiness_audit_table(session: AsyncSession) -> None:
     """))
 
 
-async def _insert_snapshot(session: AsyncSession, *, entity_id: str, digest: str, readiness_json: str, observed_at: datetime) -> None:
+async def _insert_snapshot(
+    session: AsyncSession,
+    *,
+    entity_id: str,
+    digest: str,
+    readiness_json: str,
+    observed_at: datetime,
+    ingested_at: datetime,
+) -> None:
     await ensure_entity_readiness_audit_table(session)
     await session.execute(text("""
-        INSERT INTO entity_readiness_snapshots (entity_id, evidence_hash, readiness, observed_at)
-        VALUES (CAST(:entity_id AS UUID), :evidence_hash, CAST(:readiness AS JSONB), :observed_at)
+        INSERT INTO entity_readiness_snapshots (
+            entity_id, evidence_hash, readiness, observed_at, ingested_at
+        )
+        VALUES (
+            CAST(:entity_id AS UUID), :evidence_hash, CAST(:readiness AS JSONB),
+            :observed_at, :ingested_at
+        )
         ON CONFLICT (entity_id, evidence_hash) DO NOTHING
-    """), {"entity_id": entity_id, "evidence_hash": digest, "readiness": readiness_json, "observed_at": observed_at})
+    """), {
+        "entity_id": entity_id,
+        "evidence_hash": digest,
+        "readiness": readiness_json,
+        "observed_at": observed_at,
+        "ingested_at": ingested_at,
+    })
 
 
 async def persist_entity_readiness_snapshot(session: AsyncSession, entity_id: str, readiness: dict[str, Any], *, observed_at: datetime | None = None) -> str:
     digest = entity_readiness_hash(readiness)
-    ts = observed_at or datetime.now(timezone.utc)
+    capture_ts = observed_at or datetime.now(timezone.utc)
+    if capture_ts.tzinfo is None:
+        capture_ts = capture_ts.replace(tzinfo=timezone.utc)
     payload = json.dumps(readiness, sort_keys=True, default=str)
     try:
-        await _insert_snapshot(session, entity_id=entity_id, digest=digest, readiness_json=payload, observed_at=ts)
+        await _insert_snapshot(
+            session,
+            entity_id=entity_id,
+            digest=digest,
+            readiness_json=payload,
+            observed_at=capture_ts,
+            ingested_at=capture_ts,
+        )
     except Exception:
         await session.rollback()
         try:
-            await _insert_snapshot(session, entity_id=entity_id, digest=digest, readiness_json=payload, observed_at=ts)
+            await _insert_snapshot(
+                session,
+                entity_id=entity_id,
+                digest=digest,
+                readiness_json=payload,
+                observed_at=capture_ts,
+                ingested_at=capture_ts,
+            )
         except Exception:
             await session.rollback()
             raise
