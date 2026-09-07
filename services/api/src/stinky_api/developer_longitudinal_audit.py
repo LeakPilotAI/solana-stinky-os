@@ -55,68 +55,36 @@ def describe_developer_change(previous: dict[str, Any] | None, current: dict[str
         changes.append({"kind": "NEW_LAUNCH_OBSERVED" if after_launches > before_launches else "LAUNCH_HISTORY_COUNT_CHANGED", "before": before_launches, "after": after_launches})
     if previous.get("outcome_counts") != current.get("outcome_counts"):
         changes.append({"kind": "OUTCOME_COUNTS_CHANGED", "before": previous.get("outcome_counts"), "after": current.get("outcome_counts")})
-    for field, added_kind, removed_kind in (
-        ("associated_wallets", "ASSOCIATED_WALLET_ADDED", "ASSOCIATED_WALLET_REMOVED"),
-        ("funding_counterparties", "FUNDING_COUNTERPARTY_CHANGED", "FUNDING_COUNTERPARTY_CHANGED"),
-        ("recurring_early_buyers", "RECURRING_EARLY_BUYER_CHANGED", "RECURRING_EARLY_BUYER_CHANGED"),
-    ):
-        before = set(previous.get(field) or [])
-        after = set(current.get(field) or [])
-        if after - before:
-            changes.append({"kind": added_kind, "field": field, "added": sorted(after - before), "removed": []})
-        if before - after:
-            changes.append({"kind": removed_kind, "field": field, "added": [], "removed": sorted(before - after)})
-    before_missing = set(previous.get("missing") or [])
-    after_missing = set(current.get("missing") or [])
-    if before_missing - after_missing:
-        changes.append({"kind": "UNKNOWN_RESOLVED", "fields": sorted(before_missing - after_missing)})
-    if after_missing - before_missing:
-        changes.append({"kind": "UNKNOWN_INTRODUCED", "fields": sorted(after_missing - before_missing)})
+    for field, added_kind, removed_kind in (("associated_wallets", "ASSOCIATED_WALLET_ADDED", "ASSOCIATED_WALLET_REMOVED"), ("funding_counterparties", "FUNDING_COUNTERPARTY_CHANGED", "FUNDING_COUNTERPARTY_CHANGED"), ("recurring_early_buyers", "RECURRING_EARLY_BUYER_CHANGED", "RECURRING_EARLY_BUYER_CHANGED")):
+        before = set(previous.get(field) or []); after = set(current.get(field) or [])
+        if after - before: changes.append({"kind": added_kind, "field": field, "added": sorted(after - before), "removed": []})
+        if before - after: changes.append({"kind": removed_kind, "field": field, "added": [], "removed": sorted(before - after)})
+    before_missing = set(previous.get("missing") or []); after_missing = set(current.get("missing") or [])
+    if before_missing - after_missing: changes.append({"kind": "UNKNOWN_RESOLVED", "fields": sorted(before_missing - after_missing)})
+    if after_missing - before_missing: changes.append({"kind": "UNKNOWN_INTRODUCED", "fields": sorted(after_missing - before_missing)})
     return {"status": "CHANGED" if changes else "UNCHANGED", "changed": bool(changes), "changes": changes, "interpretation": "DESCRIPTIVE_EVIDENCE_ONLY", "risk_inferred": False, "quality_inferred": False, "predictive_authority": False, "trade_signal": False, "evidence_only": True}
 
 
 async def ensure_developer_audit_table(session: AsyncSession) -> None:
-    await session.execute(text("""
-        CREATE TABLE IF NOT EXISTS developer_longitudinal_snapshots (
-            id BIGSERIAL PRIMARY KEY,
-            entity_id UUID NOT NULL,
-            evidence_hash TEXT NOT NULL,
-            evidence JSONB NOT NULL,
-            observed_at TIMESTAMPTZ NOT NULL,
-            ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            UNIQUE (entity_id, evidence_hash)
-        )
-    """))
-    await session.execute(text("""
-        CREATE INDEX IF NOT EXISTS idx_developer_longitudinal_snapshots_entity_time
-        ON developer_longitudinal_snapshots(entity_id, observed_at DESC, id DESC)
-    """))
+    await session.execute(text("""CREATE TABLE IF NOT EXISTS developer_longitudinal_snapshots (id BIGSERIAL PRIMARY KEY, entity_id UUID NOT NULL, evidence_hash TEXT NOT NULL, evidence JSONB NOT NULL, observed_at TIMESTAMPTZ NOT NULL, ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE (entity_id, evidence_hash))"""))
+    await session.execute(text("""CREATE INDEX IF NOT EXISTS idx_developer_longitudinal_snapshots_entity_time ON developer_longitudinal_snapshots(entity_id, observed_at DESC, id DESC)"""))
 
 
 async def _insert_developer_snapshot(session: AsyncSession, *, entity_id: str, digest: str, evidence_json: str, observed_at: datetime) -> None:
     await ensure_developer_audit_table(session)
-    await session.execute(text("""
-        INSERT INTO developer_longitudinal_snapshots (entity_id, evidence_hash, evidence, observed_at)
-        VALUES (CAST(:entity_id AS UUID), :evidence_hash, CAST(:evidence AS JSONB), :observed_at)
-        ON CONFLICT (entity_id, evidence_hash) DO NOTHING
-    """), {"entity_id": entity_id, "evidence_hash": digest, "evidence": evidence_json, "observed_at": observed_at})
+    await session.execute(text("""INSERT INTO developer_longitudinal_snapshots (entity_id, evidence_hash, evidence, observed_at) VALUES (CAST(:entity_id AS UUID), :evidence_hash, CAST(:evidence AS JSONB), :observed_at) ON CONFLICT (entity_id, evidence_hash) DO NOTHING"""), {"entity_id": entity_id, "evidence_hash": digest, "evidence": evidence_json, "observed_at": observed_at})
 
 
 async def persist_developer_snapshot(session: AsyncSession, evidence: dict[str, Any], *, observed_at: datetime | None = None) -> str | None:
-    """Persist one logical snapshot, recovering once from a poisoned read transaction.
+    """Persist and durably commit one immutable snapshot.
 
-    Investigation assembly intentionally treats many optional evidence sources as
-    UNKNOWN when their reads fail. PostgreSQL still marks that request transaction
-    aborted, so a later evidence INSERT can otherwise fail even though the API
-    returns HTTP 200. Roll back only after the first write attempt proves the
-    transaction unusable, then retry the same immutable evidence once. A second
-    failure is rolled back and re-raised so callers can report capture failure.
+    Optional investigation reads can poison the request transaction. Recover once,
+    retry the identical evidence, then commit immediately so later optional reads
+    cannot roll the snapshot back. A commit failure is surfaced to the caller.
     """
     entity_id = str(evidence.get("entity_id") or "").strip()
-    if not entity_id:
-        return None
-    digest = developer_evidence_hash(evidence)
-    ts = observed_at or datetime.now(timezone.utc)
+    if not entity_id: return None
+    digest = developer_evidence_hash(evidence); ts = observed_at or datetime.now(timezone.utc)
     evidence_json = json.dumps(evidence, sort_keys=True, default=str)
     try:
         await _insert_developer_snapshot(session, entity_id=entity_id, digest=digest, evidence_json=evidence_json, observed_at=ts)
@@ -125,8 +93,11 @@ async def persist_developer_snapshot(session: AsyncSession, evidence: dict[str, 
         try:
             await _insert_developer_snapshot(session, entity_id=entity_id, digest=digest, evidence_json=evidence_json, observed_at=ts)
         except Exception:
-            await session.rollback()
-            raise
+            await session.rollback(); raise
+    try:
+        await session.commit()
+    except Exception:
+        await session.rollback(); raise
     return digest
 
 
@@ -137,12 +108,7 @@ async def developer_audit_history(session: AsyncSession, entity_id: str, *, limi
         clause = "AND observed_at <= :as_of AND ingested_at <= :as_of" if as_of is not None else ""
         params: dict[str, Any] = {"entity_id": entity_id, "limit": limit}
         if as_of is not None: params["as_of"] = as_of
-        rows = (await session.execute(text(f"""
-            SELECT id, entity_id::text AS entity_id, evidence_hash, evidence, observed_at, ingested_at
-            FROM developer_longitudinal_snapshots
-            WHERE entity_id = CAST(:entity_id AS UUID) {clause}
-            ORDER BY observed_at DESC, id DESC LIMIT :limit
-        """), params)).mappings().all()
+        rows = (await session.execute(text(f"""SELECT id, entity_id::text AS entity_id, evidence_hash, evidence, observed_at, ingested_at FROM developer_longitudinal_snapshots WHERE entity_id = CAST(:entity_id AS UUID) {clause} ORDER BY observed_at DESC, id DESC LIMIT :limit"""), params)).mappings().all()
     except Exception:
         return {"status": "UNKNOWN", "records": [], "changes": [], "missing": ["developer_longitudinal_snapshots"], "evidence_only": True}
     chronological = list(reversed(rows)); previous: dict[str, Any] | None = None; records = []; changes = []
@@ -163,20 +129,7 @@ async def developer_change_feed(session: AsyncSession, *, limit: int = 50, as_of
         clause = "WHERE observed_at <= :as_of AND ingested_at <= :as_of" if as_of is not None else ""
         params: dict[str, Any] = {"limit": limit}
         if as_of is not None: params["as_of"] = as_of
-        rows = (await session.execute(text(f"""
-            WITH ranked AS (
-                SELECT entity_id, evidence, observed_at, ingested_at,
-                       ROW_NUMBER() OVER (PARTITION BY entity_id ORDER BY observed_at DESC, id DESC) AS rn
-                FROM developer_longitudinal_snapshots {clause}
-            )
-            SELECT a.entity_id::text AS entity_id, a.evidence AS current_evidence,
-                   a.observed_at, b.evidence AS previous_evidence,
-                   e.primary_wallet, e.display_label
-            FROM ranked a
-            LEFT JOIN ranked b ON b.entity_id = a.entity_id AND b.rn = 2
-            LEFT JOIN entities e ON e.entity_id = a.entity_id
-            WHERE a.rn = 1 ORDER BY a.observed_at DESC, a.entity_id LIMIT :limit
-        """), params)).mappings().all()
+        rows = (await session.execute(text(f"""WITH ranked AS (SELECT entity_id, evidence, observed_at, ingested_at, ROW_NUMBER() OVER (PARTITION BY entity_id ORDER BY observed_at DESC, id DESC) AS rn FROM developer_longitudinal_snapshots {clause}) SELECT a.entity_id::text AS entity_id, a.evidence AS current_evidence, a.observed_at, b.evidence AS previous_evidence, e.primary_wallet, e.display_label FROM ranked a LEFT JOIN ranked b ON b.entity_id = a.entity_id AND b.rn = 2 LEFT JOIN entities e ON e.entity_id = a.entity_id WHERE a.rn = 1 ORDER BY a.observed_at DESC, a.entity_id LIMIT :limit"""), params)).mappings().all()
     except Exception:
         return {"status": "UNKNOWN", "items": [], "count": 0, "missing": ["developer_longitudinal_snapshots"], "evidence_only": True}
     items = []
