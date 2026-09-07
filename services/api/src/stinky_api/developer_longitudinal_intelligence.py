@@ -34,6 +34,34 @@ def _iso(value: Any) -> Any:
     return value.isoformat() if hasattr(value, "isoformat") else value
 
 
+def _record_time(value: Any) -> datetime | None:
+    return _parse_as_of(value)
+
+
+def _visible_at_cutoff(row: dict[str, Any], cutoff: datetime | None) -> bool:
+    """Fail closed for temporal evidence when an explicit cutoff is requested."""
+    if cutoff is None:
+        return True
+    observed = _record_time(row.get("observed_at"))
+    if observed is None or observed > cutoff:
+        return False
+    ingested_raw = row.get("ingested_at")
+    if ingested_raw is not None:
+        ingested = _record_time(ingested_raw)
+        if ingested is None or ingested > cutoff:
+            return False
+    return True
+
+
+def _sort_launches(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def key(row: dict[str, Any]) -> tuple[str, str]:
+        observed = _record_time(row.get("observed_at"))
+        stamp = observed.isoformat() if observed is not None else ""
+        return (stamp, str(row.get("mint") or ""))
+
+    return sorted(records, key=key, reverse=True)
+
+
 def _outcome_counts(launches: list[dict[str, Any]]) -> dict[str, int]:
     counts = {"RUNNER": 0, "HELD": 0, "FADE": 0, "UNKNOWN": 0}
     for launch in launches:
@@ -110,17 +138,20 @@ async def developer_longitudinal_intelligence(
     launch_source = history.get("launch_history") if isinstance(history, dict) else None
     source_records = launch_source.get("records") if isinstance(launch_source, dict) else None
     source_records = [dict(row) for row in source_records if isinstance(row, dict)] if isinstance(source_records, list) else []
+    visible_source_records = [row for row in source_records if _visible_at_cutoff(row, cutoff)]
+    visible_source_records = _sort_launches(visible_source_records)
+    launch_rows_excluded_by_cutoff = len(source_records) - len(visible_source_records)
 
     reference_mint_inferred = False
     current_mint = str(current_mint or "").strip() or None
-    if current_mint is None and source_records:
-        inferred = str(source_records[0].get("mint") or "").strip()
+    if current_mint is None and visible_source_records:
+        inferred = str(visible_source_records[0].get("mint") or "").strip()
         if inferred:
             current_mint = inferred
             reference_mint_inferred = True
 
     launches = [
-        row for row in source_records
+        row for row in visible_source_records
         if current_mint is None or str(row.get("mint") or "") != current_mint
     ][:launch_limit]
 
@@ -143,6 +174,9 @@ async def developer_longitudinal_intelligence(
             "last_seen_at": _iso(row.get("last_seen_at")),
             "evidence": row.get("evidence"),
         })
+
+    visible_funding_history = [dict(row) for row in funding_history if isinstance(row, dict) and _visible_at_cutoff(row, cutoff)]
+    funding_rows_excluded_by_cutoff = len([row for row in funding_history if isinstance(row, dict)]) - len(visible_funding_history)
 
     recurring_buyers: list[dict[str, Any]] = []
     early_buyer_query_status = "NOT_APPLICABLE"
@@ -193,20 +227,31 @@ async def developer_longitudinal_intelligence(
     outcome_counts = _outcome_counts(launches)
     known_outcomes = sum(outcome_counts[k] for k in ("RUNNER", "HELD", "FADE"))
     funding_counterparties = _funding_counterparties(
-        funding_history,
+        visible_funding_history,
         entity_wallets,
         limit=min(early_buyer_limit, 100),
     )
 
     history_state = "KNOWN_HISTORY" if launches else "NEW-UNKNOWN"
+    repeat_deployer_status = "OBSERVED" if launches else "UNKNOWN"
     result: dict[str, Any] = {
-        "status": "OBSERVED" if launches or associated_wallets or funding_history else "NEW-UNKNOWN",
+        "status": "OBSERVED" if launches or associated_wallets or visible_funding_history else "NEW-UNKNOWN",
         "entity_id": str(entity_id),
         "reference_mint": current_mint,
         "reference_mint_inferred_from_latest_visible_launch": reference_mint_inferred,
         "current_mint_excluded_from_history": current_mint is not None,
         "history_state": history_state,
         "fresh_entity_interpretation": "NEW-UNKNOWN" if not launches else None,
+        "repeat_deployer": {
+            "status": repeat_deployer_status,
+            "prior_launch_count": len(launches),
+            "relationship": "REPEAT_OBSERVED_DEPLOYER" if launches else None,
+            "derived_from_observed_prior_launches_only": True,
+            "risk_inferred": False,
+            "quality_inferred": False,
+            "predictive_authority": False,
+            "trade_signal": False,
+        },
         "launch_history": {
             "historical_launch_count": len(launches),
             "records": launches,
@@ -220,7 +265,7 @@ async def developer_longitudinal_intelligence(
             "ownership_inferred": False,
         },
         "funding_relationships": {
-            "observation_count": len(funding_history),
+            "observation_count": len(visible_funding_history),
             "counterparties": funding_counterparties,
             "ownership_inferred": False,
             "intent_inferred": False,
@@ -235,7 +280,13 @@ async def developer_longitudinal_intelligence(
         "bounded": {
             "launch_limit": launch_limit,
             "early_buyer_limit": early_buyer_limit,
-            "funding_observation_count": len(funding_history),
+            "funding_observation_count": len(visible_funding_history),
+        },
+        "temporal_input_filtering": {
+            "cutoff_enforced": cutoff is not None,
+            "launch_rows_excluded": launch_rows_excluded_by_cutoff,
+            "funding_rows_excluded": funding_rows_excluded_by_cutoff,
+            "missing_or_invalid_timestamps_fail_closed": cutoff is not None,
         },
         "provenance": {
             "evidence_source": "developer_longitudinal",
