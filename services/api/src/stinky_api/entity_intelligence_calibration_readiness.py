@@ -7,6 +7,8 @@ authority.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime
 from typing import Any
 
@@ -162,6 +164,52 @@ async def _latest_component_evidence_hash(
     return str(row[0]) if row and row[0] else None
 
 
+async def _latest_launch_boundary_hash(
+    session: AsyncSession,
+    *,
+    entity_id: str,
+    as_of: datetime | None,
+) -> str | None:
+    """Version the latest real launch/outcome boundary without changing gate semantics.
+
+    Current developer-history evidence intentionally excludes the current mint so it
+    cannot leak current-launch information into prior-history calibration. That is
+    correct, but it also means a measured completion can leave the developer snapshot
+    hash unchanged. For prospective capture only, retain a separate immutable hash of
+    the latest launch row. Historical ``as_of`` reconstruction returns UNKNOWN/None
+    because ``entity_launches`` does not separately timestamp outcome ingestion.
+    """
+    if as_of is not None:
+        return None
+    try:
+        row = (
+            await session.execute(
+                text(
+                    """
+                    SELECT mint, observed_at, outcome_status, outcome_meta
+                    FROM entity_launches
+                    WHERE entity_id = CAST(:entity_id AS UUID)
+                    ORDER BY observed_at DESC, id DESC
+                    LIMIT 1
+                    """
+                ),
+                {"entity_id": entity_id},
+            )
+        ).mappings().first()
+    except Exception:
+        return None
+    if not row:
+        return None
+    payload = {
+        "mint": str(row.get("mint") or ""),
+        "observed_at": row.get("observed_at").isoformat() if hasattr(row.get("observed_at"), "isoformat") else row.get("observed_at"),
+        "outcome_status": row.get("outcome_status"),
+        "outcome_meta": row.get("outcome_meta") if isinstance(row.get("outcome_meta"), dict) else row.get("outcome_meta"),
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 async def entity_intelligence_calibration_readiness(
     session: AsyncSession,
     entity_id: str,
@@ -201,7 +249,13 @@ async def entity_intelligence_calibration_readiness(
         entity_id=entity_id,
         as_of=as_of,
     )
+    launch_boundary_hash = await _latest_launch_boundary_hash(
+        session,
+        entity_id=entity_id,
+        as_of=as_of,
+    )
     result["components"]["developer_history"]["evidence_hash"] = developer_hash
     result["components"]["relationship_history"]["evidence_hash"] = relationship_hash
+    result["components"]["outcome_history"]["evidence_hash"] = launch_boundary_hash
     result["entity_id"] = entity_id
     return result
