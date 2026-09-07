@@ -9,6 +9,7 @@ import sys
 import structlog
 
 from entity_resolver.config import settings
+from entity_resolver.durable_outcome_reconciliation import DurableOutcomeReconciler
 from entity_resolver.resolver import EntityResolver
 from entity_resolver.service import EntityService
 
@@ -75,6 +76,16 @@ async def _show_candidates() -> None:
         await r.close()
 
 
+async def _run_service_with_reconciliation() -> None:
+    """Run the stream consumer and durable completion recovery together."""
+    service = EntityService()
+    reconciler = DurableOutcomeReconciler()
+    await asyncio.gather(
+        service.run_forever(),
+        reconciler.run_forever(),
+    )
+
+
 def main() -> None:
     _configure_logging()
     log = structlog.get_logger()
@@ -105,9 +116,8 @@ def main() -> None:
         asyncio.run(_show_candidates())
         return
 
-    service = EntityService()
     try:
-        asyncio.run(service.run_forever())
+        asyncio.run(_run_service_with_reconciliation())
     except KeyboardInterrupt:
         log.info("entity_resolver.shutdown")
         sys.exit(0)
