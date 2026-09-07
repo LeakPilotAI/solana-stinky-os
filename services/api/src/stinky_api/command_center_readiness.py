@@ -158,23 +158,3 @@ async def command_center_readiness_endpoint(
     as_of: datetime | None = Query(None),
 ) -> dict[str, Any]:
     return await command_center_readiness_summary(session, limit=limit, as_of=as_of)
-
-
-@router.get("/live-readiness-cohort")
-async def live_readiness_cohort_endpoint(
-    session: AsyncSession = Depends(get_session),
-    entity_limit: int = Query(100, ge=1, le=500),
-    snapshot_limit: int = Query(100, ge=2, le=200),
-    as_of: datetime | None = Query(None),
-    include_entities: bool = Query(False),
-) -> dict[str, Any]:
-    """Read-only live cohort validation executed inside the running Genesis API runtime."""
-    from stinky_api.entity_readiness_live_cohort import live_entity_readiness_cohort_validation
-
-    return await live_entity_readiness_cohort_validation(
-        session,
-        entity_limit=entity_limit,
-        snapshot_limit_per_entity=snapshot_limit,
-        as_of=as_of,
-        include_entities=include_entities,
-    )
