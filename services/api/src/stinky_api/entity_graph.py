@@ -256,10 +256,75 @@ async def investigation_calibration_evidence(mint: str, session: Annotated[Async
         correlation_audit = await developer_correlation_audit_history(session, developer_entity_id, limit=20, as_of=as_of) if developer_entity_id else {"status": "NEW-UNKNOWN", "records": [], "changes": [], "latest_change": None, "missing": ["developer_entity_id"], "evidence_only": True}
     except Exception:
         correlation_audit = {"status": "UNKNOWN", "records": [], "changes": [], "latest_change": None, "missing": ["developer_correlation_snapshots"], "evidence_only": True}
+
+    historical_calibration = network.get("historical_outcome_calibration")
+    if not isinstance(historical_calibration, dict):
+        historical_calibration = {"status": "UNKNOWN", "launch_count_observed": 0, "outcomes_known": 0, "outcome_coverage": None, "missing": ["historical_outcome_calibration"], "evidence_only": True}
+    entity_readiness = {
+        "status": "UNKNOWN",
+        "ready": False,
+        "blockers": ["ENTITY_ID_UNAVAILABLE"],
+        "calibration_scope": "ENTITY_INTELLIGENCE_DESCRIPTIVE_ONLY",
+        "predictive_authority": False,
+        "risk_inferred": False,
+        "quality_inferred": False,
+        "trade_signal": False,
+        "evidence_only": True,
+    }
+    readiness_audit = {"status": "UNKNOWN", "records": [], "transitions": [], "latest_transition": None, "snapshot_count": 0, "regression_count": 0, "evidence_only": True}
+    readiness_snapshot_hash: str | None = None
+    try:
+        if developer_entity_id:
+            from stinky_api.entity_intelligence_calibration_readiness import entity_intelligence_calibration_readiness
+            from stinky_api.entity_readiness_transition_audit import (
+                entity_readiness_history,
+                persist_entity_readiness_snapshot,
+            )
+
+            entity_readiness = await entity_intelligence_calibration_readiness(
+                session,
+                developer_entity_id,
+                historical_calibration,
+                as_of=as_of,
+                developer_limit=100,
+                relationship_limit=40,
+            )
+            if as_of is None:
+                readiness_snapshot_hash = await persist_entity_readiness_snapshot(
+                    session,
+                    developer_entity_id,
+                    entity_readiness,
+                )
+            readiness_audit = await entity_readiness_history(
+                session,
+                developer_entity_id,
+                limit=50,
+                as_of=as_of,
+            )
+    except Exception:
+        entity_readiness = {
+            "status": "UNKNOWN",
+            "ready": False,
+            "blockers": ["ENTITY_READINESS_CAPTURE_UNAVAILABLE"],
+            "entity_id": developer_entity_id or None,
+            "calibration_scope": "ENTITY_INTELLIGENCE_DESCRIPTIVE_ONLY",
+            "predictive_authority": False,
+            "risk_inferred": False,
+            "quality_inferred": False,
+            "trade_signal": False,
+            "evidence_only": True,
+        }
+        readiness_audit = {"status": "UNKNOWN", "records": [], "transitions": [], "latest_transition": None, "snapshot_count": 0, "regression_count": 0, "missing": ["entity_readiness_snapshots"], "evidence_only": True}
+
     return {"mint": mint, "status": synthesis.get("status", "UNKNOWN"), "calibration": synthesis, "audit": audit, "latest_change": audit.get("latest_change"),
             "developer": developer, "developer_audit": developer_audit, "developer_latest_change": developer_audit.get("latest_change"),
             "developer_correlation": correlation, "developer_correlation_audit": correlation_audit,
             "developer_correlation_latest_change": correlation_audit.get("latest_change"),
+            "entity_readiness": entity_readiness, "entity_readiness_audit": readiness_audit,
+            "entity_readiness_snapshot_hash": readiness_snapshot_hash,
+            "entity_readiness_latest_transition": readiness_audit.get("latest_transition"),
+            "entity_readiness_snapshot_count": readiness_audit.get("snapshot_count", 0),
+            "entity_readiness_regression_count": readiness_audit.get("regression_count", 0),
             "evidence_only": True, "ownership_inferred": False, "coordination_inferred": False, "risk_inferred": False, "quality_inferred": False,
             "predictive_authority": False, "trade_signal": False}
 
