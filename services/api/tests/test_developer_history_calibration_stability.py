@@ -85,5 +85,6 @@ def test_duplicate_mint_cannot_manufacture_slice_depth():
         {"mint": "M5", "observed_at": "2026-08-18T00:00:00+00:00", "outcome_status": "FADE"},
     ]
     result = assess_developer_history_calibration_stability(_records(launches))
-    assert result["stability_status"] == "NOT_EVALUATED"
     assert result["readiness_status"] == "READY_FOR_DESCRIPTIVE_CALIBRATION"
+    assert result["stability_status"] == "NOT_STABLE_FOR_DESCRIPTIVE_CALIBRATION"
+    assert "INSUFFICIENT_SLICE_SAMPLE" in result["blockers"]
