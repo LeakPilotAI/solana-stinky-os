@@ -11,21 +11,108 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
+def _stable(value: Any) -> Any:
+    """Return a deterministic JSON-compatible representation for hash material."""
+    try:
+        return json.loads(json.dumps(value, sort_keys=True, separators=(",", ":"), default=str))
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _canonical_launch_records(launches: dict[str, Any]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for row in launches.get("records") or []:
+        if not isinstance(row, dict):
+            continue
+        mint = str(row.get("mint") or "").strip()
+        if not mint:
+            continue
+        records.append({
+            "mint": mint,
+            "observed_at": str(row.get("observed_at")) if row.get("observed_at") is not None else None,
+            "ingested_at": str(row.get("ingested_at")) if row.get("ingested_at") is not None else None,
+            "outcome_status": str(row.get("outcome_status") or "UNKNOWN").upper(),
+            "outcome_observed_at": str(row.get("outcome_observed_at")) if row.get("outcome_observed_at") is not None else None,
+        })
+    return sorted(records, key=lambda row: (row["mint"], row.get("observed_at") or "", row.get("ingested_at") or "", row.get("outcome_status") or ""))
+
+
+def _canonical_wallet_records(wallets: dict[str, Any]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for row in wallets.get("records") or []:
+        if not isinstance(row, dict) or not row.get("wallet"):
+            continue
+        records.append({
+            "wallet": str(row.get("wallet")),
+            "role": row.get("role"),
+            "link_reason": row.get("link_reason"),
+            "first_seen_at": str(row.get("first_seen_at")) if row.get("first_seen_at") is not None else None,
+            "last_seen_at": str(row.get("last_seen_at")) if row.get("last_seen_at") is not None else None,
+            "evidence": _stable(row.get("evidence")),
+        })
+    return sorted(records, key=lambda row: (row["wallet"], str(row.get("role") or ""), str(row.get("link_reason") or "")))
+
+
+def _canonical_funding_records(funding: dict[str, Any]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for row in funding.get("counterparties") or []:
+        if not isinstance(row, dict) or not row.get("wallet"):
+            continue
+        records.append({
+            "wallet": str(row.get("wallet")),
+            "direction": row.get("direction"),
+            "observation_count": int(row.get("observation_count") or 0),
+            "first_observed_at": str(row.get("first_observed_at")) if row.get("first_observed_at") is not None else None,
+            "last_observed_at": str(row.get("last_observed_at")) if row.get("last_observed_at") is not None else None,
+        })
+    return sorted(records, key=lambda row: (row["wallet"], str(row.get("direction") or "")))
+
+
+def _canonical_buyer_records(buyers: dict[str, Any]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for row in buyers.get("records") or []:
+        if not isinstance(row, dict) or not row.get("wallet"):
+            continue
+        records.append({
+            "wallet": str(row.get("wallet")),
+            "historical_launch_count": int(row.get("historical_launch_count") or 0),
+            "best_rank": row.get("best_rank"),
+            "first_observed_at": str(row.get("first_observed_at")) if row.get("first_observed_at") is not None else None,
+            "last_observed_at": str(row.get("last_observed_at")) if row.get("last_observed_at") is not None else None,
+            "mints": sorted(str(mint) for mint in (row.get("mints") or [])),
+            "relationship": row.get("relationship"),
+        })
+    return sorted(records, key=lambda row: row["wallet"])
+
+
 def _canonical_payload(evidence: dict[str, Any]) -> dict[str, Any]:
     launches = evidence.get("launch_history") if isinstance(evidence.get("launch_history"), dict) else {}
     wallets = evidence.get("associated_wallets") if isinstance(evidence.get("associated_wallets"), dict) else {}
     funding = evidence.get("funding_relationships") if isinstance(evidence.get("funding_relationships"), dict) else {}
     buyers = evidence.get("recurring_early_buyers") if isinstance(evidence.get("recurring_early_buyers"), dict) else {}
+    repeat = evidence.get("repeat_deployer") if isinstance(evidence.get("repeat_deployer"), dict) else {}
+    launch_records = _canonical_launch_records(launches)
+    wallet_records = _canonical_wallet_records(wallets)
+    funding_records = _canonical_funding_records(funding)
+    buyer_records = _canonical_buyer_records(buyers)
     return {
+        "evidence_hash_schema": 2,
         "entity_id": evidence.get("entity_id"),
         "reference_mint": evidence.get("reference_mint"),
         "history_state": evidence.get("history_state"),
         "historical_launch_count": launches.get("historical_launch_count", 0),
+        "launch_records": launch_records,
+        "launch_mints": sorted(row["mint"] for row in launch_records),
         "outcome_counts": launches.get("outcome_counts") or {},
-        "associated_wallets": sorted(str(r.get("wallet")) for r in (wallets.get("records") or []) if isinstance(r, dict) and r.get("wallet")),
-        "funding_counterparties": sorted(f"{r.get('wallet')}:{r.get('direction')}" for r in (funding.get("counterparties") or []) if isinstance(r, dict) and r.get("wallet")),
-        "recurring_early_buyers": sorted(str(r.get("wallet")) for r in (buyers.get("records") or []) if isinstance(r, dict) and r.get("wallet")),
+        "associated_wallet_records": wallet_records,
+        "associated_wallets": sorted(row["wallet"] for row in wallet_records),
+        "funding_counterparty_records": funding_records,
+        "funding_counterparties": sorted(f"{row.get('wallet')}:{row.get('direction')}" for row in funding_records),
+        "recurring_early_buyer_records": buyer_records,
+        "recurring_early_buyers": sorted(row["wallet"] for row in buyer_records),
         "recurring_early_buyer_status": buyers.get("status"),
+        "repeat_deployer_status": repeat.get("status"),
+        "repeat_deployer_prior_launch_count": int(repeat.get("prior_launch_count") or 0),
         "missing": sorted(str(x) for x in (evidence.get("missing") or [])),
         "interpretation": "DESCRIPTIVE_EVIDENCE_ONLY",
         "risk_inferred": False,
@@ -53,12 +140,26 @@ def describe_developer_change(previous: dict[str, Any] | None, current: dict[str
     after_launches = int(current.get("historical_launch_count") or 0)
     if before_launches != after_launches:
         changes.append({"kind": "NEW_LAUNCH_OBSERVED" if after_launches > before_launches else "LAUNCH_HISTORY_COUNT_CHANGED", "before": before_launches, "after": after_launches})
+    before_mints = set(previous.get("launch_mints") or [])
+    after_mints = set(current.get("launch_mints") or [])
+    if before_mints != after_mints:
+        changes.append({"kind": "LAUNCH_SET_CHANGED", "added": sorted(after_mints - before_mints), "removed": sorted(before_mints - after_mints)})
+    if previous.get("launch_records") != current.get("launch_records") and before_mints == after_mints:
+        changes.append({"kind": "LAUNCH_EVIDENCE_CHANGED"})
     if previous.get("outcome_counts") != current.get("outcome_counts"):
         changes.append({"kind": "OUTCOME_COUNTS_CHANGED", "before": previous.get("outcome_counts"), "after": current.get("outcome_counts")})
     for field, added_kind, removed_kind in (("associated_wallets", "ASSOCIATED_WALLET_ADDED", "ASSOCIATED_WALLET_REMOVED"), ("funding_counterparties", "FUNDING_COUNTERPARTY_CHANGED", "FUNDING_COUNTERPARTY_CHANGED"), ("recurring_early_buyers", "RECURRING_EARLY_BUYER_CHANGED", "RECURRING_EARLY_BUYER_CHANGED")):
         before = set(previous.get(field) or []); after = set(current.get(field) or [])
         if after - before: changes.append({"kind": added_kind, "field": field, "added": sorted(after - before), "removed": []})
         if before - after: changes.append({"kind": removed_kind, "field": field, "added": [], "removed": sorted(before - after)})
+    if previous.get("associated_wallet_records") != current.get("associated_wallet_records") and set(previous.get("associated_wallets") or []) == set(current.get("associated_wallets") or []):
+        changes.append({"kind": "ASSOCIATED_WALLET_EVIDENCE_CHANGED"})
+    if previous.get("funding_counterparty_records") != current.get("funding_counterparty_records") and set(previous.get("funding_counterparties") or []) == set(current.get("funding_counterparties") or []):
+        changes.append({"kind": "FUNDING_COUNTERPARTY_EVIDENCE_CHANGED"})
+    if previous.get("recurring_early_buyer_records") != current.get("recurring_early_buyer_records") and set(previous.get("recurring_early_buyers") or []) == set(current.get("recurring_early_buyers") or []):
+        changes.append({"kind": "RECURRING_EARLY_BUYER_EVIDENCE_CHANGED"})
+    if previous.get("repeat_deployer_status") != current.get("repeat_deployer_status") or previous.get("repeat_deployer_prior_launch_count") != current.get("repeat_deployer_prior_launch_count"):
+        changes.append({"kind": "REPEAT_DEPLOYER_EVIDENCE_CHANGED", "before": {"status": previous.get("repeat_deployer_status"), "prior_launch_count": previous.get("repeat_deployer_prior_launch_count")}, "after": {"status": current.get("repeat_deployer_status"), "prior_launch_count": current.get("repeat_deployer_prior_launch_count")}})
     before_missing = set(previous.get("missing") or []); after_missing = set(current.get("missing") or [])
     if before_missing - after_missing: changes.append({"kind": "UNKNOWN_RESOLVED", "fields": sorted(before_missing - after_missing)})
     if after_missing - before_missing: changes.append({"kind": "UNKNOWN_INTRODUCED", "fields": sorted(after_missing - before_missing)})
