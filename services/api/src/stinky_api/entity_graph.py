@@ -154,11 +154,6 @@ async def live_readiness_cohort_endpoint(
     as_of: datetime | None = Query(None),
     include_entities: bool = Query(False),
 ) -> dict[str, Any]:
-    """Read-only live cohort validation executed inside the running Genesis API runtime.
-
-    IMPORTANT: this static route must remain declared before /{entity_id} so FastAPI
-    never tries to parse "live-readiness-cohort" as a UUID.
-    """
     from stinky_api.entity_readiness_live_cohort import live_entity_readiness_cohort_validation
 
     return await live_entity_readiness_cohort_validation(
@@ -256,19 +251,17 @@ async def investigation_calibration_evidence(mint: str, session: Annotated[Async
         developer_audit = await developer_audit_history(session, developer_entity_id, limit=20, as_of=as_of) if developer_entity_id else {"status": "NEW-UNKNOWN", "records": [], "changes": [], "latest_change": None, "missing": ["developer_entity_id"], "evidence_only": True}
     except Exception:
         developer_audit = {"status": "UNKNOWN", "records": [], "changes": [], "latest_change": None, "missing": ["developer_longitudinal_snapshots"], "evidence_only": True}
-    return {
-        "mint": mint,
-        "entity_id": developer_entity_id or None,
-        "pattern_calibration": synthesis,
-        "pattern_calibration_audit": audit,
-        "developer_history": developer,
-        "developer_audit": developer_audit,
-        "developer_correlation": correlation,
-        "interpretation": "DESCRIPTIVE_EVIDENCE_ONLY",
-        "predictive_authority": False,
-        "trade_signal": False,
-        "evidence_only": True,
-    }
+    try:
+        if developer_entity_id and as_of is None: await persist_developer_correlation_snapshot(session, correlation)
+        correlation_audit = await developer_correlation_audit_history(session, developer_entity_id, limit=20, as_of=as_of) if developer_entity_id else {"status": "NEW-UNKNOWN", "records": [], "changes": [], "latest_change": None, "missing": ["developer_entity_id"], "evidence_only": True}
+    except Exception:
+        correlation_audit = {"status": "UNKNOWN", "records": [], "changes": [], "latest_change": None, "missing": ["developer_correlation_snapshots"], "evidence_only": True}
+    return {"mint": mint, "status": synthesis.get("status", "UNKNOWN"), "calibration": synthesis, "audit": audit, "latest_change": audit.get("latest_change"),
+            "developer": developer, "developer_audit": developer_audit, "developer_latest_change": developer_audit.get("latest_change"),
+            "developer_correlation": correlation, "developer_correlation_audit": correlation_audit,
+            "developer_correlation_latest_change": correlation_audit.get("latest_change"),
+            "evidence_only": True, "ownership_inferred": False, "coordination_inferred": False, "risk_inferred": False, "quality_inferred": False,
+            "predictive_authority": False, "trade_signal": False}
 
 
 @router.get("/research/phase10-readiness")
@@ -279,7 +272,6 @@ async def phase10_research_readiness(
     as_of: datetime | None = Query(None),
     persist_current: bool = Query(True),
 ) -> dict[str, Any]:
-    """Operator-driven live Phase 10 evidence audit; never called by Command Center."""
     return await run_live_phase10_readiness(
         session,
         dataset_limit=dataset_limit,
