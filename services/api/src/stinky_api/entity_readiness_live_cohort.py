@@ -1,7 +1,7 @@
 """Read-only live cohort coverage measurement for captured entity readiness history."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +16,11 @@ AUTHORITY = {
     "interpretation": "LIVE_ENTITY_READINESS_COVERAGE_ONLY",
     "release_authority": False,
 }
+
+# PR #126 changed readiness capture to one authoritative timestamp for both
+# observed_at and ingested_at. The merge timestamp defines the earliest epoch
+# in which that capture contract exists in code. Historical rows remain intact.
+PROSPECTIVE_CAPTURE_EPOCH = datetime(2026, 9, 7, 4, 6, 38, tzinfo=timezone.utc)
 
 
 def summarize_live_cohort_replay(replay: dict[str, Any]) -> dict[str, Any]:
@@ -80,6 +85,42 @@ def summarize_live_cohort_replay(replay: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _historical_integrity_summary(
+    historical_replay: dict[str, Any],
+    prospective_replay: dict[str, Any],
+    *,
+    include_entities: bool,
+) -> dict[str, Any]:
+    historical_entities = historical_replay.get("entities") if isinstance(historical_replay.get("entities"), list) else []
+    prospective_entities = prospective_replay.get("entities") if isinstance(prospective_replay.get("entities"), list) else []
+    historical_violation_ids = {
+        str(item.get("entity_id"))
+        for item in historical_entities
+        if item.get("status") == "TEMPORAL_VIOLATION" and item.get("entity_id")
+    }
+    prospective_violation_ids = {
+        str(item.get("entity_id"))
+        for item in prospective_entities
+        if item.get("status") == "TEMPORAL_VIOLATION" and item.get("entity_id")
+    }
+    legacy_only_ids = sorted(historical_violation_ids - prospective_violation_ids)
+    result = {
+        "status": historical_replay.get("status"),
+        "valid": bool(historical_replay.get("valid")),
+        "entity_count": len(historical_entities),
+        "temporal_violation_entities": len(historical_violation_ids),
+        "prospective_temporal_violation_entities": len(prospective_violation_ids),
+        "legacy_temporal_violation_entities": len(legacy_only_ids),
+        "legacy_rows_preserved": True,
+        "legacy_rows_mutated": False,
+        "legacy_violations_excluded_from_prospective_health": True,
+        "prospective_violations_fail_live_health": True,
+    }
+    if include_entities:
+        result["legacy_temporal_violation_entity_ids"] = legacy_only_ids
+    return result
+
+
 async def live_entity_readiness_cohort_validation(
     session: AsyncSession,
     *,
@@ -88,24 +129,38 @@ async def live_entity_readiness_cohort_validation(
     as_of: datetime | str | None = None,
     include_entities: bool = False,
 ) -> dict[str, Any]:
-    """Measure the current captured cohort without writing or reconstructing evidence."""
-    replay = await historical_entity_readiness_replay(
+    """Measure post-fix prospective health while retaining whole-history integrity."""
+    historical_replay = await historical_entity_readiness_replay(
         session,
         entity_limit=entity_limit,
         snapshot_limit_per_entity=snapshot_limit_per_entity,
         as_of=as_of,
     )
-    summary = summarize_live_cohort_replay(replay)
-    summary["bounded"] = replay.get("bounded") or {
+    prospective_replay = await historical_entity_readiness_replay(
+        session,
+        entity_limit=entity_limit,
+        snapshot_limit_per_entity=snapshot_limit_per_entity,
+        as_of=as_of,
+        not_before=PROSPECTIVE_CAPTURE_EPOCH,
+    )
+    summary = summarize_live_cohort_replay(prospective_replay)
+    summary["bounded"] = prospective_replay.get("bounded") or {
         "entity_limit": max(1, min(500, int(entity_limit))),
         "snapshot_limit_per_entity": max(2, min(200, int(snapshot_limit_per_entity))),
     }
-    summary["replay_status"] = replay.get("status")
-    summary["replay_valid"] = bool(replay.get("valid"))
-    summary["historical_policy"] = replay.get("historical_policy") or {
+    summary["prospective_epoch"] = PROSPECTIVE_CAPTURE_EPOCH.isoformat()
+    summary["cohort_scope"] = "POST_TIMESTAMP_INTEGRITY_FIX_PROSPECTIVE_CAPTURE"
+    summary["replay_status"] = prospective_replay.get("status")
+    summary["replay_valid"] = bool(prospective_replay.get("valid"))
+    summary["historical_policy"] = historical_replay.get("historical_policy") or {
         "captured_snapshots_only": True,
         "derived_snapshots_are_not_backdated": True,
     }
+    summary["historical_integrity"] = _historical_integrity_summary(
+        historical_replay,
+        prospective_replay,
+        include_entities=include_entities,
+    )
     if include_entities:
-        summary["entities"] = replay.get("entities") or []
+        summary["entities"] = prospective_replay.get("entities") or []
     return summary
