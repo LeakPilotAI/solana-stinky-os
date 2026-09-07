@@ -145,6 +145,33 @@ class LaunchHistoryStore:
             ).mappings().all()
             return [dict(row) for row in rows]
 
+    async def get_entity_id_for_mint(self, mint: str) -> UUID | None:
+        """Resolve the persistent developer entity for a known launch mint."""
+        mint = str(mint or "").strip()
+        if not mint:
+            return None
+        async with self._sessions() as session:
+            row = (
+                await session.execute(
+                    text(
+                        """
+                        SELECT entity_id
+                        FROM entity_launches
+                        WHERE mint = :mint AND entity_id IS NOT NULL
+                        ORDER BY observed_at DESC, id DESC
+                        LIMIT 1
+                        """
+                    ),
+                    {"mint": mint},
+                )
+            ).first()
+            if not row or row[0] is None:
+                return None
+            try:
+                return UUID(str(row[0]))
+            except (TypeError, ValueError, AttributeError):
+                return None
+
     async def get_deployer_history_summary(
         self,
         *,
