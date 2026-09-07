@@ -146,6 +146,30 @@ async def _assemble(session: AsyncSession, entity_id: UUID, wallet_limit: int, r
     return result
 
 
+@router.get("/live-readiness-cohort")
+async def live_readiness_cohort_endpoint(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    entity_limit: int = Query(100, ge=1, le=500),
+    snapshot_limit: int = Query(100, ge=2, le=200),
+    as_of: datetime | None = Query(None),
+    include_entities: bool = Query(False),
+) -> dict[str, Any]:
+    """Read-only live cohort validation executed inside the running Genesis API runtime.
+
+    IMPORTANT: this static route must remain declared before /{entity_id} so FastAPI
+    never tries to parse "live-readiness-cohort" as a UUID.
+    """
+    from stinky_api.entity_readiness_live_cohort import live_entity_readiness_cohort_validation
+
+    return await live_entity_readiness_cohort_validation(
+        session,
+        entity_limit=entity_limit,
+        snapshot_limit_per_entity=snapshot_limit,
+        as_of=as_of,
+        include_entities=include_entities,
+    )
+
+
 @router.get("/calibration-changes")
 async def cross_investigation_calibration_changes(session: Annotated[AsyncSession, Depends(get_session)], limit: int = Query(50, ge=1, le=200), as_of: datetime | None = Query(None), include_unchanged: bool = Query(False)) -> dict[str, Any]:
     return await calibration_change_feed(session, limit=limit, as_of=as_of, include_unchanged=include_unchanged)
@@ -201,17 +225,11 @@ async def investigation_calibration_evidence(mint: str, session: Annotated[Async
     if not mint: raise HTTPException(status_code=400, detail="mint required")
     creator_wallet: str | None = None; entity_id: str | None = None
 
-    # The Entity Resolver persists the mint/entity association before it invokes
-    # this prospective capture surface. Prefer that exact factual association so
-    # developer/correlation snapshots do not depend on a second wallet identity
-    # lookup that can legitimately be unavailable for a fresh entity.
     try:
         row = (await session.execute(text("""SELECT entity_id::text FROM entity_launches WHERE mint = :mint AND entity_id IS NOT NULL ORDER BY observed_at DESC NULLS LAST, id DESC LIMIT 1"""), {"mint": mint})).first()
         if row and row[0]: entity_id = str(row[0]).strip() or None
     except Exception: entity_id = None
 
-    # Preserve the previous creator-wallet resolution path for investigations
-    # that predate entity_launch persistence or otherwise have no resolved entity.
     if entity_id is None:
         try:
             row = (await session.execute(text("""SELECT creator FROM migration_tracks WHERE mint = :mint AND creator IS NOT NULL ORDER BY migration_at DESC NULLS LAST LIMIT 1"""), {"mint": mint})).first()
@@ -238,17 +256,19 @@ async def investigation_calibration_evidence(mint: str, session: Annotated[Async
         developer_audit = await developer_audit_history(session, developer_entity_id, limit=20, as_of=as_of) if developer_entity_id else {"status": "NEW-UNKNOWN", "records": [], "changes": [], "latest_change": None, "missing": ["developer_entity_id"], "evidence_only": True}
     except Exception:
         developer_audit = {"status": "UNKNOWN", "records": [], "changes": [], "latest_change": None, "missing": ["developer_longitudinal_snapshots"], "evidence_only": True}
-    try:
-        if developer_entity_id and as_of is None: await persist_developer_correlation_snapshot(session, correlation)
-        correlation_audit = await developer_correlation_audit_history(session, developer_entity_id, limit=20, as_of=as_of) if developer_entity_id else {"status": "NEW-UNKNOWN", "records": [], "changes": [], "latest_change": None, "missing": ["developer_entity_id"], "evidence_only": True}
-    except Exception:
-        correlation_audit = {"status": "UNKNOWN", "records": [], "changes": [], "latest_change": None, "missing": ["developer_correlation_snapshots"], "evidence_only": True}
-    return {"mint": mint, "status": synthesis.get("status", "UNKNOWN"), "calibration": synthesis, "audit": audit, "latest_change": audit.get("latest_change"),
-            "developer": developer, "developer_audit": developer_audit, "developer_latest_change": developer_audit.get("latest_change"),
-            "developer_correlation": correlation, "developer_correlation_audit": correlation_audit,
-            "developer_correlation_latest_change": correlation_audit.get("latest_change"),
-            "evidence_only": True, "ownership_inferred": False, "coordination_inferred": False, "risk_inferred": False, "quality_inferred": False,
-            "predictive_authority": False, "trade_signal": False}
+    return {
+        "mint": mint,
+        "entity_id": developer_entity_id or None,
+        "pattern_calibration": synthesis,
+        "pattern_calibration_audit": audit,
+        "developer_history": developer,
+        "developer_audit": developer_audit,
+        "developer_correlation": correlation,
+        "interpretation": "DESCRIPTIVE_EVIDENCE_ONLY",
+        "predictive_authority": False,
+        "trade_signal": False,
+        "evidence_only": True,
+    }
 
 
 @router.get("/research/phase10-readiness")
