@@ -30,31 +30,44 @@ def _service(http):
 
 
 @pytest.mark.asyncio
-async def test_phase10_capture_passes_resolved_entity_and_deduplicates_success():
+async def test_phase10_capture_passes_resolved_entity_and_deduplicates_same_trigger():
     http = _HTTP()
     service = _service(http)
 
-    await service._capture_phase10_evidence("mint-1", "entity-1")
-    await service._capture_phase10_evidence("mint-1", "entity-1")
+    await service._capture_phase10_evidence("mint-1", "entity-1", trigger="migration")
+    await service._capture_phase10_evidence("mint-1", "entity-1", trigger="migration")
 
     assert len(http.calls) == 1
     url, kwargs = http.calls[0]
     assert url.endswith("/v1/entity-graph/investigation/mint-1/calibration")
     assert kwargs["params"] == {"entity_id": "entity-1"}
-    assert ("mint-1", "entity-1") in service._phase10_captured_entities
+    assert ("migration", "mint-1", "entity-1") in service._phase10_captured_entities
 
 
 @pytest.mark.asyncio
-async def test_phase10_capture_failure_remains_retryable():
+async def test_phase10_capture_allows_real_outcome_boundary_after_migration():
+    http = _HTTP()
+    service = _service(http)
+
+    await service._capture_phase10_evidence("mint-1", "entity-1", trigger="migration")
+    await service._capture_phase10_evidence("mint-1", "entity-1", trigger="outcome")
+
+    assert len(http.calls) == 2
+    assert ("migration", "mint-1", "entity-1") in service._phase10_captured_entities
+    assert ("outcome", "mint-1", "entity-1") in service._phase10_captured_entities
+
+
+@pytest.mark.asyncio
+async def test_phase10_capture_failure_remains_retryable_per_trigger():
     http = _HTTP(fail_first=True)
     service = _service(http)
 
-    await service._capture_phase10_evidence("mint-2", "entity-2")
-    assert ("mint-2", "entity-2") not in service._phase10_captured_entities
+    await service._capture_phase10_evidence("mint-2", "entity-2", trigger="outcome")
+    assert ("outcome", "mint-2", "entity-2") not in service._phase10_captured_entities
 
-    await service._capture_phase10_evidence("mint-2", "entity-2")
+    await service._capture_phase10_evidence("mint-2", "entity-2", trigger="outcome")
     assert len(http.calls) == 2
-    assert ("mint-2", "entity-2") in service._phase10_captured_entities
+    assert ("outcome", "mint-2", "entity-2") in service._phase10_captured_entities
 
 
 @pytest.mark.asyncio
