@@ -140,17 +140,29 @@ async def historical_entity_readiness_replay(
     entity_limit: int = 100,
     snapshot_limit_per_entity: int = 100,
     as_of: datetime | str | None = None,
+    not_before: datetime | str | None = None,
 ) -> dict[str, Any]:
     """Validate captured readiness sequences across a bounded historical cohort."""
     cutoff = _dt(as_of) if as_of is not None else None
+    epoch_start = _dt(not_before) if not_before is not None else None
     if as_of is not None and cutoff is None:
         return {"status": "TEMPORAL_VIOLATION", "valid": False, "blockers": ["INVALID_AS_OF"], "entities": [], **AUTHORITY}
+    if not_before is not None and epoch_start is None:
+        return {"status": "TEMPORAL_VIOLATION", "valid": False, "blockers": ["INVALID_NOT_BEFORE"], "entities": [], **AUTHORITY}
+
     entity_limit = max(1, min(500, int(entity_limit)))
     snapshot_limit_per_entity = max(2, min(200, int(snapshot_limit_per_entity)))
-    clause = "WHERE observed_at <= :as_of AND ingested_at <= :as_of" if cutoff is not None else ""
+
+    where_parts: list[str] = []
     params: dict[str, Any] = {"entity_limit": entity_limit}
     if cutoff is not None:
+        where_parts.append("observed_at <= :as_of AND ingested_at <= :as_of")
         params["as_of"] = cutoff
+    if epoch_start is not None:
+        where_parts.append("observed_at >= :not_before")
+        params["not_before"] = epoch_start
+    clause = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+
     try:
         entities = (await session.execute(text(f"""
             SELECT entity_id::text AS entity_id, MAX(observed_at) AS latest_observed_at
@@ -166,9 +178,14 @@ async def historical_entity_readiness_replay(
     results: list[dict[str, Any]] = []
     for row in entities:
         row_params: dict[str, Any] = {"entity_id": row["entity_id"], "limit": snapshot_limit_per_entity}
-        row_clause = "AND observed_at <= :as_of AND ingested_at <= :as_of" if cutoff is not None else ""
+        row_parts: list[str] = []
         if cutoff is not None:
+            row_parts.append("observed_at <= :as_of AND ingested_at <= :as_of")
             row_params["as_of"] = cutoff
+        if epoch_start is not None:
+            row_parts.append("observed_at >= :not_before")
+            row_params["not_before"] = epoch_start
+        row_clause = f"AND {' AND '.join(row_parts)}" if row_parts else ""
         snapshots = (await session.execute(text(f"""
             SELECT readiness, observed_at, ingested_at
             FROM entity_readiness_snapshots
@@ -199,4 +216,7 @@ async def historical_entity_readiness_replay(
     if cutoff is not None:
         result["as_of"] = cutoff.isoformat()
         result["temporal_cutoff_enforced"] = True
+    if epoch_start is not None:
+        result["not_before"] = epoch_start.isoformat()
+        result["epoch_bounded"] = True
     return result
