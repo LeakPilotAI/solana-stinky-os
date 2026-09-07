@@ -167,7 +167,7 @@ async def test_calibration_endpoint_prefers_persisted_migration_entity(monkeypat
     monkeypatch.setattr("stinky_api.entity_graph.developer_correlation_audit_history", fake_history)
 
     session = _Session(entity_id=entity_id, creator="should-not-be-used")
-    result = await investigation_calibration_evidence("mint-new", session)
+    result = await investigation_calibration_evidence("mint-new", session, as_of=None)
 
     assert captured["entity_id"] == entity_id
     assert captured["creator_wallet"] is None
