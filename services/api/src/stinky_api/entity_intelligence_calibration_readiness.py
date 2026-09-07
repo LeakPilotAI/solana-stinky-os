@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 MIN_OUTCOME_LAUNCHES = 5
@@ -127,6 +128,40 @@ def assess_entity_intelligence_calibration_readiness(
     return result
 
 
+async def _latest_component_evidence_hash(
+    session: AsyncSession,
+    *,
+    table: str,
+    entity_id: str,
+    as_of: datetime | None,
+) -> str | None:
+    """Return the latest immutable component snapshot hash visible at the cutoff."""
+    if table not in {"developer_longitudinal_snapshots", "developer_correlation_snapshots"}:
+        return None
+    clause = "AND observed_at <= :as_of AND ingested_at <= :as_of" if as_of is not None else ""
+    params: dict[str, Any] = {"entity_id": entity_id}
+    if as_of is not None:
+        params["as_of"] = as_of
+    try:
+        row = (
+            await session.execute(
+                text(
+                    f"""
+                    SELECT evidence_hash
+                    FROM {table}
+                    WHERE entity_id = CAST(:entity_id AS UUID) {clause}
+                    ORDER BY observed_at DESC, id DESC
+                    LIMIT 1
+                    """
+                ),
+                params,
+            )
+        ).first()
+    except Exception:
+        return None
+    return str(row[0]) if row and row[0] else None
+
+
 async def entity_intelligence_calibration_readiness(
     session: AsyncSession,
     entity_id: str,
@@ -149,5 +184,24 @@ async def entity_intelligence_calibration_readiness(
     result = assess_entity_intelligence_calibration_readiness(
         developer, relationship, outcome_calibration, as_of=as_of
     )
+
+    # Preserve the immutable evidence versions that produced the component states.
+    # A real launch/outcome evidence change must remain observable even when the
+    # readiness blockers themselves have not changed yet. This creates genuine
+    # longitudinal depth without timer-generated or fabricated checkpoints.
+    developer_hash = await _latest_component_evidence_hash(
+        session,
+        table="developer_longitudinal_snapshots",
+        entity_id=entity_id,
+        as_of=as_of,
+    )
+    relationship_hash = await _latest_component_evidence_hash(
+        session,
+        table="developer_correlation_snapshots",
+        entity_id=entity_id,
+        as_of=as_of,
+    )
+    result["components"]["developer_history"]["evidence_hash"] = developer_hash
+    result["components"]["relationship_history"]["evidence_hash"] = relationship_hash
     result["entity_id"] = entity_id
     return result
