@@ -11,6 +11,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 MIN_DISTINCT_PRIOR_LAUNCHES = 5
 MIN_KNOWN_OUTCOMES = 3
 MIN_KNOWN_OUTCOME_RATIO = 0.60
@@ -201,4 +203,42 @@ def assess_developer_history_calibration_readiness(
     if cutoff is not None:
         result["as_of"] = cutoff.isoformat()
         result["temporal_cutoff_enforced"] = True
+    return result
+
+
+async def developer_history_calibration_readiness(
+    session: AsyncSession,
+    entity_id: str,
+    *,
+    limit: int = 100,
+    as_of: datetime | str | None = None,
+) -> dict[str, Any]:
+    """Read immutable audit history from Postgres and assess descriptive readiness."""
+    cutoff = _parse_time(as_of) if as_of is not None else None
+    if as_of is not None and cutoff is None:
+        return assess_developer_history_calibration_readiness([], as_of=as_of)
+
+    from stinky_api.developer_longitudinal_audit import developer_audit_history
+
+    history = await developer_audit_history(
+        session,
+        entity_id,
+        limit=max(1, min(100, int(limit))),
+        as_of=cutoff,
+    )
+    result = assess_developer_history_calibration_readiness(
+        history.get("records") if isinstance(history.get("records"), list) else [],
+        as_of=cutoff,
+    )
+    result["entity_id"] = entity_id
+    result["source"] = "developer_longitudinal_snapshots"
+    result["source_status"] = history.get("status")
+    if history.get("status") == "UNKNOWN" and not history.get("records"):
+        result["status"] = "UNKNOWN"
+        result["ready"] = False
+        blockers = list(result.get("blockers") or [])
+        if "AUDIT_HISTORY_UNAVAILABLE" not in blockers:
+            blockers.insert(0, "AUDIT_HISTORY_UNAVAILABLE")
+        result["blockers"] = blockers
+        result["missing"] = list(history.get("missing") or ["developer_longitudinal_snapshots"])
     return result
