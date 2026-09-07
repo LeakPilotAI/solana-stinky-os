@@ -6,11 +6,21 @@ from stinky_api.developer_longitudinal_audit import persist_developer_snapshot
 
 
 class Session:
-    def __init__(self): self.calls = []
+    def __init__(self):
+        self.calls = []
+        self.commit_calls = 0
+        self.rollback_calls = 0
+
     async def execute(self, statement, params=None):
         self.calls.append((str(statement), params or {}))
         class Result: pass
         return Result()
+
+    async def commit(self):
+        self.commit_calls += 1
+
+    async def rollback(self):
+        self.rollback_calls += 1
 
 
 @pytest.mark.asyncio
@@ -30,3 +40,5 @@ async def test_persisted_snapshot_retains_nested_evidence_for_future_diffs():
     assert stored["launch_history"]["historical_launch_count"] == 2
     assert stored["associated_wallets"]["records"][0]["wallet"] == "W1"
     assert stored["recurring_early_buyers"]["records"][0]["wallet"] == "B1"
+    assert session.commit_calls == 1
+    assert session.rollback_calls == 0
