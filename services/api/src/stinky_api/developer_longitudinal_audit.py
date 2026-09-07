@@ -93,18 +93,40 @@ async def ensure_developer_audit_table(session: AsyncSession) -> None:
     """))
 
 
-async def persist_developer_snapshot(session: AsyncSession, evidence: dict[str, Any], *, observed_at: datetime | None = None) -> str | None:
-    entity_id = str(evidence.get("entity_id") or "").strip()
-    if not entity_id:
-        return None
+async def _insert_developer_snapshot(session: AsyncSession, *, entity_id: str, digest: str, evidence_json: str, observed_at: datetime) -> None:
     await ensure_developer_audit_table(session)
-    digest = developer_evidence_hash(evidence)
-    ts = observed_at or datetime.now(timezone.utc)
     await session.execute(text("""
         INSERT INTO developer_longitudinal_snapshots (entity_id, evidence_hash, evidence, observed_at)
         VALUES (CAST(:entity_id AS UUID), :evidence_hash, CAST(:evidence AS JSONB), :observed_at)
         ON CONFLICT (entity_id, evidence_hash) DO NOTHING
-    """), {"entity_id": entity_id, "evidence_hash": digest, "evidence": json.dumps(evidence, sort_keys=True, default=str), "observed_at": ts})
+    """), {"entity_id": entity_id, "evidence_hash": digest, "evidence": evidence_json, "observed_at": observed_at})
+
+
+async def persist_developer_snapshot(session: AsyncSession, evidence: dict[str, Any], *, observed_at: datetime | None = None) -> str | None:
+    """Persist one logical snapshot, recovering once from a poisoned read transaction.
+
+    Investigation assembly intentionally treats many optional evidence sources as
+    UNKNOWN when their reads fail. PostgreSQL still marks that request transaction
+    aborted, so a later evidence INSERT can otherwise fail even though the API
+    returns HTTP 200. Roll back only after the first write attempt proves the
+    transaction unusable, then retry the same immutable evidence once. A second
+    failure is rolled back and re-raised so callers can report capture failure.
+    """
+    entity_id = str(evidence.get("entity_id") or "").strip()
+    if not entity_id:
+        return None
+    digest = developer_evidence_hash(evidence)
+    ts = observed_at or datetime.now(timezone.utc)
+    evidence_json = json.dumps(evidence, sort_keys=True, default=str)
+    try:
+        await _insert_developer_snapshot(session, entity_id=entity_id, digest=digest, evidence_json=evidence_json, observed_at=ts)
+    except Exception:
+        await session.rollback()
+        try:
+            await _insert_developer_snapshot(session, entity_id=entity_id, digest=digest, evidence_json=evidence_json, observed_at=ts)
+        except Exception:
+            await session.rollback()
+            raise
     return digest
 
 
