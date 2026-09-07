@@ -200,15 +200,24 @@ async def investigation_calibration_evidence(mint: str, session: Annotated[Async
     mint = str(mint or "").strip()
     if not mint: raise HTTPException(status_code=400, detail="mint required")
     creator_wallet: str | None = None; entity_id: str | None = None
+
+    # The Entity Resolver persists the mint/entity association before it invokes
+    # this prospective capture surface. Prefer that exact factual association so
+    # developer/correlation snapshots do not depend on a second wallet identity
+    # lookup that can legitimately be unavailable for a fresh entity.
     try:
-        row = (await session.execute(text("""SELECT creator FROM migration_tracks WHERE mint = :mint AND creator IS NOT NULL ORDER BY migration_at DESC NULLS LAST LIMIT 1"""), {"mint": mint})).first()
-        if row and row[0]: creator_wallet = str(row[0]).strip() or None
-    except Exception: creator_wallet = None
-    if creator_wallet is None:
+        row = (await session.execute(text("""SELECT entity_id::text FROM entity_launches WHERE mint = :mint AND entity_id IS NOT NULL ORDER BY observed_at DESC NULLS LAST, id DESC LIMIT 1"""), {"mint": mint})).first()
+        if row and row[0]: entity_id = str(row[0]).strip() or None
+    except Exception: entity_id = None
+
+    # Preserve the previous creator-wallet resolution path for investigations
+    # that predate entity_launch persistence or otherwise have no resolved entity.
+    if entity_id is None:
         try:
-            row = (await session.execute(text("""SELECT entity_id::text FROM entity_launches WHERE mint = :mint AND entity_id IS NOT NULL ORDER BY observed_at DESC NULLS LAST, id DESC LIMIT 1"""), {"mint": mint})).first()
-            if row and row[0]: entity_id = str(row[0]).strip() or None
-        except Exception: entity_id = None
+            row = (await session.execute(text("""SELECT creator FROM migration_tracks WHERE mint = :mint AND creator IS NOT NULL ORDER BY migration_at DESC NULLS LAST LIMIT 1"""), {"mint": mint})).first()
+            if row and row[0]: creator_wallet = str(row[0]).strip() or None
+        except Exception: creator_wallet = None
+
     network = await entity_network_for_investigation(session, entity_id=entity_id, creator_wallet=creator_wallet, mint=mint, wallet_limit=100, relationship_limit=500, as_of=as_of)
     synthesis = network.get("market_pattern_calibration_synthesis")
     if not isinstance(synthesis, dict):

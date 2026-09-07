@@ -34,6 +34,7 @@ class EntityService:
         self._http = httpx.AsyncClient(timeout=10.0)
         self._running = False
         self._funding_scanned_wallets: set[str] = set()
+        self._phase10_captured_entities: set[tuple[str, str]] = set()
 
     async def start(self) -> None:
         await self._store.ensure_schema()
@@ -203,30 +204,46 @@ class EntityService:
         }
         return source, destination, observed_at, amount_lamports, signature, evidence
 
-    async def _capture_phase10_evidence(self, mint: str) -> None:
+    async def _capture_phase10_evidence(self, mint: str, entity_id: str) -> None:
         """Persist current descriptive developer/correlation snapshots after migration.
 
-        This is prospective capture only. Failure is visible later as missing evidence
-        and must not prevent the canonical migration event from being acknowledged.
+        The resolver already has the exact entity identity for this migration. Pass
+        that identity to the API so prospective capture does not depend on a second
+        wallet-to-entity lookup. Successful capture is deduplicated per mint/entity
+        for this process; failed capture remains retryable. Database evidence hashes
+        provide durable logical idempotency across process restarts.
         """
         mint = str(mint or "").strip()
-        if not mint:
+        entity_id = str(entity_id or "").strip()
+        if not mint or not entity_id:
+            return
+        capture_key = (mint, entity_id)
+        if capture_key in self._phase10_captured_entities:
+            logger.debug(
+                "entity.phase10_snapshot_capture_duplicate",
+                mint=mint,
+                entity_id=entity_id,
+            )
             return
         base = settings.api_base_url.rstrip("/")
         try:
             response = await self._http.get(
-                f"{base}/v1/entity-graph/investigation/{mint}/calibration"
+                f"{base}/v1/entity-graph/investigation/{mint}/calibration",
+                params={"entity_id": entity_id},
             )
             response.raise_for_status()
+            self._phase10_captured_entities.add(capture_key)
             logger.info(
                 "entity.phase10_snapshot_capture_completed",
                 mint=mint,
+                entity_id=entity_id,
                 status_code=response.status_code,
             )
         except Exception as exc:
             logger.warning(
                 "entity.phase10_snapshot_capture_failed",
                 mint=mint,
+                entity_id=entity_id,
                 error=str(exc)[:200],
             )
 
@@ -351,7 +368,7 @@ class EntityService:
                         mint=mint,
                     )
                 if mint:
-                    await self._capture_phase10_evidence(str(mint))
+                    await self._capture_phase10_evidence(str(mint), str(entity_id))
 
         elif et == "post_migration.buy":
             wallet = payload.get("wallet")
