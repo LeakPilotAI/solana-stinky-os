@@ -34,7 +34,7 @@ class EntityService:
         self._http = httpx.AsyncClient(timeout=10.0)
         self._running = False
         self._funding_scanned_wallets: set[str] = set()
-        self._phase10_captured_entities: set[tuple[str, str]] = set()
+        self._phase10_captured_entities: set[tuple[str, str, str]] = set()
 
     async def start(self) -> None:
         await self._store.ensure_schema()
@@ -204,23 +204,30 @@ class EntityService:
         }
         return source, destination, observed_at, amount_lamports, signature, evidence
 
-    async def _capture_phase10_evidence(self, mint: str, entity_id: str) -> None:
-        """Persist current descriptive developer/correlation snapshots after migration.
+    async def _capture_phase10_evidence(
+        self,
+        mint: str,
+        entity_id: str,
+        *,
+        trigger: str = "migration",
+    ) -> None:
+        """Persist descriptive readiness evidence after a real evidence boundary.
 
-        The resolver already has the exact entity identity for this migration. Pass
-        that identity to the API so prospective capture does not depend on a second
-        wallet-to-entity lookup. Successful capture is deduplicated per mint/entity
-        for this process; failed capture remains retryable. Database evidence hashes
-        provide durable logical idempotency across process restarts.
+        Migration and measured-outcome changes are distinct prospective capture
+        triggers. In-process dedup prevents duplicate handling of the same trigger,
+        while database evidence hashes remain the durable semantic dedup authority.
+        Failed captures stay retryable. No timer or synthetic checkpoint is used.
         """
         mint = str(mint or "").strip()
         entity_id = str(entity_id or "").strip()
+        trigger = str(trigger or "").strip().lower() or "migration"
         if not mint or not entity_id:
             return
-        capture_key = (mint, entity_id)
+        capture_key = (trigger, mint, entity_id)
         if capture_key in self._phase10_captured_entities:
             logger.debug(
                 "entity.phase10_snapshot_capture_duplicate",
+                trigger=trigger,
                 mint=mint,
                 entity_id=entity_id,
             )
@@ -235,6 +242,7 @@ class EntityService:
             self._phase10_captured_entities.add(capture_key)
             logger.info(
                 "entity.phase10_snapshot_capture_completed",
+                trigger=trigger,
                 mint=mint,
                 entity_id=entity_id,
                 status_code=response.status_code,
@@ -242,6 +250,7 @@ class EntityService:
         except Exception as exc:
             logger.warning(
                 "entity.phase10_snapshot_capture_failed",
+                trigger=trigger,
                 mint=mint,
                 entity_id=entity_id,
                 error=str(exc)[:200],
@@ -368,7 +377,9 @@ class EntityService:
                         mint=mint,
                     )
                 if mint:
-                    await self._capture_phase10_evidence(str(mint), str(entity_id))
+                    await self._capture_phase10_evidence(
+                        str(mint), str(entity_id), trigger="migration"
+                    )
 
         elif et == "post_migration.buy":
             wallet = payload.get("wallet")
@@ -392,6 +403,21 @@ class EntityService:
                         status=status,
                         cadence_bucket=(fingerprint or {}).get("cadence_bucket"),
                     )
+                    try:
+                        entity_id = await self._launch_history.get_entity_id_for_mint(mint)
+                    except Exception as exc:
+                        entity_id = None
+                        logger.warning(
+                            "entity.outcome_readiness_identity_lookup_failed",
+                            mint=mint,
+                            error=str(exc)[:200],
+                        )
+                    if entity_id is not None:
+                        await self._capture_phase10_evidence(
+                            mint,
+                            str(entity_id),
+                            trigger="outcome",
+                        )
 
         elif et == "token.transfer":
             funding = self._funding_payload(event)
