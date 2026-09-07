@@ -50,6 +50,7 @@ def _component(value: Any) -> dict[str, Any]:
         "launch_count_observed": row.get("launch_count_observed"),
         "outcomes_known": row.get("outcomes_known"),
         "outcome_coverage": row.get("outcome_coverage"),
+        "evidence_hash": row.get("evidence_hash"),
     }
 
 
