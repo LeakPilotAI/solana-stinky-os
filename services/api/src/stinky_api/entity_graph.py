@@ -146,6 +146,25 @@ async def _assemble(session: AsyncSession, entity_id: UUID, wallet_limit: int, r
     return result
 
 
+@router.get("/live-readiness-cohort")
+async def live_readiness_cohort_endpoint(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    entity_limit: int = Query(100, ge=1, le=500),
+    snapshot_limit: int = Query(100, ge=2, le=200),
+    as_of: datetime | None = Query(None),
+    include_entities: bool = Query(False),
+) -> dict[str, Any]:
+    from stinky_api.entity_readiness_live_cohort import live_entity_readiness_cohort_validation
+
+    return await live_entity_readiness_cohort_validation(
+        session,
+        entity_limit=entity_limit,
+        snapshot_limit_per_entity=snapshot_limit,
+        as_of=as_of,
+        include_entities=include_entities,
+    )
+
+
 @router.get("/calibration-changes")
 async def cross_investigation_calibration_changes(session: Annotated[AsyncSession, Depends(get_session)], limit: int = Query(50, ge=1, le=200), as_of: datetime | None = Query(None), include_unchanged: bool = Query(False)) -> dict[str, Any]:
     return await calibration_change_feed(session, limit=limit, as_of=as_of, include_unchanged=include_unchanged)
@@ -201,17 +220,11 @@ async def investigation_calibration_evidence(mint: str, session: Annotated[Async
     if not mint: raise HTTPException(status_code=400, detail="mint required")
     creator_wallet: str | None = None; entity_id: str | None = None
 
-    # The Entity Resolver persists the mint/entity association before it invokes
-    # this prospective capture surface. Prefer that exact factual association so
-    # developer/correlation snapshots do not depend on a second wallet identity
-    # lookup that can legitimately be unavailable for a fresh entity.
     try:
         row = (await session.execute(text("""SELECT entity_id::text FROM entity_launches WHERE mint = :mint AND entity_id IS NOT NULL ORDER BY observed_at DESC NULLS LAST, id DESC LIMIT 1"""), {"mint": mint})).first()
         if row and row[0]: entity_id = str(row[0]).strip() or None
     except Exception: entity_id = None
 
-    # Preserve the previous creator-wallet resolution path for investigations
-    # that predate entity_launch persistence or otherwise have no resolved entity.
     if entity_id is None:
         try:
             row = (await session.execute(text("""SELECT creator FROM migration_tracks WHERE mint = :mint AND creator IS NOT NULL ORDER BY migration_at DESC NULLS LAST LIMIT 1"""), {"mint": mint})).first()
@@ -259,7 +272,6 @@ async def phase10_research_readiness(
     as_of: datetime | None = Query(None),
     persist_current: bool = Query(True),
 ) -> dict[str, Any]:
-    """Operator-driven live Phase 10 evidence audit; never called by Command Center."""
     return await run_live_phase10_readiness(
         session,
         dataset_limit=dataset_limit,
