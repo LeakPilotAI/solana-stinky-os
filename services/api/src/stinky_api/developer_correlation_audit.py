@@ -71,21 +71,27 @@ async def ensure_developer_correlation_audit_table(session: AsyncSession) -> Non
     await session.execute(text("""CREATE INDEX IF NOT EXISTS idx_developer_correlation_snapshots_entity_time ON developer_correlation_snapshots(entity_id, observed_at DESC, id DESC)"""))
 
 
-async def _insert_developer_correlation_snapshot(session: AsyncSession, *, entity_id: str, digest: str, evidence_json: str, observed_at: datetime) -> None:
+async def _insert_developer_correlation_snapshot(session: AsyncSession, *, entity_id: str, digest: str, evidence_json: str, observed_at: datetime, ingested_at: datetime) -> None:
     await ensure_developer_correlation_audit_table(session)
-    await session.execute(text("""INSERT INTO developer_correlation_snapshots (entity_id, evidence_hash, evidence, observed_at) VALUES (CAST(:entity_id AS UUID), :evidence_hash, CAST(:evidence AS JSONB), :observed_at) ON CONFLICT (entity_id, evidence_hash) DO NOTHING"""), {"entity_id": entity_id, "evidence_hash": digest, "evidence": evidence_json, "observed_at": observed_at})
+    await session.execute(text("""INSERT INTO developer_correlation_snapshots (entity_id, evidence_hash, evidence, observed_at, ingested_at) VALUES (CAST(:entity_id AS UUID), :evidence_hash, CAST(:evidence AS JSONB), :observed_at, :ingested_at) ON CONFLICT (entity_id, evidence_hash) DO NOTHING"""), {"entity_id": entity_id, "evidence_hash": digest, "evidence": evidence_json, "observed_at": observed_at, "ingested_at": ingested_at})
 
 
 async def persist_developer_correlation_snapshot(session: AsyncSession, evidence: dict[str, Any], *, observed_at: datetime | None = None) -> str | None:
     """Persist and durably commit one immutable correlation snapshot."""
     entity_id = str(evidence.get("entity_id") or "").strip()
     if not entity_id: return None
-    digest = developer_correlation_hash(evidence); ts = observed_at or datetime.now(timezone.utc); evidence_json = json.dumps(evidence, sort_keys=True, default=str)
+    digest = developer_correlation_hash(evidence)
+    ts = observed_at or datetime.now(timezone.utc)
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    else:
+        ts = ts.astimezone(timezone.utc)
+    evidence_json = json.dumps(evidence, sort_keys=True, default=str)
     try:
-        await _insert_developer_correlation_snapshot(session, entity_id=entity_id, digest=digest, evidence_json=evidence_json, observed_at=ts)
+        await _insert_developer_correlation_snapshot(session, entity_id=entity_id, digest=digest, evidence_json=evidence_json, observed_at=ts, ingested_at=ts)
     except Exception:
         await session.rollback()
-        try: await _insert_developer_correlation_snapshot(session, entity_id=entity_id, digest=digest, evidence_json=evidence_json, observed_at=ts)
+        try: await _insert_developer_correlation_snapshot(session, entity_id=entity_id, digest=digest, evidence_json=evidence_json, observed_at=ts, ingested_at=ts)
         except Exception:
             await session.rollback(); raise
     try: await session.commit()
