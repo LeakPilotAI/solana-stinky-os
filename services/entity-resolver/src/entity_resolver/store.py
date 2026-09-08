@@ -141,19 +141,54 @@ class EntityStore:
             ).first()
             assert row is not None
             entity_id = row[0]
-            await session.execute(
-                text(
-                    """
-                    INSERT INTO entity_wallets (
-                        entity_id, wallet, role, link_reason, confidence
-                    ) VALUES (
-                        :eid, :wallet, 'primary', 'entity_created', :conf
+            wallet_row = (
+                await session.execute(
+                    text(
+                        """
+                        INSERT INTO entity_wallets (
+                            entity_id, wallet, role, link_reason, confidence
+                        ) VALUES (
+                            :eid, :wallet, 'primary', 'entity_created', :conf
+                        )
+                        ON CONFLICT (wallet) DO NOTHING
+                        RETURNING entity_id
+                        """
+                    ),
+                    {"eid": entity_id, "wallet": primary_wallet, "conf": confidence},
+                )
+            ).first()
+            if wallet_row is None:
+                existing = (
+                    await session.execute(
+                        text("SELECT entity_id FROM entity_wallets WHERE wallet = :wallet"),
+                        {"wallet": primary_wallet},
                     )
-                    ON CONFLICT (wallet) DO NOTHING
-                    """
-                ),
-                {"eid": entity_id, "wallet": primary_wallet, "conf": confidence},
-            )
+                ).first()
+                if not existing or existing[0] is None:
+                    await session.rollback()
+                    raise RuntimeError("wallet entity conflict could not be resolved")
+                canonical_entity_id = existing[0]
+                await session.execute(
+                    text(
+                        """
+                        DELETE FROM entities
+                        WHERE entity_id = :eid
+                          AND NOT EXISTS (
+                              SELECT 1 FROM entity_wallets WHERE entity_id = :eid
+                          )
+                        """
+                    ),
+                    {"eid": entity_id},
+                )
+                await session.commit()
+                logger.info(
+                    "entity_store.create_race_resolved",
+                    wallet=primary_wallet,
+                    canonical_entity_id=str(canonical_entity_id),
+                    discarded_entity_id=str(entity_id),
+                )
+                return canonical_entity_id
+
             await session.execute(
                 text(
                     """
@@ -402,7 +437,6 @@ class EntityStore:
             if not sa or not ab:
                 return False
 
-            # Reassign wallets (UNIQUE wallet) — clear absorbed first via update
             await session.execute(
                 text(
                     """
@@ -425,7 +459,6 @@ class EntityStore:
                 },
             )
 
-            # Aggregate counts onto survivor
             await session.execute(
                 text(
                     """
@@ -478,7 +511,6 @@ class EntityStore:
                 },
             )
 
-            # Soft-retire absorbed entity (keep row for audit; zero wallets)
             await session.execute(
                 text(
                     """
