@@ -1,9 +1,13 @@
 """Recover measured post-migration completion boundaries from durable storage.
 
 The post-migration collector commits ``migration_tracks.status='completed'`` before
-publishing the Redis completion event.  Redis/API delivery can fail independently,
+publishing the Redis completion event. Redis/API delivery can fail independently,
 so entity readiness must be able to recover from that durable fact without
 fabricating an outcome or reconstructing a historical readiness snapshot.
+
+When the durable track contains a complete measured market-snapshot path, the same
+reconciliation seam also applies the canonical stinky-core RUNNER/HELD/FADE outcome
+contract. Insufficient market evidence remains a generic ``completed`` boundary.
 """
 from __future__ import annotations
 
@@ -18,12 +22,16 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from entity_resolver.config import settings
 from entity_resolver.launch_history import LaunchHistoryStore
+from entity_resolver.measured_outcome_classification import (
+    CLASSIFIED_OUTCOMES,
+    classify_completed_market_path,
+)
 
 logger = structlog.get_logger(__name__)
 
 
 class DurableOutcomeReconciler:
-    """Reconcile durable completed tracks into prospective readiness capture."""
+    """Reconcile durable completed tracks into measured outcomes and readiness capture."""
 
     def __init__(
         self,
@@ -65,6 +73,7 @@ class DurableOutcomeReconciler:
                         SELECT
                             mt.track_id,
                             mt.mint,
+                            mt.migration_at,
                             mt.completed_at,
                             mt.buyers_captured,
                             mt.trades_observed,
@@ -85,6 +94,53 @@ class DurableOutcomeReconciler:
             ).mappings().all()
         return [dict(row) for row in rows]
 
+    async def _market_snapshots(self, row: dict[str, Any]) -> list[dict[str, Any]]:
+        """Read only snapshots captured inside the durable track boundary."""
+        mint = str(row.get("mint") or "").strip()
+        migration_at = row.get("migration_at")
+        completed_at = row.get("completed_at")
+        if not mint or not isinstance(migration_at, datetime) or not isinstance(completed_at, datetime):
+            return []
+        async with self._sessions() as session:
+            rows = (
+                await session.execute(
+                    text(
+                        """
+                        SELECT captured_at, price_usd, liquidity_usd, volume_m5_usd
+                        FROM market_snapshots
+                        WHERE mint = :mint
+                          AND captured_at >= :migration_at
+                          AND captured_at <= :completed_at
+                        ORDER BY captured_at ASC, snapshot_id ASC
+                        LIMIT 2000
+                        """
+                    ),
+                    {
+                        "mint": mint,
+                        "migration_at": migration_at,
+                        "completed_at": completed_at,
+                    },
+                )
+            ).mappings().all()
+        return [dict(item) for item in rows]
+
+    async def _classified_outcome(self, row: dict[str, Any]) -> dict[str, Any]:
+        """Return canonical measured classification or UNKNOWN on unavailable evidence."""
+        try:
+            snapshots = await self._market_snapshots(row)
+            return classify_completed_market_path(row, snapshots)
+        except Exception as exc:
+            logger.warning(
+                "entity.measured_outcome_classification_failed",
+                mint=str(row.get("mint") or ""),
+                error=str(exc)[:200],
+            )
+            return {
+                "label": "UNKNOWN",
+                "reason": "classification_evidence_unavailable",
+                "evidence_only": True,
+            }
+
     @staticmethod
     def _completion_metadata(row: dict[str, Any]) -> dict[str, object]:
         completed_at = row.get("completed_at")
@@ -101,6 +157,18 @@ class DurableOutcomeReconciler:
             "buyers_captured": int(row.get("buyers_captured") or 0),
             "trades_observed": int(row.get("trades_observed") or 0),
             "snapshots_taken": int(row.get("snapshots_taken") or 0),
+        }
+
+    @classmethod
+    def _classified_metadata(
+        cls,
+        row: dict[str, Any],
+        classification: dict[str, Any],
+    ) -> dict[str, object]:
+        return {
+            **cls._completion_metadata(row),
+            "evidence_basis": "durable_completed_market_path_classification",
+            "classification": classification,
         }
 
     async def _capture(self, mint: str, entity_id: str) -> bool:
@@ -139,8 +207,7 @@ class DurableOutcomeReconciler:
 
         existing_status = row.get("outcome_status")
         if existing_status not in (None, "completed"):
-            # A richer measured outcome already exists. Never downgrade it merely
-            # because the tracking session itself reached its completion boundary.
+            # A richer measured outcome already exists. Never downgrade or reclassify it.
             return False
 
         completed_at = row.get("completed_at")
@@ -151,19 +218,41 @@ class DurableOutcomeReconciler:
         else:
             return False
 
-        if existing_status is None:
+        classification = await self._classified_outcome(row)
+        measured_label = str(classification.get("label") or "UNKNOWN").upper()
+        if measured_label in CLASSIFIED_OUTCOMES:
+            changed = await self._launch_history.record_outcome(
+                mint=mint,
+                status=measured_label,
+                metadata=self._classified_metadata(row, classification),
+                observed_at=observed_at,
+            )
+            if changed:
+                logger.info(
+                    "entity.measured_outcome_recorded",
+                    mint=mint,
+                    entity_id=entity_id,
+                    outcome=measured_label,
+                    reason=classification.get("reason"),
+                    evidence_basis="completed_market_snapshot_path",
+                )
+        elif existing_status is None:
+            # Completion is still real evidence even when the measured path is not
+            # sufficient for RUNNER/HELD/FADE. Preserve UNKNOWN performance semantics.
             await self._launch_history.record_outcome(
                 mint=mint,
                 status="completed",
-                metadata=self._completion_metadata(row),
+                metadata={
+                    **self._completion_metadata(row),
+                    "classification": classification,
+                    "performance_outcome": "UNKNOWN",
+                },
                 observed_at=observed_at,
             )
 
-        # Capture even when the outcome was already recorded.  This is intentional:
-        # the Redis handler records the outcome before calling the API, so a transient
-        # API failure can otherwise leave the real outcome stranded forever.  The
-        # in-process set prevents repeated calls after success, and the API/database
-        # semantic hash remains the durable dedup authority across restarts.
+        # Capture after any classification promotion so readiness sees the richer
+        # measured outcome in the same prospective evidence boundary. Semantic hash
+        # dedup remains the durable authority; no historical snapshot is backdated.
         return await self._capture(mint, entity_id)
 
     async def reconcile_once(self, *, limit: int = 500) -> dict[str, int]:
@@ -199,7 +288,8 @@ class DurableOutcomeReconciler:
         self._running = True
         try:
             # Startup recovery closes the gap for completions whose stream event was
-            # lost before this resolver process began.
+            # lost before this resolver process began, and can promote previously
+            # generic completion boundaries when their measured path is sufficient.
             await self.reconcile_once()
             interval = max(10.0, float(settings.batch_interval_sec))
             while self._running:
