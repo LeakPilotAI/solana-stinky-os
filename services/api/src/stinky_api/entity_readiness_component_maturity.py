@@ -8,6 +8,8 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from stinky_api.entity_readiness_historical_depth import entity_readiness_historical_depth
+
 AUTHORITY = {
     "interpretation": "READINESS_COMPONENT_MATURITY_DIAGNOSTIC_ONLY",
     "release_authority": False,
@@ -209,11 +211,14 @@ async def readiness_component_maturity(
     not_before: datetime,
     as_of: datetime | None = None,
 ) -> dict[str, Any]:
-    """Read latest captured readiness plus current persisted launch-outcome evidence."""
+    """Read latest captured readiness plus current persisted evidence diagnostics."""
     ids = [str(value) for value in entity_ids if str(value).strip()][:500]
     if not ids:
         result = summarize_readiness_component_maturity([])
         result["persisted_outcomes"] = summarize_persisted_outcomes([])
+        result["historical_depth"] = await entity_readiness_historical_depth(
+            session, entity_ids=[], not_before=not_before, as_of=as_of
+        )
         return result
     clauses = ["entity_id = ANY(CAST(:entity_ids AS uuid[]))", "observed_at >= :not_before"]
     params: dict[str, Any] = {"entity_ids": ids, "not_before": not_before}
@@ -243,11 +248,17 @@ async def readiness_component_maturity(
             "persisted_outcomes": await _persisted_outcome_diagnostic(
                 session, entity_ids=ids, as_of=as_of
             ),
+            "historical_depth": await entity_readiness_historical_depth(
+                session, entity_ids=ids, not_before=not_before, as_of=as_of
+            ),
         }
     result = summarize_readiness_component_maturity(
         [dict(row.get("readiness") or {}) for row in rows]
     )
     result["persisted_outcomes"] = await _persisted_outcome_diagnostic(
         session, entity_ids=ids, as_of=as_of
+    )
+    result["historical_depth"] = await entity_readiness_historical_depth(
+        session, entity_ids=ids, not_before=not_before, as_of=as_of
     )
     return result
