@@ -20,10 +20,80 @@ AUTHORITY = {
 }
 
 _COMPONENTS = ("developer_history", "relationship_history", "outcome_history")
+_CLASSIFIED_OUTCOMES = ("RUNNER", "HELD", "FADE")
+_PERSISTED_LAUNCH_LIMIT = 5000
 
 
 def _counts(counter: Counter[str]) -> dict[str, int]:
     return {key: counter[key] for key in sorted(counter)}
+
+
+def summarize_persisted_outcomes(rows: list[dict[str, Any]], *, limit_hit: bool = False) -> dict[str, Any]:
+    """Summarize real persisted launch outcomes without granting calibration authority."""
+    status_counts: Counter[str] = Counter()
+    evidence_basis_counts: Counter[str] = Counter()
+    classification_reason_counts: Counter[str] = Counter()
+    classified_entities: set[str] = set()
+    entities_with_status: dict[str, set[str]] = {}
+    canonical_classified_launches = 0
+    unknown_performance_launches = 0
+    classification_metadata_launches = 0
+
+    valid_rows = [row for row in rows if isinstance(row, dict)]
+    for row in valid_rows:
+        entity_id = str(row.get("entity_id") or "").strip()
+        raw_status = row.get("outcome_status")
+        status = str(raw_status).strip().upper() if raw_status is not None else "NULL"
+        status = status or "NULL"
+        status_counts[status] += 1
+        if entity_id:
+            entities_with_status.setdefault(status, set()).add(entity_id)
+
+        meta = row.get("outcome_meta") if isinstance(row.get("outcome_meta"), dict) else {}
+        classification = meta.get("classification") if isinstance(meta.get("classification"), dict) else {}
+        evidence_basis = str(meta.get("evidence_basis") or classification.get("evidence_basis") or "").strip()
+        if evidence_basis:
+            evidence_basis_counts[evidence_basis] += 1
+        reason = str(classification.get("reason") or "").strip()
+        if reason:
+            classification_reason_counts[reason] += 1
+        if classification:
+            classification_metadata_launches += 1
+        if str(meta.get("performance_outcome") or "").upper() == "UNKNOWN":
+            unknown_performance_launches += 1
+
+        canonical = bool(classification.get("canonical_classification"))
+        if status in _CLASSIFIED_OUTCOMES and canonical:
+            canonical_classified_launches += 1
+            if entity_id:
+                classified_entities.add(entity_id)
+
+    entities_with_status_counts = {
+        status: len(entity_ids) for status, entity_ids in sorted(entities_with_status.items())
+    }
+    return {
+        "status": "MEASURED" if valid_rows else "NO_PERSISTED_LAUNCH_ROWS",
+        "launch_rows": len(valid_rows),
+        "launch_limit": _PERSISTED_LAUNCH_LIMIT,
+        "launch_limit_hit": bool(limit_hit),
+        "launch_status_counts": _counts(status_counts),
+        "entities_with_status_counts": entities_with_status_counts,
+        "canonical_classified_launches": canonical_classified_launches,
+        "entities_with_canonical_classification": len(classified_entities),
+        "classification_metadata_launches": classification_metadata_launches,
+        "unknown_performance_launches": unknown_performance_launches,
+        "classification_reason_counts": _counts(classification_reason_counts),
+        "evidence_basis_counts": _counts(evidence_basis_counts),
+        "historical_as_of_supported": False,
+        "interpretation": "PERSISTED_LAUNCH_OUTCOME_DIAGNOSTIC_ONLY",
+        "release_authority": False,
+        "predictive_authority": False,
+        "risk_inferred": False,
+        "quality_inferred": False,
+        "trade_signal": False,
+        "evidence_only": True,
+        "read_only": True,
+    }
 
 
 def summarize_readiness_component_maturity(readiness_rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -91,6 +161,47 @@ def summarize_readiness_component_maturity(readiness_rows: list[dict[str, Any]])
     }
 
 
+async def _persisted_outcome_diagnostic(
+    session: AsyncSession,
+    *,
+    entity_ids: list[str],
+    as_of: datetime | None,
+) -> dict[str, Any]:
+    """Read current mutable launch outcomes only; never reconstruct them historically."""
+    if as_of is not None:
+        return {
+            **summarize_persisted_outcomes([]),
+            "status": "HISTORICAL_OUTCOME_STATE_UNAVAILABLE",
+            "reason": "entity_launches does not store an independent outcome-ingested timestamp",
+        }
+    try:
+        rows = (
+            await session.execute(
+                text(
+                    """
+                    SELECT entity_id, mint, observed_at, outcome_status, outcome_meta
+                    FROM entity_launches
+                    WHERE entity_id = ANY(CAST(:entity_ids AS uuid[]))
+                    ORDER BY entity_id, observed_at ASC, id ASC
+                    LIMIT :launch_limit
+                    """
+                ),
+                {"entity_ids": entity_ids, "launch_limit": _PERSISTED_LAUNCH_LIMIT},
+            )
+        ).mappings().all()
+    except Exception:
+        return {
+            **summarize_persisted_outcomes([]),
+            "status": "UNKNOWN",
+            "missing": ["entity_launches"],
+        }
+    launch_rows = [dict(row) for row in rows]
+    return summarize_persisted_outcomes(
+        launch_rows,
+        limit_hit=len(launch_rows) >= _PERSISTED_LAUNCH_LIMIT,
+    )
+
+
 async def readiness_component_maturity(
     session: AsyncSession,
     *,
@@ -98,10 +209,12 @@ async def readiness_component_maturity(
     not_before: datetime,
     as_of: datetime | None = None,
 ) -> dict[str, Any]:
-    """Read the latest captured readiness per bounded cohort entity."""
+    """Read latest captured readiness plus current persisted launch-outcome evidence."""
     ids = [str(value) for value in entity_ids if str(value).strip()][:500]
     if not ids:
-        return summarize_readiness_component_maturity([])
+        result = summarize_readiness_component_maturity([])
+        result["persisted_outcomes"] = summarize_persisted_outcomes([])
+        return result
     clauses = ["entity_id = ANY(CAST(:entity_ids AS uuid[]))", "observed_at >= :not_before"]
     params: dict[str, Any] = {"entity_ids": ids, "not_before": not_before}
     if as_of is not None:
@@ -127,7 +240,14 @@ async def readiness_component_maturity(
             **summarize_readiness_component_maturity([]),
             "status": "UNKNOWN",
             "missing": ["entity_readiness_snapshots"],
+            "persisted_outcomes": await _persisted_outcome_diagnostic(
+                session, entity_ids=ids, as_of=as_of
+            ),
         }
-    return summarize_readiness_component_maturity(
+    result = summarize_readiness_component_maturity(
         [dict(row.get("readiness") or {}) for row in rows]
     )
+    result["persisted_outcomes"] = await _persisted_outcome_diagnostic(
+        session, entity_ids=ids, as_of=as_of
+    )
+    return result
