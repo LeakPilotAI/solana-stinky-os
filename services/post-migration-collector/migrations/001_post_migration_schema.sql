@@ -1,8 +1,9 @@
--- Stinky OS â€“ Post-Migration Intelligence Collector
+-- Stinky OS – Post-Migration Intelligence Collector
 -- Migration 001
 -- Materialized views derived from events; still event-sourced (ADR-002)
 
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 -- ============================================================
 -- Tracking sessions (one per migrated mint)
@@ -33,7 +34,7 @@ CREATE INDEX IF NOT EXISTS idx_migration_tracks_migration_at
     ON migration_tracks (migration_at DESC);
 
 -- ============================================================
--- Ranked early buyers (first N meaningful post-migration)
+-- Ranked early buyers (current projection)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS migration_buyers (
     id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -58,7 +59,90 @@ CREATE INDEX IF NOT EXISTS idx_migration_buyers_wallet ON migration_buyers (wall
 CREATE INDEX IF NOT EXISTS idx_migration_buyers_mint_rank ON migration_buyers (mint, rank);
 
 -- ============================================================
--- All observed trades (buys AND sells) â€“ never stop after first buy
+-- Immutable ranked early-buyer evidence history
+-- ============================================================
+CREATE TABLE IF NOT EXISTS migration_buyer_history (
+    history_id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    track_id            UUID NOT NULL REFERENCES migration_tracks (track_id),
+    mint                TEXT NOT NULL,
+    wallet              TEXT NOT NULL,
+    rank                INTEGER NOT NULL CHECK (rank > 0),
+    signature           TEXT NOT NULL,
+    bought_at           TIMESTAMPTZ NOT NULL,
+    slot                BIGINT,
+    token_amount        NUMERIC,
+    sol_spent           NUMERIC,
+    usd_spent           NUMERIC,
+    entry_price_usd     NUMERIC,
+    is_meaningful       BOOLEAN NOT NULL,
+    meta                JSONB NOT NULL DEFAULT '{}',
+    operation           TEXT NOT NULL CHECK (operation IN ('INSERT', 'UPDATE')),
+    capture_txid        BIGINT NOT NULL,
+    evidence_hash       TEXT NOT NULL,
+    observed_at         TIMESTAMPTZ NOT NULL,
+    ingested_at         TIMESTAMPTZ NOT NULL,
+    CHECK (ingested_at = observed_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_migration_buyer_history_mint_capture
+    ON migration_buyer_history (mint, observed_at, capture_txid, rank);
+CREATE INDEX IF NOT EXISTS idx_migration_buyer_history_wallet
+    ON migration_buyer_history (wallet, observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_migration_buyer_history_evidence_hash
+    ON migration_buyer_history (evidence_hash);
+
+CREATE OR REPLACE FUNCTION capture_migration_buyer_history()
+RETURNS trigger AS $$
+DECLARE
+    capture_ts TIMESTAMPTZ := transaction_timestamp();
+    semantic_hash TEXT;
+BEGIN
+    semantic_hash := encode(
+        digest(
+            concat_ws(
+                '|',
+                NEW.mint,
+                NEW.wallet,
+                NEW.rank::TEXT,
+                NEW.signature,
+                NEW.bought_at::TEXT,
+                COALESCE(NEW.slot::TEXT, ''),
+                COALESCE(NEW.token_amount::TEXT, ''),
+                COALESCE(NEW.sol_spent::TEXT, ''),
+                COALESCE(NEW.usd_spent::TEXT, ''),
+                COALESCE(NEW.entry_price_usd::TEXT, ''),
+                NEW.is_meaningful::TEXT,
+                COALESCE(NEW.meta::TEXT, '{}')
+            ),
+            'sha256'
+        ),
+        'hex'
+    );
+
+    INSERT INTO migration_buyer_history (
+        track_id, mint, wallet, rank, signature, bought_at, slot,
+        token_amount, sol_spent, usd_spent, entry_price_usd,
+        is_meaningful, meta, operation, capture_txid, evidence_hash,
+        observed_at, ingested_at
+    ) VALUES (
+        NEW.track_id, NEW.mint, NEW.wallet, NEW.rank, NEW.signature,
+        NEW.bought_at, NEW.slot, NEW.token_amount, NEW.sol_spent,
+        NEW.usd_spent, NEW.entry_price_usd, NEW.is_meaningful, NEW.meta,
+        TG_OP, txid_current(), semantic_hash, capture_ts, capture_ts
+    );
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_capture_migration_buyer_history ON migration_buyers;
+CREATE TRIGGER trg_capture_migration_buyer_history
+AFTER INSERT OR UPDATE ON migration_buyers
+FOR EACH ROW
+EXECUTE FUNCTION capture_migration_buyer_history();
+
+-- ============================================================
+-- All observed trades (buys AND sells) – never stop after first buy
 -- ============================================================
 CREATE TABLE IF NOT EXISTS wallet_trades (
     trade_id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -83,7 +167,7 @@ CREATE INDEX IF NOT EXISTS idx_wallet_trades_wallet_time ON wallet_trades (walle
 CREATE INDEX IF NOT EXISTS idx_wallet_trades_wallet_mint ON wallet_trades (wallet, mint);
 
 -- ============================================================
--- Open / closed positions per wallet Ã— mint
+-- Open / closed positions per wallet × mint
 -- ============================================================
 CREATE TABLE IF NOT EXISTS wallet_token_positions (
     position_id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -177,7 +261,7 @@ CREATE TABLE IF NOT EXISTS holder_snapshots (
 CREATE INDEX IF NOT EXISTS idx_holder_snapshots_mint_time
     ON holder_snapshots (mint, captured_at DESC);
 
-COMMENT ON TABLE migration_tracks IS 'Post-migration tracking sessions â€“ one per graduated mint';
+COMMENT ON TABLE migration_tracks IS 'Post-migration tracking sessions – one per graduated mint';
+COMMENT ON TABLE migration_buyer_history IS 'Immutable ranked early-buyer evidence. Rows sharing mint + capture_txid are one capture; rank <= 5/10/20 yields frozen first-buyer cohorts.';
 COMMENT ON TABLE wallet_trades IS 'All observed post-migration buys and sells; continuous tracking';
 COMMENT ON TABLE wallet_performance IS 'Reusable wallet stats for Smart Money / Stinky Score';
-
