@@ -1,8 +1,8 @@
 """Temporal-safe relationship evidence for recurring early-buyer cohorts.
 
-Joins #140 recurring pairs to existing factual wallet relationship/funding
-evidence. Descriptive only: no ownership, coordination, intent, quality, risk,
-prediction, or trade authority is inferred.
+Joins recurring pairs to persisted factual wallet relationship/funding evidence.
+Descriptive only: no ownership, coordination, intent, quality, risk, prediction,
+or trade authority is inferred.
 """
 from __future__ import annotations
 from datetime import datetime, timezone
@@ -54,9 +54,6 @@ class CohortRelationshipStore:
                 for row in rows:
                     item = dict(row)
                     if item.get("last_seen_at") and item["last_seen_at"] > cutoff:
-                        # This table is a mutable aggregate. If it spans beyond the
-                        # replay boundary, its count/evidence/confidence may contain
-                        # future information. Fail closed instead of leaking it.
                         item["observation_count"] = None
                         item["last_seen_at"] = None
                         item["confidence"] = None
@@ -79,8 +76,44 @@ class CohortRelationshipStore:
                 funding = [dict(row) for row in rows]
         return {"wallet_a": first, "wallet_b": second, "as_of": cutoff, "relationship_table_available": has_relationships, "funding_table_available": has_funding, "relationships": relationships, "funding_observations": funding}
 
+    async def list_common_funders(self, *, wallet_a: str, wallet_b: str, as_of: datetime, limit: int = 100) -> list[dict[str, Any]]:
+        """Return factual SOL sources that funded both cohort wallets by ``as_of``."""
+        first, second = str(wallet_a or "").strip(), str(wallet_b or "").strip()
+        if not first or not second or first == second:
+            return []
+        cutoff = self._utc(as_of)
+        bounded_limit = max(1, min(int(limit), 500))
+        async with self._sessions() as session:
+            if not await self._has_table(session, "wallet_funding_observations"):
+                return []
+            rows = (await session.execute(text("""
+                WITH inbound AS (
+                    SELECT source_wallet, destination_wallet, observed_at,
+                           amount_lamports, signature
+                    FROM wallet_funding_observations
+                    WHERE observed_at <= :as_of
+                      AND destination_wallet IN (:wallet_a, :wallet_b)
+                      AND source_wallet NOT IN (:wallet_a, :wallet_b)
+                )
+                SELECT source_wallet AS funder_wallet,
+                       COUNT(*) FILTER (WHERE destination_wallet=:wallet_a) AS wallet_a_observations,
+                       COUNT(*) FILTER (WHERE destination_wallet=:wallet_b) AS wallet_b_observations,
+                       SUM(COALESCE(amount_lamports,0)) FILTER (WHERE destination_wallet=:wallet_a) AS wallet_a_lamports,
+                       SUM(COALESCE(amount_lamports,0)) FILTER (WHERE destination_wallet=:wallet_b) AS wallet_b_lamports,
+                       MIN(observed_at) AS first_seen_at,
+                       MAX(observed_at) AS last_seen_at
+                FROM inbound
+                GROUP BY source_wallet
+                HAVING COUNT(*) FILTER (WHERE destination_wallet=:wallet_a) > 0
+                   AND COUNT(*) FILTER (WHERE destination_wallet=:wallet_b) > 0
+                ORDER BY last_seen_at DESC, funder_wallet ASC
+                LIMIT :limit
+            """), {"wallet_a": first, "wallet_b": second, "as_of": cutoff, "limit": bounded_limit})).mappings().all()
+            return [dict(row) for row in rows]
+
     async def summarize_pair_relationship_evidence(self, *, wallet_a: str, wallet_b: str, as_of: datetime) -> dict[str, Any]:
         evidence = await self.list_pair_relationship_evidence(wallet_a=wallet_a, wallet_b=wallet_b, as_of=as_of, limit=500)
         funding = evidence["funding_observations"]
         kinds = sorted({row["relationship_kind"] for row in evidence["relationships"]})
-        return {"wallet_a": evidence["wallet_a"], "wallet_b": evidence["wallet_b"], "as_of": evidence["as_of"], "relationship_table_available": evidence["relationship_table_available"], "funding_table_available": evidence["funding_table_available"], "relationship_kinds": kinds, "direct_funding_observations": len(funding), "funding_sources": sorted({r["source_wallet"] for r in funding}), "funding_destinations": sorted({r["destination_wallet"] for r in funding}), "has_observable_relationship_evidence": bool(kinds or funding)}
+        common_funders = await self.list_common_funders(wallet_a=wallet_a, wallet_b=wallet_b, as_of=as_of, limit=500) if evidence["funding_table_available"] else []
+        return {"wallet_a": evidence["wallet_a"], "wallet_b": evidence["wallet_b"], "as_of": evidence["as_of"], "relationship_table_available": evidence["relationship_table_available"], "funding_table_available": evidence["funding_table_available"], "relationship_kinds": kinds, "direct_funding_observations": len(funding), "funding_sources": sorted({r["source_wallet"] for r in funding}), "funding_destinations": sorted({r["destination_wallet"] for r in funding}), "common_funder_count": len(common_funders), "common_funders": common_funders, "has_observable_relationship_evidence": bool(kinds or funding or common_funders)}
