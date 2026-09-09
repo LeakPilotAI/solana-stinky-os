@@ -20,7 +20,7 @@ async def test_scan_diagnostics_preserve_zero_result_coverage(monkeypatch):
         return None
 
     async def fake_fetch_native_transfers(client, *, rpc_url, signature):
-        return []
+        return chain_evidence.NativeTransfers([], rpc_success=True)
 
     monkeypatch.setattr(chain_evidence, "_rpc", fake_rpc)
     monkeypatch.setattr(chain_evidence, "fetch_native_transfers", fake_fetch_native_transfers)

@@ -14,10 +14,12 @@ import structlog
 SYSTEM_PROGRAM = "11111111111111111111111111111111"
 RPC_MIN_METHOD_INTERVAL_SEC = 0.30
 RPC_DEFAULT_RATE_LIMIT_COOLDOWN_SEC = 2.5
+TRANSACTION_CACHE_MAX = 5000
 logger = structlog.get_logger(__name__)
 _rpc_gate = asyncio.Lock()
 _rpc_last_request_at: dict[str, float] = {}
 _rpc_cooldown_until: dict[str, float] = {}
+_transaction_cache: dict[str, list[dict[str, Any]]] = {}
 
 
 def _clock() -> float:
@@ -53,6 +55,15 @@ class FundingTransfers(list[dict[str, Any]]):
     def __init__(self, values: list[dict[str, Any]], *, rpc_success: bool) -> None:
         super().__init__(values)
         self.rpc_success = rpc_success
+
+
+class NativeTransfers(list[dict[str, Any]]):
+    """List-compatible parsed transaction result with RPC availability metadata."""
+
+    def __init__(self, values: list[dict[str, Any]], *, rpc_success: bool, cache_hit: bool = False) -> None:
+        super().__init__(values)
+        self.rpc_success = rpc_success
+        self.cache_hit = cache_hit
 
 
 async def _rpc(
@@ -179,7 +190,11 @@ async def fetch_native_transfers(
     *,
     rpc_url: str,
     signature: str,
-) -> list[dict[str, Any]]:
+) -> NativeTransfers:
+    cached = _transaction_cache.get(signature)
+    if cached is not None:
+        return NativeTransfers(list(cached), rpc_success=True, cache_hit=True)
+
     result = await _rpc(
         client,
         rpc_url=rpc_url,
@@ -193,7 +208,14 @@ async def fetch_native_transfers(
             },
         ],
     )
-    return _parse_native_transfers(result, signature=signature)
+    if not isinstance(result, dict):
+        return NativeTransfers([], rpc_success=False)
+
+    parsed = _parse_native_transfers(result, signature=signature)
+    if len(_transaction_cache) >= TRANSACTION_CACHE_MAX:
+        _transaction_cache.pop(next(iter(_transaction_cache)))
+    _transaction_cache[signature] = list(parsed)
+    return NativeTransfers(parsed, rpc_success=True)
 
 
 async def scan_recent_inbound_transfers(
@@ -227,14 +249,29 @@ async def scan_recent_inbound_transfers(
     transfers: list[dict[str, Any]] = []
     seen: set[tuple[str, str, int, str]] = set()
     examined = 0
+    cache_hits = 0
     for row in signatures:
         if not isinstance(row, dict) or row.get("err"):
             continue
         signature = row.get("signature")
         if not isinstance(signature, str) or not signature:
             continue
+        transaction_transfers = await fetch_native_transfers(client, rpc_url=rpc_url, signature=signature)
+        if not transaction_transfers.rpc_success:
+            logger.info(
+                "entity.wallet_funding_scan_transaction_deferred",
+                wallet=wallet,
+                signature=signature,
+                signatures_requested=limit,
+                signatures_returned=len(signatures),
+                signatures_examined=examined,
+                inbound_native_sol_transfers=len(transfers),
+                reason="transaction_rpc_unavailable",
+            )
+            return FundingScanResult([], limit, len(signatures), examined, False)
         examined += 1
-        for transfer in await fetch_native_transfers(client, rpc_url=rpc_url, signature=signature):
+        cache_hits += int(transaction_transfers.cache_hit)
+        for transfer in transaction_transfers:
             if transfer.get("destination_wallet") != wallet:
                 continue
             key = (
@@ -255,6 +292,7 @@ async def scan_recent_inbound_transfers(
         signatures_requested=limit,
         signatures_returned=len(signatures),
         signatures_examined=examined,
+        transaction_cache_hits=cache_hits,
         inbound_native_sol_transfers=len(transfers),
         zero_result=not transfers,
     )
