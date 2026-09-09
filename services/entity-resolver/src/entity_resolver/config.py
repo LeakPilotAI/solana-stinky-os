@@ -34,8 +34,10 @@ class Settings(BaseSettings):
     auto_merge_min_shared: int = 8  # require strong co-buy evidence
     auto_merge_min_confidence: float = 0.85
 
-    # Funding evidence: bounded recent history per newly observed buyer wallet.
-    funding_scan_signature_limit: int = 20
+    # Funding evidence: bounded recent history per observed buyer wallet.
+    # Deep enough to retain likely pre-migration funding even after heavy activity,
+    # but still capped to protect public-RPC load and service latency.
+    funding_scan_signature_limit: int = 50
 
 
 settings = Settings()
