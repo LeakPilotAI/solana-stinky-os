@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from entity_resolver import chain_evidence, service
-from entity_resolver.chain_evidence import FundingScanResult
+from entity_resolver.chain_evidence import FundingTransfers
 
 
 @pytest.mark.asyncio
@@ -39,14 +39,14 @@ async def test_rpc_retries_http_429_once_then_succeeds(monkeypatch):
 async def test_failed_funding_scan_wallet_remains_retryable(monkeypatch):
     calls = 0
 
-    async def fake_scan(*args, **kwargs):
+    async def fake_fetch(*args, **kwargs):
         nonlocal calls
         calls += 1
         if calls == 1:
-            return FundingScanResult([], 50, 0, 0, False)
-        return FundingScanResult([], 50, 3, 3, True)
+            return FundingTransfers([], rpc_success=False)
+        return FundingTransfers([], rpc_success=True)
 
-    monkeypatch.setattr(service, "scan_recent_inbound_transfers", fake_scan)
+    monkeypatch.setattr(service, "fetch_recent_inbound_transfers", fake_fetch)
     svc = service.EntityService()
     try:
         await svc._observe_wallet_funding("wallet-a")
