@@ -14,12 +14,14 @@ import structlog
 SYSTEM_PROGRAM = "11111111111111111111111111111111"
 RPC_MIN_METHOD_INTERVAL_SEC = 0.30
 RPC_DEFAULT_RATE_LIMIT_COOLDOWN_SEC = 2.5
+FUNDING_DEFERRED_WALLET_COOLDOWN_SEC = 120.0
 TRANSACTION_CACHE_MAX = 5000
 logger = structlog.get_logger(__name__)
 _rpc_gate = asyncio.Lock()
 _rpc_last_request_at: dict[str, float] = {}
 _rpc_cooldown_until: dict[str, float] = {}
 _transaction_cache: dict[str, list[dict[str, Any]]] = {}
+_funding_wallet_deferred_until: dict[str, float] = {}
 
 
 def _clock() -> float:
@@ -226,6 +228,17 @@ async def scan_recent_inbound_transfers(
     signature_limit: int = 50,
 ) -> FundingScanResult:
     limit = max(1, min(int(signature_limit), 50))
+    now = _clock()
+    deferred_until = _funding_wallet_deferred_until.get(wallet, 0.0)
+    if deferred_until > now:
+        logger.info(
+            "entity.wallet_funding_scan_cooldown_skip",
+            wallet=wallet,
+            cooldown_remaining_sec=round(deferred_until - now, 3),
+            signatures_requested=limit,
+        )
+        return FundingScanResult([], limit, 0, 0, False)
+
     signatures = await _rpc(
         client,
         rpc_url=rpc_url,
@@ -233,6 +246,7 @@ async def scan_recent_inbound_transfers(
         params=[wallet, {"limit": limit, "commitment": "confirmed"}],
     )
     if not isinstance(signatures, list):
+        _funding_wallet_deferred_until[wallet] = _clock() + FUNDING_DEFERRED_WALLET_COOLDOWN_SEC
         result = FundingScanResult([], limit, 0, 0, False)
         logger.warning(
             "entity.wallet_funding_scan_rpc_unavailable",
@@ -243,6 +257,7 @@ async def scan_recent_inbound_transfers(
             signatures_examined=0,
             inbound_native_sol_transfers=0,
             zero_result=False,
+            cooldown_sec=FUNDING_DEFERRED_WALLET_COOLDOWN_SEC,
         )
         return result
 
@@ -257,7 +272,8 @@ async def scan_recent_inbound_transfers(
         if not isinstance(signature, str) or not signature:
             continue
         transaction_transfers = await fetch_native_transfers(client, rpc_url=rpc_url, signature=signature)
-        if not transaction_transfers.rpc_success:
+        if not getattr(transaction_transfers, "rpc_success", True):
+            _funding_wallet_deferred_until[wallet] = _clock() + FUNDING_DEFERRED_WALLET_COOLDOWN_SEC
             logger.info(
                 "entity.wallet_funding_scan_transaction_deferred",
                 wallet=wallet,
@@ -267,10 +283,11 @@ async def scan_recent_inbound_transfers(
                 signatures_examined=examined,
                 inbound_native_sol_transfers=len(transfers),
                 reason="transaction_rpc_unavailable",
+                cooldown_sec=FUNDING_DEFERRED_WALLET_COOLDOWN_SEC,
             )
             return FundingScanResult([], limit, len(signatures), examined, False)
         examined += 1
-        cache_hits += int(transaction_transfers.cache_hit)
+        cache_hits += int(getattr(transaction_transfers, "cache_hit", False))
         for transfer in transaction_transfers:
             if transfer.get("destination_wallet") != wallet:
                 continue
@@ -284,6 +301,7 @@ async def scan_recent_inbound_transfers(
                 continue
             seen.add(key)
             transfers.append(transfer)
+    _funding_wallet_deferred_until.pop(wallet, None)
     result = FundingScanResult(transfers, limit, len(signatures), examined, True)
     logger.info(
         "entity.wallet_funding_scan_completed",
