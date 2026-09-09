@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 
@@ -31,16 +32,92 @@ async def _rpc(
     method: str,
     params: list[Any],
 ) -> Any:
+    """Perform one bounded JSON-RPC request with conservative transient retries."""
     body = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
-    try:
-        response = await client.post(rpc_url, json=body)
-        response.raise_for_status()
-        payload = response.json()
-    except (httpx.HTTPError, ValueError):
+    max_attempts = 2
+    for attempt in range(1, max_attempts + 1):
+        failure_kind = "unknown"
+        status_code: int | None = None
+        rpc_error_code: int | None = None
+        error_message = ""
+        retryable = False
+        try:
+            response = await client.post(rpc_url, json=body)
+            status_code = int(response.status_code)
+            if response.status_code >= 400:
+                failure_kind = (
+                    "http_rate_limited"
+                    if response.status_code == 429
+                    else "http_server_error"
+                    if 500 <= response.status_code < 600
+                    else "http_client_error"
+                )
+                retryable = response.status_code == 429 or 500 <= response.status_code < 600
+                error_message = response.text[:160]
+            else:
+                try:
+                    payload = response.json()
+                except ValueError as exc:
+                    failure_kind = "invalid_json"
+                    error_message = str(exc)[:160]
+                    retryable = True
+                else:
+                    if isinstance(payload, dict) and not payload.get("error"):
+                        return payload.get("result")
+                    failure_kind = "json_rpc_error"
+                    error = payload.get("error") if isinstance(payload, dict) else None
+                    if isinstance(error, dict):
+                        code = error.get("code")
+                        if isinstance(code, int):
+                            rpc_error_code = code
+                        error_message = str(error.get("message") or "")[:160]
+                    else:
+                        error_message = str(error)[:160]
+                    lowered = error_message.lower()
+                    retryable = (
+                        rpc_error_code in {-32005, -32004, -32603}
+                        or "rate" in lowered
+                        or "too many" in lowered
+                        or "temporar" in lowered
+                        or "unavailable" in lowered
+                    )
+        except httpx.TimeoutException as exc:
+            failure_kind = "timeout"
+            error_message = str(exc)[:160]
+            retryable = True
+        except httpx.TransportError as exc:
+            failure_kind = "transport_error"
+            error_message = str(exc)[:160]
+            retryable = True
+
+        if retryable and attempt < max_attempts:
+            delay = 0.5 * (2 ** (attempt - 1))
+            logger.info(
+                "entity.rpc_request_retrying",
+                method=method,
+                failure_kind=failure_kind,
+                status_code=status_code,
+                rpc_error_code=rpc_error_code,
+                attempt=attempt,
+                max_attempts=max_attempts,
+                retry_delay_sec=delay,
+            )
+            await asyncio.sleep(delay)
+            continue
+
+        logger.warning(
+            "entity.rpc_request_failed",
+            method=method,
+            failure_kind=failure_kind,
+            status_code=status_code,
+            rpc_error_code=rpc_error_code,
+            error=error_message,
+            attempt=attempt,
+            max_attempts=max_attempts,
+            retryable=retryable,
+        )
         return None
-    if not isinstance(payload, dict) or payload.get("error"):
-        return None
-    return payload.get("result")
+    return None
 
 
 async def fetch_native_transfers(
