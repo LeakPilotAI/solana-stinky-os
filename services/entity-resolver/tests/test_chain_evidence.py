@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from entity_resolver.chain_evidence import _parse_native_transfers
+import pytest
+
+from entity_resolver.chain_evidence import _parse_native_transfers, fetch_recent_inbound_transfers
 
 
 def test_parse_native_transfers_accepts_only_system_transfers() -> None:
@@ -69,3 +71,34 @@ def test_parse_native_transfers_rejects_invalid_or_zero_amounts() -> None:
     }
 
     assert _parse_native_transfers(result, signature="SIG") == []
+
+
+@pytest.mark.asyncio
+async def test_recent_inbound_transfer_scan_is_bounded_at_50(monkeypatch) -> None:
+    calls = []
+
+    async def fake_rpc(client, *, rpc_url, method, params):
+        calls.append((method, params))
+        if method == "getSignaturesForAddress":
+            return []
+        raise AssertionError(method)
+
+    monkeypatch.setattr("entity_resolver.chain_evidence._rpc", fake_rpc)
+
+    class DummyClient:
+        pass
+
+    rows = await fetch_recent_inbound_transfers(
+        DummyClient(),
+        rpc_url="http://rpc",
+        wallet="Wallet",
+        signature_limit=500,
+    )
+
+    assert rows == []
+    assert calls == [
+        (
+            "getSignaturesForAddress",
+            ["Wallet", {"limit": 50, "commitment": "confirmed"}],
+        )
+    ]
