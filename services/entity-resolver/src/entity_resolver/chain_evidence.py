@@ -2,12 +2,26 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
+import structlog
 
 
 SYSTEM_PROGRAM = "11111111111111111111111111111111"
+logger = structlog.get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class FundingScanResult:
+    """Bounded factual coverage diagnostics for one inbound-funding scan."""
+
+    transfers: list[dict[str, Any]]
+    signatures_requested: int
+    signatures_returned: int
+    signatures_examined: int
+    rpc_success: bool
 
 
 async def _rpc(
@@ -52,20 +66,14 @@ async def fetch_native_transfers(
     return _parse_native_transfers(result, signature=signature)
 
 
-async def fetch_recent_inbound_transfers(
+async def scan_recent_inbound_transfers(
     client: httpx.AsyncClient,
     *,
     rpc_url: str,
     wallet: str,
     signature_limit: int = 50,
-) -> list[dict[str, Any]]:
-    """Scan bounded recent wallet history for inbound native-SOL transfers.
-
-    The destination must equal the observed wallet. This avoids classifying the
-    wallet's ordinary SOL payments to pools/programs as funding evidence. The
-    scan remains hard-capped at 50 signatures so adversarial observability does
-    not turn into unbounded public-RPC load.
-    """
+) -> FundingScanResult:
+    """Scan bounded wallet history and report factual coverage, including zero results."""
     limit = max(1, min(int(signature_limit), 50))
     signatures = await _rpc(
         client,
@@ -74,16 +82,29 @@ async def fetch_recent_inbound_transfers(
         params=[wallet, {"limit": limit, "commitment": "confirmed"}],
     )
     if not isinstance(signatures, list):
-        return []
+        result = FundingScanResult([], limit, 0, 0, False)
+        logger.warning(
+            "entity.wallet_funding_scan_rpc_unavailable",
+            wallet=wallet,
+            rpc_success=False,
+            signatures_requested=limit,
+            signatures_returned=0,
+            signatures_examined=0,
+            inbound_native_sol_transfers=0,
+            zero_result=False,
+        )
+        return result
 
     transfers: list[dict[str, Any]] = []
     seen: set[tuple[str, str, int, str]] = set()
+    examined = 0
     for row in signatures:
         if not isinstance(row, dict) or row.get("err"):
             continue
         signature = row.get("signature")
         if not isinstance(signature, str) or not signature:
             continue
+        examined += 1
         for transfer in await fetch_native_transfers(
             client, rpc_url=rpc_url, signature=signature
         ):
@@ -99,7 +120,35 @@ async def fetch_recent_inbound_transfers(
                 continue
             seen.add(key)
             transfers.append(transfer)
-    return transfers
+    result = FundingScanResult(transfers, limit, len(signatures), examined, True)
+    logger.info(
+        "entity.wallet_funding_scan_completed",
+        wallet=wallet,
+        rpc_success=True,
+        signatures_requested=limit,
+        signatures_returned=len(signatures),
+        signatures_examined=examined,
+        inbound_native_sol_transfers=len(transfers),
+        zero_result=not transfers,
+    )
+    return result
+
+
+async def fetch_recent_inbound_transfers(
+    client: httpx.AsyncClient,
+    *,
+    rpc_url: str,
+    wallet: str,
+    signature_limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Compatibility wrapper returning only inbound native-SOL transfer evidence."""
+    result = await scan_recent_inbound_transfers(
+        client,
+        rpc_url=rpc_url,
+        wallet=wallet,
+        signature_limit=signature_limit,
+    )
+    return result.transfers
 
 
 def _parse_native_transfers(
