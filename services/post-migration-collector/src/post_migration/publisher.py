@@ -20,7 +20,8 @@ logger = structlog.get_logger(__name__)
 # High-frequency ticks already live in wallet_trades / market_snapshots.
 # Putting every tick on Redis + HTTP fills the stream until the 512m Redis OOM
 # at the default hourly RDB snapshot (~1 hour). Sparse Phase-10 feature snapshots
-# explicitly bypass these sets through _emit(..., force_durable=True).
+# and bounded first-20 early-buyer funding triggers explicitly bypass these sets
+# through _emit(..., force_durable=True).
 _SKIP_STREAM = {
     EventType.POST_MIGRATION_BUY,
     EventType.POST_MIGRATION_SELL,
@@ -100,6 +101,17 @@ class EventPublisher:
         )
 
     async def buy(self, trade: ObservedTrade) -> None:
+        """Persist only bounded first-20 early-buyer triggers to the event stream.
+
+        Ordinary buys remain high-frequency database-only evidence. First-20 early
+        buyers are sparse, already bounded by the collector, and are the wallets
+        entity intelligence needs to inspect for inbound funding lineage.
+        """
+        force_durable = bool(
+            trade.is_early_buyer
+            and trade.early_rank is not None
+            and 1 <= int(trade.early_rank) <= 20
+        )
         await self._emit(
             Event(
                 event_type=EventType.POST_MIGRATION_BUY,
@@ -118,7 +130,8 @@ class EventPublisher:
                     "early_rank": trade.early_rank,
                 },
                 producer=settings.service_name,
-            )
+            ),
+            force_durable=force_durable,
         )
 
     async def sell(self, trade: ObservedTrade) -> None:
