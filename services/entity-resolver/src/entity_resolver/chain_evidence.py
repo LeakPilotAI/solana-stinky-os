@@ -6,9 +6,11 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
+import structlog
 
 
 SYSTEM_PROGRAM = "11111111111111111111111111111111"
+logger = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -80,7 +82,18 @@ async def scan_recent_inbound_transfers(
         params=[wallet, {"limit": limit, "commitment": "confirmed"}],
     )
     if not isinstance(signatures, list):
-        return FundingScanResult([], limit, 0, 0, False)
+        result = FundingScanResult([], limit, 0, 0, False)
+        logger.warning(
+            "entity.wallet_funding_scan_rpc_unavailable",
+            wallet=wallet,
+            rpc_success=False,
+            signatures_requested=limit,
+            signatures_returned=0,
+            signatures_examined=0,
+            inbound_native_sol_transfers=0,
+            zero_result=False,
+        )
+        return result
 
     transfers: list[dict[str, Any]] = []
     seen: set[tuple[str, str, int, str]] = set()
@@ -107,7 +120,18 @@ async def scan_recent_inbound_transfers(
                 continue
             seen.add(key)
             transfers.append(transfer)
-    return FundingScanResult(transfers, limit, len(signatures), examined, True)
+    result = FundingScanResult(transfers, limit, len(signatures), examined, True)
+    logger.info(
+        "entity.wallet_funding_scan_completed",
+        wallet=wallet,
+        rpc_success=True,
+        signatures_requested=limit,
+        signatures_returned=len(signatures),
+        signatures_examined=examined,
+        inbound_native_sol_transfers=len(transfers),
+        zero_result=not transfers,
+    )
+    return result
 
 
 async def fetch_recent_inbound_transfers(
