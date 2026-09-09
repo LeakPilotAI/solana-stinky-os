@@ -25,6 +25,14 @@ class FundingScanResult:
     rpc_success: bool
 
 
+class FundingTransfers(list[dict[str, Any]]):
+    """List-compatible transfer result carrying scan availability metadata."""
+
+    def __init__(self, values: list[dict[str, Any]], *, rpc_success: bool) -> None:
+        super().__init__(values)
+        self.rpc_success = rpc_success
+
+
 async def _rpc(
     client: httpx.AsyncClient,
     *,
@@ -126,7 +134,6 @@ async def fetch_native_transfers(
     rpc_url: str,
     signature: str,
 ) -> list[dict[str, Any]]:
-    """Return direct System Program SOL transfers for one transaction."""
     result = await _rpc(
         client,
         rpc_url=rpc_url,
@@ -150,7 +157,6 @@ async def scan_recent_inbound_transfers(
     wallet: str,
     signature_limit: int = 50,
 ) -> FundingScanResult:
-    """Scan bounded wallet history and report factual coverage, including zero results."""
     limit = max(1, min(int(signature_limit), 50))
     signatures = await _rpc(
         client,
@@ -182,9 +188,7 @@ async def scan_recent_inbound_transfers(
         if not isinstance(signature, str) or not signature:
             continue
         examined += 1
-        for transfer in await fetch_native_transfers(
-            client, rpc_url=rpc_url, signature=signature
-        ):
+        for transfer in await fetch_native_transfers(client, rpc_url=rpc_url, signature=signature):
             if transfer.get("destination_wallet") != wallet:
                 continue
             key = (
@@ -217,22 +221,18 @@ async def fetch_recent_inbound_transfers(
     rpc_url: str,
     wallet: str,
     signature_limit: int = 50,
-) -> list[dict[str, Any]]:
-    """Compatibility wrapper returning only inbound native-SOL transfer evidence."""
+) -> FundingTransfers:
+    """Return transfer evidence while preserving list compatibility for callers/tests."""
     result = await scan_recent_inbound_transfers(
         client,
         rpc_url=rpc_url,
         wallet=wallet,
         signature_limit=signature_limit,
     )
-    return result.transfers
+    return FundingTransfers(result.transfers, rpc_success=result.rpc_success)
 
 
-def _parse_native_transfers(
-    result: Any,
-    *,
-    signature: str,
-) -> list[dict[str, Any]]:
+def _parse_native_transfers(result: Any, *, signature: str) -> list[dict[str, Any]]:
     if not isinstance(result, dict):
         return []
     transaction = result.get("transaction") or {}
@@ -247,7 +247,6 @@ def _parse_native_transfers(
     slot = result.get("slot")
     transfers: list[dict[str, Any]] = []
     seen: set[tuple[str, str, int]] = set()
-
     for instruction in instructions:
         if not isinstance(instruction, dict) or instruction.get("program") != "system":
             continue
