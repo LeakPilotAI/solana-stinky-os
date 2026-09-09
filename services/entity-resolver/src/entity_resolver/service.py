@@ -11,7 +11,7 @@ import redis.asyncio as redis
 import structlog
 
 from entity_resolver.behavior import BehaviorFingerprintStore
-from entity_resolver.chain_evidence import scan_recent_inbound_transfers
+from entity_resolver.chain_evidence import fetch_recent_inbound_transfers
 from entity_resolver.config import settings
 from entity_resolver.launch_history import LaunchHistoryStore
 from entity_resolver.market_outcomes import MarketOutcomeStore
@@ -213,16 +213,16 @@ class EntityService:
         if not wallet or wallet in self._funding_scanned_wallets:
             return
         try:
-            result = await scan_recent_inbound_transfers(
+            transfers = await fetch_recent_inbound_transfers(
                 self._http,
                 rpc_url=settings.solana_rpc_url,
                 wallet=wallet,
                 signature_limit=settings.funding_scan_signature_limit,
             )
-            if not result.rpc_success:
+            if getattr(transfers, "rpc_success", True) is False:
                 logger.info("entity.wallet_funding_scan_deferred", wallet=wallet, reason="rpc_unavailable")
                 return
-            for transfer in result.transfers:
+            for transfer in transfers:
                 observed_at = transfer.get("observed_at")
                 if isinstance(observed_at, (int, float)):
                     observed_dt = datetime.fromtimestamp(float(observed_at), tz=timezone.utc)
@@ -246,8 +246,8 @@ class EntityService:
                     },
                 )
             self._funding_scanned_wallets.add(wallet)
-            if result.transfers:
-                logger.info("entity.wallet_funding_scanned", wallet=wallet, transfers=len(result.transfers))
+            if transfers:
+                logger.info("entity.wallet_funding_scanned", wallet=wallet, transfers=len(transfers))
         except Exception as exc:
             logger.warning("entity.wallet_funding_scan_failed", wallet=wallet, error=str(exc)[:200])
 
