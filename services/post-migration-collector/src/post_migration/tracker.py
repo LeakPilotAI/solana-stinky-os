@@ -60,6 +60,7 @@ class MintTracker:
         self._seen_trade_keys: set[tuple[str, str, str]] = set()
         self._wallets_touched: set[str] = set()
         self._phase10_horizons_emitted: set[str] = set()
+        self._early_buyer_events_published: set[tuple[str, str, str]] = set()
 
     async def _capture_phase10_feature_snapshot(self, snap: Any) -> None:
         """Durably emit one pre-cutoff snapshot for each research horizon.
@@ -107,6 +108,29 @@ class MintTracker:
                     feature_as_of=(anchor.timestamp() + target_seconds),
                     seconds_remaining=round(seconds_remaining, 3),
                 )
+
+    async def _publish_ranked_early_buyers(
+        self, ranked: list[ObservedTrade]
+    ) -> None:
+        """Persist early flags/ranks and emit one sparse durable event per ranked buy.
+
+        Ordinary trade ingest intentionally happens before early-buyer ranking and
+        records the trade key as seen. Ranking must therefore revisit that same trade
+        to enrich its persisted early-buyer fields and trigger the bounded first-20
+        durable event. A separate publication set prevents duplicate durable events.
+        """
+        for trade in ranked:
+            early_trade = trade.model_copy(update={"is_early_buyer": True})
+            key = (
+                early_trade.signature,
+                early_trade.wallet,
+                early_trade.side.value,
+            )
+            await self._store.upsert_trade(early_trade)
+            if key in self._early_buyer_events_published:
+                continue
+            await self._publisher.buy(early_trade)
+            self._early_buyer_events_published.add(key)
 
     async def run(self) -> None:
         milestones = [
@@ -176,17 +200,7 @@ class MintTracker:
                         exclude=exclude,
                     )
                     if ranked and self.track_id:
-                        for r in ranked:
-                            key = (r.signature, r.wallet, r.side.value)
-                            if key not in self._seen_trade_keys:
-                                r = r.model_copy(
-                                    update={"is_early_buyer": True}
-                                )
-                                inserted = await self._store.upsert_trade(r)
-                                if inserted:
-                                    self._seen_trade_keys.add(key)
-                                    self._wallets_touched.add(r.wallet)
-                                    await self._publisher.buy(r)
+                        await self._publish_ranked_early_buyers(ranked)
                         n = await self._store.save_early_buyers(
                             self.track_id, self.mint, ranked
                         )
