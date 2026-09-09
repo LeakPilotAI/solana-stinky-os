@@ -111,13 +111,7 @@ class EntityService:
 
     @staticmethod
     def _parse_stream_event(raw: str | bytes) -> dict[str, object]:
-        """Decode the canonical Redis stream event envelope.
-
-        Event producers may publish either the event object directly or wrap it as
-        ``{"event": {...}}``. The post-migration collector already accepts both
-        shapes; entity intelligence must use the same canonical decoding so live
-        migration identity evidence is not silently ACKed and discarded.
-        """
+        """Decode the canonical Redis stream event envelope."""
         if isinstance(raw, bytes):
             raw = raw.decode("utf-8")
         parsed = json.loads(raw)
@@ -145,7 +139,6 @@ class EntityService:
 
     @staticmethod
     def _outcome_payload(event: dict[str, object]) -> tuple[str | None, str | None, dict[str, object]]:
-        """Extract measured completion evidence from the canonical event."""
         payload = event.get("payload") or {}
         if not isinstance(payload, dict):
             return None, None, {}
@@ -163,25 +156,18 @@ class EntityService:
 
     @staticmethod
     def _funding_payload(event: dict[str, object]) -> tuple[str, str, datetime, int | None, str | None, dict[str, object]] | None:
-        """Extract only explicitly identified native-SOL transfer evidence.
-
-        Missing asset identity is rejected rather than guessing that a generic
-        token transfer is funding. No ownership or intent is inferred.
-        """
         payload = event.get("payload") or {}
         if not isinstance(payload, dict):
             return None
         asset_type = str(payload.get("asset_type") or payload.get("asset") or "").strip().lower()
         if asset_type not in {"sol", "native_sol", "native"}:
             return None
-
         source = payload.get("source_wallet") or payload.get("from_wallet") or payload.get("from")
         destination = payload.get("destination_wallet") or payload.get("to_wallet") or payload.get("to")
         if not isinstance(source, str) or not source or not isinstance(destination, str) or not destination:
             return None
         if source == destination:
             return None
-
         amount = payload.get("amount_lamports")
         if amount is None:
             amount = payload.get("lamports")
@@ -191,7 +177,6 @@ class EntityService:
             return None
         if amount_lamports is not None and amount_lamports < 0:
             return None
-
         signature = event.get("signature") or payload.get("signature")
         signature = str(signature) if signature else None
         observed_at = EntityService._event_timestamp(event)
@@ -204,20 +189,7 @@ class EntityService:
         }
         return source, destination, observed_at, amount_lamports, signature, evidence
 
-    async def _capture_phase10_evidence(
-        self,
-        mint: str,
-        entity_id: str,
-        *,
-        trigger: str = "migration",
-    ) -> None:
-        """Persist descriptive readiness evidence after a real evidence boundary.
-
-        Migration and measured-outcome changes are distinct prospective capture
-        triggers. In-process dedup prevents duplicate handling of the same trigger,
-        while database evidence hashes remain the durable semantic dedup authority.
-        Failed captures stay retryable. No timer or synthetic checkpoint is used.
-        """
+    async def _capture_phase10_evidence(self, mint: str, entity_id: str, *, trigger: str = "migration") -> None:
         mint = str(mint or "").strip()
         entity_id = str(entity_id or "").strip()
         trigger = str(trigger or "").strip().lower() or "migration"
@@ -225,42 +197,21 @@ class EntityService:
             return
         capture_key = (trigger, mint, entity_id)
         if capture_key in self._phase10_captured_entities:
-            logger.debug(
-                "entity.phase10_snapshot_capture_duplicate",
-                trigger=trigger,
-                mint=mint,
-                entity_id=entity_id,
-            )
+            logger.debug("entity.phase10_snapshot_capture_duplicate", trigger=trigger, mint=mint, entity_id=entity_id)
             return
         base = settings.api_base_url.rstrip("/")
         try:
-            response = await self._http.get(
-                f"{base}/v1/entity-graph/investigation/{mint}/calibration",
-                params={"entity_id": entity_id},
-            )
+            response = await self._http.get(f"{base}/v1/entity-graph/investigation/{mint}/calibration", params={"entity_id": entity_id})
             response.raise_for_status()
             self._phase10_captured_entities.add(capture_key)
-            logger.info(
-                "entity.phase10_snapshot_capture_completed",
-                trigger=trigger,
-                mint=mint,
-                entity_id=entity_id,
-                status_code=response.status_code,
-            )
+            logger.info("entity.phase10_snapshot_capture_completed", trigger=trigger, mint=mint, entity_id=entity_id, status_code=response.status_code)
         except Exception as exc:
-            logger.warning(
-                "entity.phase10_snapshot_capture_failed",
-                trigger=trigger,
-                mint=mint,
-                entity_id=entity_id,
-                error=str(exc)[:200],
-            )
+            logger.warning("entity.phase10_snapshot_capture_failed", trigger=trigger, mint=mint, entity_id=entity_id, error=str(exc)[:200])
 
     async def _observe_wallet_funding(self, wallet: str) -> None:
-        """Capture recent inbound SOL transfers for an observed buyer wallet once per run."""
+        """Capture funding once after a successful bounded scan; failed scans stay retryable."""
         if not wallet or wallet in self._funding_scanned_wallets:
             return
-        self._funding_scanned_wallets.add(wallet)
         try:
             transfers = await fetch_recent_inbound_transfers(
                 self._http,
@@ -268,6 +219,9 @@ class EntityService:
                 wallet=wallet,
                 signature_limit=settings.funding_scan_signature_limit,
             )
+            if getattr(transfers, "rpc_success", True) is False:
+                logger.info("entity.wallet_funding_scan_deferred", wallet=wallet, reason="rpc_unavailable")
+                return
             for transfer in transfers:
                 observed_at = transfer.get("observed_at")
                 if isinstance(observed_at, (int, float)):
@@ -285,41 +239,28 @@ class EntityService:
                     amount_lamports=int(transfer["amount_lamports"]),
                     signature=str(transfer["signature"]),
                     evidence={
-                        "evidence_basis": transfer.get(
-                            "evidence_basis", "direct_system_program_transfer"
-                        ),
+                        "evidence_basis": transfer.get("evidence_basis", "direct_system_program_transfer"),
                         "source_event": "post_migration.buy",
                         "observed_wallet": wallet,
                         "slot": transfer.get("slot"),
                     },
                 )
+            self._funding_scanned_wallets.add(wallet)
             if transfers:
-                logger.info(
-                    "entity.wallet_funding_scanned",
-                    wallet=wallet,
-                    transfers=len(transfers),
-                )
+                logger.info("entity.wallet_funding_scanned", wallet=wallet, transfers=len(transfers))
         except Exception as exc:
-            logger.warning(
-                "entity.wallet_funding_scan_failed",
-                wallet=wallet,
-                error=str(exc)[:200],
-            )
+            logger.warning("entity.wallet_funding_scan_failed", wallet=wallet, error=str(exc)[:200])
 
     async def _handle(self, msg_id: str, fields: dict[str, str]) -> None:
-        """Process one stream event and ACK only after successful processing."""
         assert self._redis is not None
-
         raw = fields.get("data") or fields.get("payload") or ""
         if not raw:
             for value in fields.values():
                 if isinstance(value, str) and value.startswith("{"):
                     raw = value
                     break
-
         if not raw:
             raise ValueError(f"event {msg_id} has no JSON payload")
-
         event = self._parse_stream_event(raw)
         et = event.get("event_type") or event.get("type")
         payload = event.get("payload") or {}
@@ -329,22 +270,10 @@ class EntityService:
             if deployer:
                 entity_id = await self._resolver.ensure_deployer_observed(deployer)
                 mint = payload.get("mint") or payload.get("token") or payload.get("address")
-                inserted = await self._launch_history.record_launch(
-                    entity_id=entity_id,
-                    deployer_wallet=deployer,
-                    event_id=msg_id,
-                    mint=mint,
-                    observed_at=self._event_timestamp(event),
-                )
+                inserted = await self._launch_history.record_launch(entity_id=entity_id, deployer_wallet=deployer, event_id=msg_id, mint=mint, observed_at=self._event_timestamp(event))
                 if inserted:
                     fingerprint = await self._behavior.refresh_entity(entity_id)
-                    logger.info(
-                        "entity.launch_recorded",
-                        entity_id=entity_id,
-                        deployer=deployer,
-                        mint=mint,
-                        cadence_bucket=fingerprint["cadence_bucket"],
-                    )
+                    logger.info("entity.launch_recorded", entity_id=entity_id, deployer=deployer, mint=mint, cadence_bucket=fingerprint["cadence_bucket"])
                 else:
                     logger.debug("entity.launch_duplicate", event_id=msg_id, deployer=deployer, mint=mint)
 
@@ -353,33 +282,14 @@ class EntityService:
             mint = payload.get("mint") or payload.get("token") or payload.get("address")
             if creator:
                 entity_id = await self._resolver.ensure_deployer_observed(creator)
-                inserted = await self._launch_history.record_launch(
-                    entity_id=entity_id,
-                    deployer_wallet=creator,
-                    event_id=f"migrated:{msg_id}",
-                    mint=mint,
-                    observed_at=self._event_timestamp(event),
-                )
+                inserted = await self._launch_history.record_launch(entity_id=entity_id, deployer_wallet=creator, event_id=f"migrated:{msg_id}", mint=mint, observed_at=self._event_timestamp(event))
                 if inserted:
                     fingerprint = await self._behavior.refresh_entity(entity_id)
-                    logger.info(
-                        "entity.migration_launch_recorded",
-                        entity_id=entity_id,
-                        deployer=creator,
-                        mint=mint,
-                        cadence_bucket=fingerprint["cadence_bucket"],
-                    )
+                    logger.info("entity.migration_launch_recorded", entity_id=entity_id, deployer=creator, mint=mint, cadence_bucket=fingerprint["cadence_bucket"])
                 else:
-                    logger.debug(
-                        "entity.migration_launch_duplicate",
-                        event_id=msg_id,
-                        deployer=creator,
-                        mint=mint,
-                    )
+                    logger.debug("entity.migration_launch_duplicate", event_id=msg_id, deployer=creator, mint=mint)
                 if mint:
-                    await self._capture_phase10_evidence(
-                        str(mint), str(entity_id), trigger="migration"
-                    )
+                    await self._capture_phase10_evidence(str(mint), str(entity_id), trigger="migration")
 
         elif et == "post_migration.buy":
             wallet = payload.get("wallet")
@@ -389,58 +299,23 @@ class EntityService:
         elif et == "post_migration.tracking_completed":
             mint, status, metadata = self._outcome_payload(event)
             if mint and status:
-                updated = await self._launch_history.record_outcome(
-                    mint=mint,
-                    status=status,
-                    metadata=metadata,
-                    observed_at=self._event_timestamp(event),
-                )
+                updated = await self._launch_history.record_outcome(mint=mint, status=status, metadata=metadata, observed_at=self._event_timestamp(event))
                 if updated:
                     fingerprint = await self._behavior.refresh_for_mint(mint)
-                    logger.info(
-                        "entity.launch_outcome_recorded",
-                        mint=mint,
-                        status=status,
-                        cadence_bucket=(fingerprint or {}).get("cadence_bucket"),
-                    )
+                    logger.info("entity.launch_outcome_recorded", mint=mint, status=status, cadence_bucket=(fingerprint or {}).get("cadence_bucket"))
                     try:
                         entity_id = await self._launch_history.get_entity_id_for_mint(mint)
                     except Exception as exc:
                         entity_id = None
-                        logger.warning(
-                            "entity.outcome_readiness_identity_lookup_failed",
-                            mint=mint,
-                            error=str(exc)[:200],
-                        )
+                        logger.warning("entity.outcome_readiness_identity_lookup_failed", mint=mint, error=str(exc)[:200])
                     if entity_id is not None:
-                        await self._capture_phase10_evidence(
-                            mint,
-                            str(entity_id),
-                            trigger="outcome",
-                        )
+                        await self._capture_phase10_evidence(mint, str(entity_id), trigger="outcome")
 
         elif et == "token.transfer":
             funding = self._funding_payload(event)
             if funding:
                 source, destination, observed_at, amount_lamports, signature, evidence = funding
-                await self._relationships.record_funding_observation(
-                    source_wallet=source,
-                    destination_wallet=destination,
-                    observed_at=observed_at,
-                    amount_lamports=amount_lamports,
-                    signature=signature,
-                    evidence=evidence,
-                )
-                logger.debug(
-                    "entity.funding_observed",
-                    source=source,
-                    destination=destination,
-                    amount_lamports=amount_lamports,
-                    signature=signature,
-                )
+                await self._relationships.record_funding_observation(source_wallet=source, destination_wallet=destination, observed_at=observed_at, amount_lamports=amount_lamports, signature=signature, evidence=evidence)
+                logger.debug("entity.funding_observed", source=source, destination=destination, amount_lamports=amount_lamports, signature=signature)
 
-        await self._redis.xack(
-            settings.event_stream,
-            settings.entity_consumer_group,
-            msg_id,
-        )
+        await self._redis.xack(settings.event_stream, settings.entity_consumer_group, msg_id)
