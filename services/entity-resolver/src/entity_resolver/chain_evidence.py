@@ -57,12 +57,14 @@ async def fetch_recent_inbound_transfers(
     *,
     rpc_url: str,
     wallet: str,
-    signature_limit: int = 20,
+    signature_limit: int = 50,
 ) -> list[dict[str, Any]]:
-    """Scan recent wallet transactions and keep only inbound native-SOL transfers.
+    """Scan bounded recent wallet history for inbound native-SOL transfers.
 
     The destination must equal the observed wallet. This avoids classifying the
-    wallet's ordinary SOL payments to pools/programs as funding evidence.
+    wallet's ordinary SOL payments to pools/programs as funding evidence. The
+    scan remains hard-capped at 50 signatures so adversarial observability does
+    not turn into unbounded public-RPC load.
     """
     limit = max(1, min(int(signature_limit), 50))
     signatures = await _rpc(
