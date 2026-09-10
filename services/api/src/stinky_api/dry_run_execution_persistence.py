@@ -9,8 +9,36 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 MAX_CANARY_NOTIONAL_USD = 20.0
 AUTHORITY={"interpretation":"DRY_RUN_EXECUTION_PERSISTENCE_ONLY","adapter_mode":"DRY_RUN","live_execution":False,"trading_authority":False,"trade_signal":False,"recommendation_authority":False,"rpc_contacted":False,"transaction_signed":False,"order_submitted":False,"wallet_mutated":False,"automatic_execution":False}
-_CAS_SQL=text("""UPDATE canary_authorization_state SET consumed=TRUE,use_count=1,version=:proposed_version,consumed_by_attempt_id=:attempt_id,consumed_at=:consumed_at,idempotency_key=:idempotency_key,updated_at=:consumed_at WHERE authorization_id=:authorization_id AND policy_version=:policy_version AND consumed=FALSE AND use_count=0 AND version=:expected_version RETURNING authorization_id,policy_version,consumed,use_count,version""")
-_AUDIT_SQL=text("""INSERT INTO dry_run_execution_audit (attempt_id,idempotency_key,authorization_id,policy_version,requested_at,requested_notional_usd,max_loss_usd,adapter_mode,authorization_version_before,authorization_version_after,authorization_transition_applied,rpc_contacted,transaction_signed,order_submitted,wallet_mutated,external_side_effects,audit_payload) VALUES (:attempt_id,:idempotency_key,:authorization_id,:policy_version,:requested_at,:requested_notional_usd,:max_loss_usd,'DRY_RUN',:expected_version,:proposed_version,TRUE,FALSE,FALSE,FALSE,FALSE,FALSE,CAST(:audit_payload AS JSONB))""")
+_CAS_SQL=text("""
+UPDATE canary_authorization_state
+   SET consumed = TRUE,
+       use_count = 1,
+       version = :proposed_version,
+       consumed_by_attempt_id = :attempt_id,
+       consumed_at = :consumed_at,
+       idempotency_key = :idempotency_key,
+       updated_at = :consumed_at
+ WHERE authorization_id = :authorization_id
+   AND policy_version = :policy_version
+   AND consumed = FALSE
+   AND use_count = 0
+   AND version = :expected_version
+RETURNING authorization_id, policy_version, consumed, use_count, version
+""")
+_AUDIT_SQL=text("""
+INSERT INTO dry_run_execution_audit (
+    attempt_id, idempotency_key, authorization_id, policy_version, requested_at,
+    requested_notional_usd, max_loss_usd, adapter_mode,
+    authorization_version_before, authorization_version_after,
+    authorization_transition_applied, rpc_contacted, transaction_signed,
+    order_submitted, wallet_mutated, external_side_effects, audit_payload
+) VALUES (
+    :attempt_id, :idempotency_key, :authorization_id, :policy_version, :requested_at,
+    :requested_notional_usd, :max_loss_usd, 'DRY_RUN', :expected_version,
+    :proposed_version, TRUE, FALSE, FALSE, FALSE, FALSE, FALSE,
+    CAST(:audit_payload AS JSONB)
+)
+""")
 
 def _unknown(missing:list[str],**extra:Any)->dict[str,Any]: return {"status":"UNKNOWN","persistence_result":"UNKNOWN","authorization_consumed_in_transaction":False,"audit_inserted_in_transaction":False,"missing":list(dict.fromkeys(missing)),**extra,**AUTHORITY}
 def _blocked(blockers:list[str],**extra:Any)->dict[str,Any]: return {"status":"OBSERVED","persistence_result":"BLOCKED","authorization_consumed_in_transaction":False,"audit_inserted_in_transaction":False,"blockers":list(dict.fromkeys(blockers)),**extra,**AUTHORITY}
