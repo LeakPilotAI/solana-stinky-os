@@ -15,6 +15,7 @@ REQUIRED_EXECUTOR_TABLES = (
 )
 REQUIRED_PAPER_RUNTIME_TABLES = (
     "paper_runtime_intake", "paper_runtime_record",
+    "paper_intake_producer_state", "paper_prospective_candidate",
 )
 REQUIRED_TABLES = REQUIRED_EXECUTOR_TABLES + REQUIRED_PAPER_RUNTIME_TABLES
 
