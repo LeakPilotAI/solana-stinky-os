@@ -61,6 +61,15 @@ BEGIN
        OR NEW.open_intake_id IS DISTINCT FROM OLD.open_intake_id THEN
         RAISE EXCEPTION 'paper prospective T0 evidence is immutable';
     END IF;
+    IF OLD.canonical_outcome IS NOT NULL AND (
+       NEW.canonical_outcome IS DISTINCT FROM OLD.canonical_outcome
+       OR NEW.outcome_observed_at IS DISTINCT FROM OLD.outcome_observed_at
+       OR NEW.outcome_event_id IS DISTINCT FROM OLD.outcome_event_id) THEN
+        RAISE EXCEPTION 'paper prospective canonical outcome is immutable once attached';
+    END IF;
+    IF OLD.close_intake_id IS NOT NULL AND NEW.close_intake_id IS DISTINCT FROM OLD.close_intake_id THEN
+        RAISE EXCEPTION 'paper prospective close intake linkage is immutable once attached';
+    END IF;
     NEW.updated_at := now();
     RETURN NEW;
 END;
