@@ -13,7 +13,7 @@ from typing import Any
 from sqlalchemy import text
 
 AUTHORITY = {
-    "interpretation": "READ_ONLY_ALERT_ADMISSION_AUDIT",
+    "authority_interpretation": "READ_ONLY_ALERT_ADMISSION_AUDIT",
     "read_only": True,
     "paper_only": True,
     "live_execution": False,
