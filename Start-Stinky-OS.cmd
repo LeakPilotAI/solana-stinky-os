@@ -12,25 +12,31 @@ echo   Closing this window does NOT stop Genesis services.
 echo.
 
 set "PY=%~dp0.venv\Scripts\python.exe"
-if exist "%PY%" goto :runpy
+if exist "%PY%" goto :preflight
 where py >nul 2>&1
 if %ERRORLEVEL%==0 (
-  py -3.12 "%~dp0start_genesis.py" %*
-  goto :after
+  set "PY=py -3.12"
+  goto :preflight
 )
 where python >nul 2>&1
 if %ERRORLEVEL%==0 (
-  python "%~dp0start_genesis.py" %*
-  goto :after
+  set "PY=python"
+  goto :preflight
 )
 echo   Python 3.12+ not found. Install python.org 3.12, then double-click Genesis again.
 set "ERR=1"
 goto :done
 
-:runpy
-"%PY%" "%~dp0start_genesis.py" %*
+:preflight
+echo   Running strict schema gate before application services...
+%PY% "%~dp0scripts\strict_startup_schema_gate.py"
+if not "%ERRORLEVEL%"=="0" (
+  set "ERR=%ERRORLEVEL%"
+  goto :done
+)
 
-:after
+echo   Strict schema gate passed. Starting Genesis services...
+%PY% "%~dp0start_genesis.py" %*
 set "ERR=%ERRORLEVEL%"
 
 :done
