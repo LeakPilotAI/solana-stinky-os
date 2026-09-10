@@ -140,10 +140,13 @@ async def test_full_persisted_dry_run_lifecycle_survives_fresh_engine_and_blocks
                 runtime(),
                 runtime_infrastructure(),
                 request(),
+                pre_persist_runtime=runtime(),
+                pre_persist_infrastructure=runtime_infrastructure(),
             )
             assert lifecycle["lifecycle_result"] == "TRANSACTION_STAGED"
             assert lifecycle["preorder_passed"] is True
             assert lifecycle["adapter_prepared"] is True
+            assert lifecycle["pre_persistence_recheck_passed"] is True
             assert lifecycle["persistence_staged"] is True
             assert lifecycle["authorization_version_before"] == 0
             assert lifecycle["authorization_version_after"] == 1
@@ -156,8 +159,6 @@ async def test_full_persisted_dry_run_lifecycle_survives_fresh_engine_and_blocks
     finally:
         await first_engine.dispose()
 
-    # Simulate a process restart / fresh connection pool. Durable state must still
-    # be consumed and must block any later replay before adapter persistence.
     second_engine = create_async_engine(sqlalchemy_url)
     second_sessions = async_sessionmaker(second_engine, expire_on_commit=False)
     try:
@@ -199,6 +200,8 @@ async def test_full_persisted_dry_run_lifecycle_survives_fresh_engine_and_blocks
                 runtime(),
                 runtime_infrastructure(),
                 request("attempt-replay", "idem-replay"),
+                pre_persist_runtime=runtime(),
+                pre_persist_infrastructure=runtime_infrastructure(),
             )
             assert replay["lifecycle_result"] == "BLOCKED"
             assert replay["stopped_at"] == "preorder"
