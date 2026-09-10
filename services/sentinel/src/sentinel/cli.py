@@ -13,7 +13,7 @@ from sentinel.history import WalletHistory
 from sentinel.migration_watcher import MigrationWatcher
 from sentinel.publisher import LaunchPublisher
 from sentinel.rpc import SolanaRPC
-from sentinel.volume import VolumeMonitor
+from sentinel.reevaluation import ReevaluatingVolumeMonitor
 from sentinel.watcher import PumpFunWatcher
 from sentinel.discovery import HighVolumeDiscovery
 
@@ -62,6 +62,7 @@ async def _run() -> None:
         helius_key_set=bool(settings.helius_api_key),
         harden="helius-429-v2",
         discovery="high-volume-v1",
+        intelligence_reevaluation="evidence-change-v1",
     )
 
     rpc = SolanaRPC()
@@ -71,7 +72,7 @@ async def _run() -> None:
     publisher = LaunchPublisher()
     await publisher.connect()
 
-    volume = VolumeMonitor(publisher)
+    volume = ReevaluatingVolumeMonitor(publisher)
     await volume.start()
     history = WalletHistory(rpc)
     discovery = HighVolumeDiscovery(volume, interval_sec=45.0)
