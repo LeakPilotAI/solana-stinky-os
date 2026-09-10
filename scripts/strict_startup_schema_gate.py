@@ -1,7 +1,8 @@
 """Fail-closed schema gate for the Windows Genesis launcher.
 
 Runs before application services, applies every migration with ON_ERROR_STOP=1,
-and proves durable executor + paper-runtime tables. No Solana execution exists here.
+and proves durable executor + paper-runtime tables. It never contacts Solana RPC,
+signs transactions, submits orders, or mutates wallets.
 """
 from __future__ import annotations
 import shutil, subprocess, sys, time
@@ -9,10 +10,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PROJECT = "project-genesis"
-REQUIRED_TABLES = (
+REQUIRED_EXECUTOR_TABLES = (
     "executor_submission_state", "executor_submission_transition_audit",
+)
+REQUIRED_PAPER_RUNTIME_TABLES = (
     "paper_runtime_intake", "paper_runtime_record",
 )
+REQUIRED_TABLES = REQUIRED_EXECUTOR_TABLES + REQUIRED_PAPER_RUNTIME_TABLES
 
 def docker_bin() -> str:
     hit = shutil.which("docker") or shutil.which("docker.exe")
