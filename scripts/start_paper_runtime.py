@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 WORKERS = (
-    ("paper-intake-producer", "stinky_api.prospective_paper_intake_producer"),
+    ("paper-intake-producer", "stinky_api.prospective_paper_policy_runtime"),
     ("paper-runtime", "stinky_api.paper_runtime_worker"),
 )
 
