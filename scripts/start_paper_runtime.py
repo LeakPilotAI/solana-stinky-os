@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+# The policy runtime is the registry-authoritative wrapper around
+# stinky_api.prospective_paper_intake_producer; the underlying producer remains unchanged.
 WORKERS = (
     ("paper-intake-producer", "stinky_api.prospective_paper_policy_runtime"),
     ("paper-runtime", "stinky_api.paper_runtime_worker"),
@@ -43,7 +45,6 @@ def main() -> int:
     logs.mkdir(parents=True, exist_ok=True)
     pid_file = logs / "stinky-pids.txt"
     known = _known_pids(pid_file)
-
     pyw = root / ".venv" / "Scripts" / "pythonw.exe"
     pye = root / ".venv" / "Scripts" / "python.exe"
     exe = str(pyw if pyw.is_file() else pye if pye.is_file() else sys.executable)
@@ -51,7 +52,6 @@ def main() -> int:
     env["PYTHONPATH"] = str(root / "services" / "api" / "src") + ";" + env.get("PYTHONPATH", "")
     env["PYTHONUNBUFFERED"] = "1"
     flags = 0x08000000 | 0x00000200 | 0x01000000 if os.name == "nt" else 0
-
     started: list[tuple[str, int]] = []
     for name, module in WORKERS:
         old = known.get(name, 0)
@@ -59,14 +59,9 @@ def main() -> int:
             print(f"  {name} already running pid {old}")
             continue
         log = open(logs / (name + ".log"), "a", encoding="utf-8", errors="replace")
-        proc = subprocess.Popen(
-            [exe, "-m", module], cwd=str(root), env=env,
-            stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-            creationflags=flags,
-        )
+        proc = subprocess.Popen([exe, "-m", module], cwd=str(root), env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, creationflags=flags)
         started.append((name, proc.pid))
         print(f"  {name} PID {proc.pid} (paper only; no RPC/signing/orders)")
-
     if started:
         with pid_file.open("a", encoding="ascii") as f:
             for name, pid in started:
