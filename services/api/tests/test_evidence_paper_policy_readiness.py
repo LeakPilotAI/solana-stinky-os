@@ -66,8 +66,9 @@ def test_sufficiency_criteria_are_explicit_and_have_no_hidden_defaults():
     assert result["status"] == "UNKNOWN"
     assert result["missing"] == ["valid_explicit_sufficiency_criteria"]
     cli = (ROOT / "scripts/assess_paper_policy_readiness.py").read_text(encoding="utf-8")
-    assert 'required=True' in cli
-    assert "default=" not in cli
+    arg_lines = [line.strip() for line in cli.splitlines() if "p.add_argument(" in line]
+    assert len(arg_lines) == 3
+    assert all("required=True" in line and "default=" not in line for line in arg_lines)
 
 
 def test_readiness_source_cannot_provision_or_activate_policy():
