@@ -152,7 +152,7 @@ async def audit_alert_admission(session, *, hours: float, as_of: datetime | None
     creator_rows = (await session.execute(text("""
         SELECT count(DISTINCT mi.mint)
         FROM market_inspections mi
-        JOIN memory_investigations inv ON inv.mint=mi.mint
+        JOIN intelligence_investigations inv ON inv.mint=mi.mint
         JOIN entity_wallets ew ON ew.wallet=inv.creator
         JOIN entities e ON e.entity_id=ew.entity_id
         WHERE mi.inspected_at >= :started AND mi.inspected_at <= :cutoff
