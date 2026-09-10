@@ -137,13 +137,16 @@ async def test_t0_bundle_cannot_be_rewritten_after_future_data_arrives():
                 'c1','e1','mint1','2026-09-10T06:00:01Z',
                 '2026-09-10T06:00:00Z','2026-09-10T06:00:01Z',
                 'prospective-paper-v1','fv1','ph1',
-                '{"t0":true}',repeat('a',64),'{"frozen":true}',repeat('b',64),
+                CAST(:t0 AS jsonb),repeat('a',64),CAST(:frozen AS jsonb),repeat('b',64),
                 1.0,'2026-09-10T07:00:01Z','prospective:e1:open'
             )
-        """))
+        """), {"t0": '{"t0":true}', "frozen": '{"frozen":true}'})
         await session.commit()
         with pytest.raises(Exception):
-            await session.execute(text("UPDATE paper_prospective_candidate SET frozen_bundle='{\"frozen\":false}' WHERE candidate_id='c1'"))
+            await session.execute(
+                text("UPDATE paper_prospective_candidate SET frozen_bundle=CAST(:payload AS jsonb) WHERE candidate_id='c1'"),
+                {"payload": '{"frozen":false}'},
+            )
         await session.rollback()
         frozen = (await session.execute(text("SELECT frozen_bundle FROM paper_prospective_candidate WHERE candidate_id='c1'"))).scalar_one()
         assert frozen == {"frozen": True}
@@ -165,9 +168,9 @@ async def test_canonical_outcome_and_close_link_are_single_assignment():
             ) VALUES (
                 'c2','e2','mint2','2026-09-10T06:00:01Z',
                 '2026-09-10T06:00:00Z','2026-09-10T06:00:01Z',
-                'prospective-paper-v1','fv1','ph1','{"t0":true}',repeat('a',64)
+                'prospective-paper-v1','fv1','ph1',CAST(:t0 AS jsonb),repeat('a',64)
             )
-        """))
+        """), {"t0": '{"t0":true}'})
         await session.execute(text("""
             UPDATE paper_prospective_candidate
             SET canonical_outcome='RUNNER',outcome_observed_at='2026-09-10T07:00:00Z',
