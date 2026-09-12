@@ -46,4 +46,5 @@ jobs:
             tests/test_runtime_watchdog_safe_stop.py \
             tests/test_multichain_foundation.py \
             tests/test_evm_rpc_foundation.py \
-            tests/test_evm_rpc_consensus.py
+            tests/test_evm_rpc_consensus.py \
+            tests/test_evm_block_log_ingestion.py
