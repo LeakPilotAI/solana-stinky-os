@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from datetime import datetime, timezone
@@ -53,6 +54,13 @@ CORE_HEALTH = (
     ("api", 8010, "http://127.0.0.1:8010/health"),
     ("web", 3000, "http://127.0.0.1:3000/operator"),
 )
+
+# The API can remain alive after the Windows asyncio listener has died (WinError 64).
+# Give startup plenty of time and require a sustained health loss before recycling.
+API_HEALTH_POLL_SECONDS = 2.0
+API_STARTUP_GRACE_SECONDS = 60.0
+API_HEALTH_FAILURE_GRACE_SECONDS = 30.0
+API_HEALTH_RECYCLE_EXIT = 86
 
 
 def restore_search_path() -> None:
@@ -119,17 +127,6 @@ def find_npm() -> str | None:
         if p.is_file():
             return str(p)
     return None
-    import shutil
-
-    hit = shutil.which("npm") or shutil.which("npm.cmd")
-    if hit:
-        return hit
-    pf = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
-    la = Path(os.environ.get("LOCALAPPDATA", ""))
-    for p in (pf / "nodejs" / "npm.cmd", la / "Programs" / "nodejs" / "npm.cmd"):
-        if p.is_file():
-            return str(p)
-    return None
 
 
 def main() -> int:
@@ -167,12 +164,78 @@ def main() -> int:
     env["STINKY_ROOT"] = str(root)
     env["PYTHONUNBUFFERED"] = "1"
 
-    stamp = "[" + datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") + "] start pid=" + str(os.getpid())
-    print("=== %s pid=%s" % (name, os.getpid()), flush=True)
-    with log.open("a", encoding="utf-8", errors="replace") as f:
-        f.write(stamp + "\n")
+    def utc_stamp() -> str:
+        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    def run(cmd: list[str], cwd: Path | None = None) -> int:
+    def append_log(message: str) -> None:
+        with log.open("a", encoding="utf-8", errors="replace") as f:
+            f.write(message)
+            if not message.endswith("\n"):
+                f.write("\n")
+            f.flush()
+
+    stamp = "[" + utc_stamp() + "] start pid=" + str(os.getpid())
+    print("=== %s pid=%s" % (name, os.getpid()), flush=True)
+    append_log(stamp)
+
+    def http_ok(url: str, timeout: float = 2.5) -> bool:
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as resp:
+                return 200 <= int(resp.status) < 600
+        except Exception:
+            return False
+
+    def terminate_owned_child(proc: subprocess.Popen[str], reason: str) -> None:
+        """Terminate only the child process tree launched by this Genesis supervisor."""
+        if proc.poll() is not None:
+            return
+        append_log("[%s] %s recycling child pid=%s reason=%s" % (utc_stamp(), name, proc.pid, reason))
+        if os.name == "nt":
+            # First try a non-forceful tree termination. If Windows leaves the wedged
+            # child alive, force only this exact Genesis child tree. Never Docker.
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(proc.pid), "/T"],
+                    capture_output=True,
+                    timeout=8,
+                    check=False,
+                )
+            except (subprocess.SubprocessError, OSError):
+                pass
+            try:
+                proc.wait(timeout=5)
+                return
+            except subprocess.TimeoutExpired:
+                pass
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                    capture_output=True,
+                    timeout=8,
+                    check=False,
+                )
+            except (subprocess.SubprocessError, OSError):
+                pass
+        else:
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+                return
+            except (subprocess.TimeoutExpired, OSError):
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            append_log("[%s] %s child pid=%s resisted termination" % (utc_stamp(), name, proc.pid))
+
+    def run(
+        cmd: list[str],
+        cwd: Path | None = None,
+        health_url: str | None = None,
+    ) -> int:
         flags = 0
         startupinfo = None
         if os.name == "nt":
@@ -180,61 +243,112 @@ def main() -> int:
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             startupinfo.wShowWindow = 0
-        with log.open("a", encoding="utf-8", errors="replace") as f:
-            proc = subprocess.Popen(
-                cmd,
-                cwd=str(cwd or root),
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
-                text=True,
-                creationflags=flags,
-                startupinfo=startupinfo,
-            )
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                sys.stdout.write(line)
-                sys.stdout.flush()
-                f.write(line)
-                f.flush()
-            return int(proc.wait())
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(cwd or root),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            creationflags=flags,
+            startupinfo=startupinfo,
+        )
+        assert proc.stdout is not None
+
+        def pump_output() -> None:
+            try:
+                with log.open("a", encoding="utf-8", errors="replace") as f:
+                    for line in proc.stdout:
+                        sys.stdout.write(line)
+                        sys.stdout.flush()
+                        f.write(line)
+                        f.flush()
+            except (OSError, ValueError):
+                pass
+
+        reader = threading.Thread(target=pump_output, name="%s-log-pump" % name, daemon=True)
+        reader.start()
+
+        if not health_url:
+            code = int(proc.wait())
+            reader.join(timeout=3)
+            return code
+
+        started = time.monotonic()
+        seen_healthy = False
+        unhealthy_since: float | None = None
+        while proc.poll() is None:
+            now = time.monotonic()
+            healthy = http_ok(health_url, 2.5)
+            if healthy:
+                if not seen_healthy:
+                    append_log("[%s] %s health watchdog armed pid=%s" % (utc_stamp(), name, proc.pid))
+                seen_healthy = True
+                unhealthy_since = None
+            elif seen_healthy:
+                if unhealthy_since is None:
+                    unhealthy_since = now
+                elif now - unhealthy_since >= API_HEALTH_FAILURE_GRACE_SECONDS:
+                    reason = "health endpoint down for %.0fs after becoming healthy" % (
+                        now - unhealthy_since
+                    )
+                    terminate_owned_child(proc, reason)
+                    reader.join(timeout=3)
+                    return API_HEALTH_RECYCLE_EXIT
+            elif now - started >= API_STARTUP_GRACE_SECONDS:
+                reason = "health endpoint never became ready within %.0fs" % API_STARTUP_GRACE_SECONDS
+                terminate_owned_child(proc, reason)
+                reader.join(timeout=3)
+                return API_HEALTH_RECYCLE_EXIT
+            time.sleep(API_HEALTH_POLL_SECONDS)
+
+        code = int(proc.wait())
+        reader.join(timeout=3)
+        return code
+
+    def core_url(svc_name: str) -> str | None:
+        for n, _port, url in CORE_HEALTH:
+            if n == svc_name:
+                return url
+        return None
 
     def run_supervised(cmd: list[str], cwd: Path | None = None) -> int:
-        """Restart on crash with a cap. Never storm. If port is already healthy, stop."""
+        """Restart on crash or sustained API health loss with a cap. Never storm."""
         delay = 5
         last = 0
         history: list[float] = []
         healthy_url = core_url(name)
+        # The proven Windows dead-listener failure is API-specific. Keep this repair
+        # narrow; event-log/web retain their existing exit-based supervision.
+        watched_url = healthy_url if name == "api" else None
         while True:
-            last = run(cmd, cwd)
+            last = run(cmd, cwd, health_url=watched_url)
             if healthy_url and http_ok(healthy_url):
                 msg = "[%s] %s exited %s but port is healthy, not spawning another\n" % (
-                    datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    utc_stamp(),
                     name,
                     last,
                 )
                 sys.stdout.write(msg)
                 sys.stdout.flush()
-                with log.open("a", encoding="utf-8", errors="replace") as f:
-                    f.write(msg)
+                append_log(msg)
                 return 0
             history = record_restart(history)
             ok_restart, phase = should_restart(history)
             if not ok_restart:
                 msg = "[%s] %s FAILED after %s restarts in 15m, not looping\n" % (
-                    datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    utc_stamp(),
                     name,
                     MAX_RESTARTS,
                 )
                 sys.stdout.write(msg)
                 sys.stdout.flush()
-                with log.open("a", encoding="utf-8", errors="replace") as f:
-                    f.write(msg)
+                append_log(msg)
                 dump_runtime("FAILED")
                 return last or 1
             msg = "[%s] %s exited %s, %s, restart in %ss\n" % (
-                datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                utc_stamp(),
                 name,
                 last,
                 phase,
@@ -242,8 +356,7 @@ def main() -> int:
             )
             sys.stdout.write(msg)
             sys.stdout.flush()
-            with log.open("a", encoding="utf-8", errors="replace") as f:
-                f.write(msg)
+            append_log(msg)
             dump_runtime(phase)
             time.sleep(delay)
             delay = min(delay * 2, 60)
@@ -256,7 +369,7 @@ def main() -> int:
             if last == 0:
                 return 0
             msg = "[%s] maintain job failed exit=%s attempt=%s/%s, retry in %ss\n" % (
-                datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                utc_stamp(),
                 last,
                 i,
                 attempts,
@@ -264,8 +377,7 @@ def main() -> int:
             )
             sys.stdout.write(msg)
             sys.stdout.flush()
-            with log.open("a", encoding="utf-8", errors="replace") as f:
-                f.write(msg)
+            append_log(msg)
             if i < attempts:
                 time.sleep(delay)
                 delay = min(delay * 2, 60)
@@ -285,7 +397,7 @@ def main() -> int:
         for n, _port, url in CORE_HEALTH:
             core[n] = "UP" if http_ok(url, 3.0) else "DOWN"
         payload = {
-            "as_of": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "as_of": utc_stamp(),
             "system": phase or system_state(core),
             "services": core,
             "watch": list(WATCH_CONTAINERS),
@@ -295,13 +407,6 @@ def main() -> int:
             write_state(log_dir / "runtime-state.json", payload)
         except OSError:
             pass
-
-    def http_ok(url: str, timeout: float = 2.5) -> bool:
-        try:
-            with urllib.request.urlopen(url, timeout=timeout) as resp:
-                return 200 <= int(resp.status) < 600
-        except Exception:
-            return False
 
     def listen_pid(port: int) -> int:
         try:
@@ -317,12 +422,6 @@ def main() -> int:
             if parts and parts[-1].isdigit():
                 return int(parts[-1])
         return 0
-
-    def core_url(svc_name: str) -> str | None:
-        for n, _port, url in CORE_HEALTH:
-            if n == svc_name:
-                return url
-        return None
 
     def hidden_run(cmd: list[str], timeout: int = 40) -> None:
         flags = 0
@@ -356,13 +455,12 @@ def main() -> int:
     url_now = core_url(name)
     if url_now and http_ok(url_now):
         msg = "[%s] %s already healthy, not starting another copy\n" % (
-            datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            utc_stamp(),
             name,
         )
         sys.stdout.write(msg)
         sys.stdout.flush()
-        with log.open("a", encoding="utf-8", errors="replace") as f:
-            f.write(msg)
+        append_log(msg)
         return 0
 
     code = 0
@@ -400,14 +498,10 @@ def main() -> int:
                     watchdog_tick()
                     dump_runtime()
                 except Exception as exc:
-                    msg = "[%s] watchdog error %s\n" % (
-                        datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                        str(exc)[:200],
-                    )
+                    msg = "[%s] watchdog error %s\n" % (utc_stamp(), str(exc)[:200])
                     sys.stdout.write(msg)
                     sys.stdout.flush()
-                    with log.open("a", encoding="utf-8", errors="replace") as f:
-                        f.write(msg)
+                    append_log(msg)
                 now = time.time()
                 if now >= next_job:
                     run_job_with_retry([py, "-m", "post_migration.cli", "learn-success"])
@@ -415,14 +509,7 @@ def main() -> int:
                     next_job = time.time() + 21600
                 time.sleep(60)
     finally:
-        with log.open("a", encoding="utf-8", errors="replace") as f:
-            f.write(
-                "["
-                + datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                + "] exit LASTEXITCODE="
-                + str(code)
-                + "\n"
-            )
+        append_log("[%s] exit LASTEXITCODE=%s" % (utc_stamp(), code))
     return code
 
 
