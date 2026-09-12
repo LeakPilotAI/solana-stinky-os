@@ -50,9 +50,9 @@ def _urllib_transport(url: str, payload: bytes, timeout: float) -> dict[str, Any
         method="POST",
     )
     try:
-        with request.urlopen(req, timeout=timeout) as response:  # noqa: S310 - URL is registry-controlled
+        with request.urlopen(req, timeout=timeout) as response:  # noqa: S310 - registry-controlled URL
             body = response.read()
-    except Exception as exc:  # network/provider failure is UNKNOWN, never safe
+    except Exception as exc:
         raise EvmRpcError(f"RPC request failed: {type(exc).__name__}") from exc
     try:
         decoded = json.loads(body)
@@ -66,7 +66,16 @@ def _urllib_transport(url: str, payload: bytes, timeout: float) -> dict[str, Any
 class EvmReadOnlyRpc:
     """Minimal EVM observer with mandatory chain-ID attestation."""
 
-    _ALLOWED_METHODS = frozenset({"eth_chainId", "eth_blockNumber", "eth_getBlockByNumber", "eth_getLogs", "eth_getCode", "eth_call"})
+    _ALLOWED_METHODS = frozenset(
+        {
+            "eth_chainId",
+            "eth_blockNumber",
+            "eth_getBlockByNumber",
+            "eth_getLogs",
+            "eth_getCode",
+            "eth_call",
+        }
+    )
 
     def __init__(
         self,
@@ -134,3 +143,34 @@ class EvmReadOnlyRpc:
             block_number=block_number,
             rpc_url=self.rpc_url,
         )
+
+    def get_block_by_number(self, block_number: int) -> dict[str, Any]:
+        """Read one block after attesting this RPC is on the configured chain."""
+        if block_number < 0:
+            raise ValueError("block_number must be non-negative")
+        self.attest_chain()
+        result = self._call("eth_getBlockByNumber", [hex(block_number), False])
+        if not isinstance(result, dict):
+            raise EvmRpcError("invalid block response")
+        observed_number = self._hex_int(result.get("number"), "block number")
+        block_hash = result.get("hash")
+        if observed_number != block_number:
+            raise EvmRpcError(
+                f"block number mismatch: expected {block_number}, got {observed_number}"
+            )
+        if not isinstance(block_hash, str) or not block_hash.startswith("0x") or len(block_hash) != 66:
+            raise EvmRpcError("invalid block hash")
+        return result
+
+    def get_logs_for_block(self, block_hash: str) -> list[dict[str, Any]]:
+        """Read logs anchored to an already consensus-validated block hash."""
+        if not isinstance(block_hash, str) or not block_hash.startswith("0x") or len(block_hash) != 66:
+            raise ValueError("block_hash must be a 32-byte hex hash")
+        self.attest_chain()
+        result = self._call("eth_getLogs", [{"blockHash": block_hash}])
+        if not isinstance(result, list) or not all(isinstance(item, dict) for item in result):
+            raise EvmRpcError("invalid logs response")
+        for item in result:
+            if item.get("blockHash") != block_hash:
+                raise EvmRpcError("log block hash mismatch")
+        return result
