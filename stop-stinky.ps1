@@ -1,4 +1,4 @@
-# stop-stinky.ps1 - stop Genesis-owned apps and Genesis docker compose.
+# stop-stinky.ps1 - stop Genesis-owned apps and remove the Genesis docker compose stack.
 # Does NOT quit Docker Desktop. Does NOT kill ATLAS.
 # Never kills generic python / node / npm / redis / postgres / docker
 # unless the process command line is positively Genesis-owned.
@@ -89,7 +89,7 @@ function Stop-OwnedPid([int]$Id) {
   if ($Id -le 0) { return }
   try {
     $p = Get-CimInstance Win32_Process -Filter "ProcessId=$Id" -ErrorAction SilentlyContinue
-    if ($p -and $p.Name -match "(?i)docker|Docker Desktop|com\.docker") {
+    if ($p -and $p.Name -match "(?i)docker|Docker Desktop|com\.docker|dockerd") {
       Write-Host "  skip docker pid $Id" -ForegroundColor DarkGray
       return
     }
@@ -104,6 +104,8 @@ function Stop-OwnedPid([int]$Id) {
   taskkill /PID $Id /T /F 2>$null | Out-Null
 }
 
+# Stop Genesis supervisors and workers first. This includes maintain, so it cannot
+# restart Genesis containers while compose is being taken down.
 if (Test-Path -LiteralPath $pidFile) {
   Get-Content -LiteralPath $pidFile | ForEach-Object {
     if ($_ -match "=(\d+)\s*$") { Stop-OwnedPid ([int]$Matches[1]) }
@@ -117,7 +119,7 @@ try {
     $id = [int]$_.ProcessId
     $c = [string]$_.CommandLine
     if (-not $c) { return }
-    if ($c -match "(?i)docker|Docker Desktop") { return }
+    if ($c -match "(?i)docker|Docker Desktop|dockerd|com\.docker") { return }
     $rootEsc = [regex]::Escape($root)
     $ownedPath = ($c -match $rootEsc) -or ($c -match "Project-Genesis")
     if (-not $ownedPath) { return }
@@ -141,29 +143,50 @@ foreach ($port in 8002, 8010, 3000) {
 }
 
 Start-Sleep 2
-$genesisContainers = @("stinky-postgres", "stinky-redis", "stinky-minio", "stinky-minio-init")
-Write-Host "Stopping Genesis containers (volumes kept, Docker Desktop not quit, ATLAS not targeted)..." -ForegroundColor Yellow
+Write-Host "Removing Genesis containers/network (volumes kept; Docker Desktop and ATLAS stay running)..." -ForegroundColor Yellow
 $docker = $null
 $dc = Get-Command docker -ErrorAction SilentlyContinue
 if ($dc -and $dc.Source) { $docker = [string]$dc.Source }
 elseif (Test-Path -LiteralPath (Join-Path $env:ProgramFiles "Docker\Docker\resources\bin\docker.exe")) {
   $docker = Join-Path $env:ProgramFiles "Docker\Docker\resources\bin\docker.exe"
 }
+$genesisContainers = @("stinky-postgres", "stinky-redis", "stinky-minio", "stinky-minio-init")
 if ($docker) {
-  if (Test-Path -LiteralPath (Join-Path $root "docker-compose.yml")) {
-    & $docker compose -p project-genesis -f "$root\docker-compose.yml" --project-directory $root stop 2>$null
+  $composeFile = Join-Path $root "docker-compose.yml"
+  if (Test-Path -LiteralPath $composeFile) {
+    # Intentionally scoped to project-genesis. No -v: persistent data volumes stay.
+    # Never use broad docker stop/rm/system prune here; Atlas may share Docker Desktop.
+    & $docker compose -p project-genesis -f $composeFile --project-directory $root down --remove-orphans 2>$null
+    $composeExit = $LASTEXITCODE
+    if ($composeExit -ne 0) {
+      Write-Host "  Genesis compose down failed (exit $composeExit)" -ForegroundColor Red
+      Write-StartupLog "docker-compose" "failed" "exit=$composeExit"
+      exit $composeExit
+    }
+
+    # Verify the exact Genesis container names are gone from Docker's container list.
+    # This is read-only verification; never remove or stop unrelated containers.
+    $allNames = @(& $docker ps -a --format "{{.Names}}" 2>$null)
+    $leftovers = @($genesisContainers | Where-Object { $allNames -contains $_ })
+    if ($leftovers.Count -gt 0) {
+      Write-Host "  Genesis containers still present: $($leftovers -join ', ')" -ForegroundColor Red
+      Write-StartupLog "docker-compose" "failed" "containers remain: $($leftovers -join ',')"
+      exit 2
+    }
+    Write-StartupLog "docker-compose" "removed" "project-genesis containers/network only; volumes kept"
+  } else {
+    Write-Host "  docker-compose.yml not found; skip compose down" -ForegroundColor DarkGray
+    Write-StartupLog "docker-compose" "skipped" "compose file not found"
   }
-  Write-Host "  docker stop $($genesisContainers -join ' ')"
-  & $docker stop --timeout 10 @genesisContainers 2>$null
-  Write-StartupLog "docker-compose" "stopped" "genesis containers only"
 } else {
-  Write-Host "  docker.exe not found, skip container stop" -ForegroundColor DarkGray
+  Write-Host "  docker.exe not found, skip container removal" -ForegroundColor DarkGray
   Write-StartupLog "docker-compose" "skipped" "docker.exe not found"
 }
-Write-Host "STOPPED." -ForegroundColor Green
+
+Write-Host "STOPPED. Docker Desktop remains running; ATLAS was not targeted." -ForegroundColor Green
 Write-StartupLog "launcher" "STOPPED"
 $state = Join-Path $root "logs\runtime-state.json"
 try {
-  '{"system":"STOPPED","note":"Stop Genesis. Volumes kept."}' | Set-Content -LiteralPath $state -Encoding ascii
+  '{"system":"STOPPED","note":"Stop Genesis. Genesis containers/network removed; volumes kept; Docker Desktop left running."}' | Set-Content -LiteralPath $state -Encoding ascii
 } catch {}
 exit 0

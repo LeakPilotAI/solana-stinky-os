@@ -26,11 +26,20 @@ jobs:
           python -m pip install -e packages/stinky-core
           python -m pip install -e services/sentinel
 
-      - name: Compile Sentinel
-        run: python -m compileall -q services/sentinel/src
+      - name: Compile Sentinel and Genesis runtime
+        run: |
+          python -m compileall -q services/sentinel/src
+          python -m compileall -q scripts
 
       - name: Run maintained Sentinel tests
         run: |
           python -m pytest -q services/sentinel/tests \
             --ignore=services/sentinel/tests/test_admission.py \
             --ignore=services/sentinel/tests/test_admission_free.py
+
+      - name: Run maintained Genesis runtime and launcher contracts
+        run: |
+          python -m pytest -q \
+            tests/test_genesis_runtime.py \
+            tests/test_launcher_contract.py \
+            tests/test_runtime_watchdog_safe_stop.py
