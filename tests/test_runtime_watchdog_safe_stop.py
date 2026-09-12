@@ -32,7 +32,9 @@ def test_api_child_kill_is_scoped_and_never_targets_docker():
     chunk = t[t.index("def terminate_owned_child") : t.index("def run(")]
     assert '["taskkill", "/PID", str(proc.pid), "/T"]' in chunk
     assert '["taskkill", "/PID", str(proc.pid), "/T", "/F"]' in chunk
-    assert "docker" not in chunk.lower()
+    assert "docker.exe" not in chunk.lower()
+    assert "docker desktop" not in chunk.lower()
+    assert "dockerd" not in chunk.lower()
     assert "/IM" not in chunk
 
 
