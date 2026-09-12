@@ -150,6 +150,7 @@ if ($dc -and $dc.Source) { $docker = [string]$dc.Source }
 elseif (Test-Path -LiteralPath (Join-Path $env:ProgramFiles "Docker\Docker\resources\bin\docker.exe")) {
   $docker = Join-Path $env:ProgramFiles "Docker\Docker\resources\bin\docker.exe"
 }
+$genesisContainers = @("stinky-postgres", "stinky-redis", "stinky-minio", "stinky-minio-init")
 if ($docker) {
   $composeFile = Join-Path $root "docker-compose.yml"
   if (Test-Path -LiteralPath $composeFile) {
@@ -161,6 +162,16 @@ if ($docker) {
       Write-Host "  Genesis compose down failed (exit $composeExit)" -ForegroundColor Red
       Write-StartupLog "docker-compose" "failed" "exit=$composeExit"
       exit $composeExit
+    }
+
+    # Verify the exact Genesis container names are gone from Docker's container list.
+    # This is read-only verification; never remove or stop unrelated containers.
+    $allNames = @(& $docker ps -a --format "{{.Names}}" 2>$null)
+    $leftovers = @($genesisContainers | Where-Object { $allNames -contains $_ })
+    if ($leftovers.Count -gt 0) {
+      Write-Host "  Genesis containers still present: $($leftovers -join ', ')" -ForegroundColor Red
+      Write-StartupLog "docker-compose" "failed" "containers remain: $($leftovers -join ',')"
+      exit 2
     }
     Write-StartupLog "docker-compose" "removed" "project-genesis containers/network only; volumes kept"
   } else {
