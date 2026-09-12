@@ -8,7 +8,7 @@ UNVERIFIED until later factory, bytecode, liquidity, and authority analysis.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from .evm_ingestion import EvmIngestedBlock
@@ -124,24 +124,11 @@ def _parse_v2(block: EvmIngestedBlock, log: dict[str, Any]) -> DexPoolCandidate 
         return None
     factory, factory_key, tx_hash, log_index = base
     return DexPoolCandidate(
-        chain=block.chain,
-        chain_id=block.chain_id,
-        factory_address=factory,
-        factory_key=factory_key,
-        pool_address=pool,
-        pool_key=asset_key(block.chain, pool) or "",
-        token0_address=token0,
-        token0_key=asset_key(block.chain, token0) or "",
-        token1_address=token1,
-        token1_key=asset_key(block.chain, token1) or "",
-        event_family="V2_STYLE_PAIR_CREATED",
-        fee_tier=None,
-        first_seen_block=block.block_number,
-        block_hash=block.block_hash,
-        transaction_hash=tx_hash,
-        log_index=log_index,
-        status="UNVERIFIED_DEX_POOL_CANDIDATE",
-        evidence_providers=(),
+        block.chain, block.chain_id, factory, factory_key, pool,
+        asset_key(block.chain, pool) or "", token0, asset_key(block.chain, token0) or "",
+        token1, asset_key(block.chain, token1) or "", "V2_STYLE_PAIR_CREATED", None,
+        block.block_number, block.block_hash, tx_hash, log_index,
+        "UNVERIFIED_DEX_POOL_CANDIDATE", (),
     )
 
 
@@ -153,9 +140,9 @@ def _parse_v3(block: EvmIngestedBlock, log: dict[str, Any]) -> DexPoolCandidate 
         return None
     token0 = _canonical_required(block.chain, _topic_address(topics[1]))
     token1 = _canonical_required(block.chain, _topic_address(topics[2]))
-    fee_raw = topics[3]
     words = _words(log.get("data"), 2)
     base = _base_fields(block, log)
+    fee_raw = topics[3]
     if token0 is None or token1 is None or token0 == token1 or words is None or base is None:
         return None
     if not isinstance(fee_raw, str) or len(fee_raw) != 66 or not fee_raw.startswith("0x"):
@@ -164,31 +151,18 @@ def _parse_v3(block: EvmIngestedBlock, log: dict[str, Any]) -> DexPoolCandidate 
         fee_tier = int(fee_raw, 16)
     except ValueError:
         return None
-    if fee_tier < 0 or fee_tier > 0xFFFFFF:
+    if fee_tier > 0xFFFFFF:
         return None
     pool = _canonical_required(block.chain, _word_address(words[1]))
     if pool is None or pool in {token0, token1}:
         return None
     factory, factory_key, tx_hash, log_index = base
     return DexPoolCandidate(
-        chain=block.chain,
-        chain_id=block.chain_id,
-        factory_address=factory,
-        factory_key=factory_key,
-        pool_address=pool,
-        pool_key=asset_key(block.chain, pool) or "",
-        token0_address=token0,
-        token0_key=asset_key(block.chain, token0) or "",
-        token1_address=token1,
-        token1_key=asset_key(block.chain, token1) or "",
-        event_family="V3_STYLE_POOL_CREATED",
-        fee_tier=fee_tier,
-        first_seen_block=block.block_number,
-        block_hash=block.block_hash,
-        transaction_hash=tx_hash,
-        log_index=log_index,
-        status="UNVERIFIED_DEX_POOL_CANDIDATE",
-        evidence_providers=(),
+        block.chain, block.chain_id, factory, factory_key, pool,
+        asset_key(block.chain, pool) or "", token0, asset_key(block.chain, token0) or "",
+        token1, asset_key(block.chain, token1) or "", "V3_STYLE_POOL_CREATED", fee_tier,
+        block.block_number, block.block_hash, tx_hash, log_index,
+        "UNVERIFIED_DEX_POOL_CANDIDATE", (),
     )
 
 
@@ -205,9 +179,7 @@ def discover_dex_pool_candidates(block: EvmIngestedBlock) -> tuple[DexPoolCandid
         candidate = _parse_v2(block, log) or _parse_v3(block, log)
         if candidate is None:
             continue
-        candidate = DexPoolCandidate(
-            **{**candidate.__dict__, "evidence_providers": providers}
-        )
+        candidate = replace(candidate, evidence_providers=providers)
         found.setdefault(candidate.pool_key, candidate)
 
     return tuple(sorted(found.values(), key=lambda item: item.pool_key))
