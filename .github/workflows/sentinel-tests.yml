@@ -44,4 +44,5 @@ jobs:
             tests/test_genesis_runtime.py \
             tests/test_launcher_contract.py \
             tests/test_runtime_watchdog_safe_stop.py \
-            tests/test_multichain_foundation.py
+            tests/test_multichain_foundation.py \
+            tests/test_evm_rpc_foundation.py
