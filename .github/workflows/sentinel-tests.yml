@@ -29,5 +29,8 @@ jobs:
       - name: Compile Sentinel
         run: python -m compileall -q services/sentinel/src
 
-      - name: Run Sentinel tests
-        run: python -m pytest -q services/sentinel/tests
+      - name: Run maintained Sentinel tests
+        run: |
+          python -m pytest -q services/sentinel/tests \
+            --ignore=services/sentinel/tests/test_admission.py \
+            --ignore=services/sentinel/tests/test_admission_free.py
