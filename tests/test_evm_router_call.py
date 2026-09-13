@@ -34,3 +34,13 @@ def test_supported_selector_without_required_abi_head_fails_closed():
     result = semantics.decode_router_calldata(chain="base", calldata="0x" + selector)
     assert result.status == "MALFORMED_SUPPORTED_ROUTER_CALLDATA"
     assert result.amount_in is None
+
+
+def test_conservative_registry_contains_only_exact_input_v2_style_shapes():
+    assert len(semantics._SUPPORTED) == 3
+    families = {spec[1] for spec in semantics._SUPPORTED.values()}
+    assert families == {
+        "UNISWAP_V2_STYLE_EXACT_INPUT_TOKEN_TO_TOKEN",
+        "UNISWAP_V2_STYLE_EXACT_INPUT_TOKEN_TO_NATIVE",
+        "UNISWAP_V2_STYLE_EXACT_INPUT_NATIVE_TO_TOKEN",
+    }
