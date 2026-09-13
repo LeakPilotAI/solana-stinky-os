@@ -9,6 +9,7 @@ sys.path.insert(0, str(ROOT / "packages" / "stinky-core" / "src"))
 from stinky_core.evm_contract_code import ContractCodeEvidence, ContractCodeSource
 from stinky_core.evm_privileged_inventory import inventory_privileged_authority_surfaces
 from stinky_core.evm_rpc import EvmRpcError
+from stinky_core.evm_token_authority import assess_token_authority
 
 ADDRESS = "0x" + "11" * 20
 CONTRACT_KEY = "base:" + ADDRESS
@@ -77,3 +78,32 @@ def test_inventory_rejects_source_provenance_mismatch():
 def test_inventory_rejects_runtime_fingerprint_mismatch():
     with pytest.raises(EvmRpcError, match="runtime bytecode does not match"):
         inventory_privileged_authority_surfaces(code(bytes.fromhex("63f2fde38b14"), corrupt_runtime=True))
+
+
+def test_token_authority_classifies_supported_capabilities_only():
+    raw = bytes.fromhex("6340c10f1914638456cb591463f2fde38b14632f2ff15d14")
+    inventory = inventory_privileged_authority_surfaces(code(raw))
+    result = assess_token_authority(inventory)
+    assert {row.capability for row in result.capabilities} == {
+        "SUPPLY_EXPANSION", "PAUSE_CONTROL", "OWNERSHIP_CONTROL", "ROLE_CONTROL"
+    }
+    assert all(row.status == "UNVERIFIED_TOKEN_AUTHORITY_SELECTOR_EVIDENCE" for row in result.capabilities)
+
+
+def test_token_authority_keeps_nonstandard_control_families_unknown():
+    inventory = inventory_privileged_authority_surfaces(code(bytes.fromhex("63deadbeef14")))
+    result = assess_token_authority(inventory)
+    assert result.capabilities == ()
+    assert result.unresolved_families
+    assert all(row.state == "UNKNOWN_NOT_ASSESSED" for row in result.unresolved_families)
+
+
+def test_token_authority_rejects_inventory_without_provider_quorum():
+    inventory = inventory_privileged_authority_surfaces(code(bytes.fromhex("6340c10f1914")))
+    weak = type(inventory)(
+        inventory.chain, inventory.contract_key, inventory.block_number,
+        inventory.code_fingerprint_sha256, ("provider-a",), inventory.selector_candidates,
+        inventory.privileged_surfaces, inventory.status,
+    )
+    with pytest.raises(EvmRpcError, match="independent provider quorum"):
+        assess_token_authority(weak)
