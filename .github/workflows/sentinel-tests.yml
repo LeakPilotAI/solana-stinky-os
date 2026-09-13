@@ -56,4 +56,6 @@ jobs:
             tests/test_evm_proxy_history.py \
             tests/test_evm_privileged_inventory.py \
             tests/test_evm_sell_path.py \
-            tests/test_evm_router_pair_foundation.py
+            tests/test_evm_router_pair_foundation.py \
+            tests/test_evm_call_consensus.py \
+            tests/test_evm_router_call.py
