@@ -1,6 +1,7 @@
 import pytest
 
 from stinky_core.evm_abi_words import address_array_at, address_from_word, uint_from_word, word_at
+from stinky_core.evidence_pairing import compare_labels
 
 A = "0x" + "11" * 20
 B = "0x" + "22" * 20
@@ -36,3 +37,20 @@ def test_dynamic_array_offset_and_trailing_bytes_fail_closed():
 def test_noncanonical_address_word_fails_closed():
     with pytest.raises(ValueError, match="canonically"):
         address_from_word("base", (b"\x01" * 12) + bytes.fromhex(A[2:]))
+
+
+def test_pairing_equal_values():
+    row = compare_labels("A", "A")
+    assert row.left == "A"
+    assert row.verdict == "CONSISTENT"
+
+
+def test_pairing_missing_value():
+    row = compare_labels(None, "A")
+    assert row.verdict == "UNKNOWN"
+
+
+def test_pairing_different_values():
+    row = compare_labels("A", "B")
+    assert row.left != row.right
+    assert row.verdict != "CONSISTENT"
