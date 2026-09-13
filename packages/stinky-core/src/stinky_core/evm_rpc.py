@@ -44,12 +44,7 @@ def resolve_rpc_url(chain_key: str) -> str:
 
 
 def _urllib_transport(url: str, payload: bytes, timeout: float) -> dict[str, Any]:
-    req = request.Request(
-        url,
-        data=payload,
-        headers={"Content-Type": "application/json", "User-Agent": "genesis-readonly/1"},
-        method="POST",
-    )
+    req = request.Request(url, data=payload, headers={"Content-Type": "application/json", "User-Agent": "genesis-readonly/1"}, method="POST")
     try:
         with request.urlopen(req, timeout=timeout) as response:  # noqa: S310 - registry-controlled URL
             body = response.read()
@@ -67,24 +62,9 @@ def _urllib_transport(url: str, payload: bytes, timeout: float) -> dict[str, Any
 class EvmReadOnlyRpc:
     """Minimal EVM observer with mandatory chain-ID attestation."""
 
-    _ALLOWED_METHODS = frozenset(
-        {
-            "eth_chainId",
-            "eth_blockNumber",
-            "eth_getBlockByNumber",
-            "eth_getLogs",
-            "eth_getCode",
-            "eth_call",
-        }
-    )
+    _ALLOWED_METHODS = frozenset({"eth_chainId", "eth_blockNumber", "eth_getBlockByNumber", "eth_getLogs", "eth_getCode", "eth_call", "eth_getStorageAt"})
 
-    def __init__(
-        self,
-        chain_key: str,
-        *,
-        timeout: float = 5.0,
-        transport: Transport | None = None,
-    ) -> None:
+    def __init__(self, chain_key: str, *, timeout: float = 5.0, transport: Transport | None = None) -> None:
         chain = get_chain(chain_key)
         if chain is None or chain.family is not ChainFamily.EVM or chain.chain_id is None:
             raise EvmRpcError(f"unsupported EVM chain: {chain_key!r}")
@@ -101,10 +81,7 @@ class EvmReadOnlyRpc:
             raise EvmRpcError(f"RPC method not allowed in read-only client: {method}")
         rpc_id = self._next_id
         self._next_id += 1
-        payload = json.dumps(
-            {"jsonrpc": "2.0", "id": rpc_id, "method": method, "params": params or []},
-            separators=(",", ":"),
-        ).encode("utf-8")
+        payload = json.dumps({"jsonrpc": "2.0", "id": rpc_id, "method": method, "params": params or []}, separators=(",", ":")).encode("utf-8")
         response = self._transport(self.rpc_url, payload, self.timeout)
         if response.get("jsonrpc") != "2.0" or response.get("id") != rpc_id:
             raise EvmRpcError("RPC response envelope mismatch")
@@ -126,9 +103,7 @@ class EvmReadOnlyRpc:
     def attest_chain(self) -> int:
         observed = self._hex_int(self._call("eth_chainId"), "chain id")
         if observed != self.chain.chain_id:
-            raise EvmRpcError(
-                f"chain ID mismatch for {self.chain.key}: expected {self.chain.chain_id}, got {observed}"
-            )
+            raise EvmRpcError(f"chain ID mismatch for {self.chain.key}: expected {self.chain.chain_id}, got {observed}")
         return observed
 
     def block_number(self) -> int:
@@ -138,12 +113,7 @@ class EvmReadOnlyRpc:
     def observe_head(self) -> EvmRpcObservation:
         chain_id = self.attest_chain()
         block_number = self._hex_int(self._call("eth_blockNumber"), "block number")
-        return EvmRpcObservation(
-            chain=self.chain.key,
-            chain_id=chain_id,
-            block_number=block_number,
-            rpc_url=self.rpc_url,
-        )
+        return EvmRpcObservation(self.chain.key, chain_id, block_number, self.rpc_url)
 
     def get_block_by_number(self, block_number: int) -> dict[str, Any]:
         if block_number < 0:
@@ -155,9 +125,7 @@ class EvmReadOnlyRpc:
         observed_number = self._hex_int(result.get("number"), "block number")
         block_hash = result.get("hash")
         if observed_number != block_number:
-            raise EvmRpcError(
-                f"block number mismatch: expected {block_number}, got {observed_number}"
-            )
+            raise EvmRpcError(f"block number mismatch: expected {block_number}, got {observed_number}")
         if not isinstance(block_hash, str) or not block_hash.startswith("0x") or len(block_hash) != 66:
             raise EvmRpcError("invalid block hash")
         return result
@@ -175,7 +143,6 @@ class EvmReadOnlyRpc:
         return result
 
     def call_at_block(self, address: str, data: str, block_number: int) -> str:
-        """Perform one read-only eth_call pinned to an explicit historical block."""
         canonical = canonical_chain_address(self.chain.key, address)
         if canonical is None:
             raise ValueError("address must be a valid address for this chain")
@@ -195,4 +162,27 @@ class EvmReadOnlyRpc:
             int(result[2:] or "0", 16)
         except ValueError as exc:
             raise EvmRpcError("invalid eth_call response") from exc
+        return result.lower()
+
+    def storage_at_block(self, address: str, slot: str, block_number: int) -> str:
+        """Read one 32-byte storage word pinned to an explicit historical block."""
+        canonical = canonical_chain_address(self.chain.key, address)
+        if canonical is None:
+            raise ValueError("address must be a valid address for this chain")
+        if block_number < 0:
+            raise ValueError("block_number must be non-negative")
+        if not isinstance(slot, str) or not slot.startswith("0x") or len(slot) != 66:
+            raise ValueError("slot must be a 32-byte hex storage key")
+        try:
+            int(slot[2:], 16)
+        except ValueError as exc:
+            raise ValueError("slot must be hex") from exc
+        self.attest_chain()
+        result = self._call("eth_getStorageAt", [canonical, slot.lower(), hex(block_number)])
+        if not isinstance(result, str) or not result.startswith("0x") or len(result) != 66:
+            raise EvmRpcError("invalid eth_getStorageAt response")
+        try:
+            int(result[2:], 16)
+        except ValueError as exc:
+            raise EvmRpcError("invalid eth_getStorageAt response") from exc
         return result.lower()
