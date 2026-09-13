@@ -22,27 +22,26 @@ class ReferenceDeploymentIdentityAssessment:
     limitations: tuple[str, ...]
 
 
-def assess_reference_deployment_identity(
-    evidence: ContractCodeEvidence,
+def assess_reference_deployment_address(
+    chain: str,
+    address: str,
     sources: Iterable[DexReferenceContractSource],
     *,
     expected_role: str,
 ) -> ReferenceDeploymentIdentityAssessment:
-    """Compare an observed component address with pinned deployment identities.
-
-    A positive result means only that the observed chain/address is explicitly named
-    by the pinned source catalog for the requested role. Runtime implementation
-    identity, current code, safety, liquidity, and execution behavior are separate.
-    """
+    """Compare one canonical chain/address identity with pinned deployment sources."""
     role = expected_role.upper()
     if role not in _ALLOWED_ROLES:
         raise ValueError("expected_role must be FACTORY, POOL, or ROUTER")
-    address = canonical_chain_address(evidence.chain, evidence.address)
-    if address is None:
-        raise ValueError("contract code evidence must use a canonical chain address")
+    canonical = canonical_chain_address(chain, address)
+    if canonical is None:
+        raise ValueError("deployment identity requires a canonical chain address")
 
-    role_sources = tuple(source for source in sources if source.chain == evidence.chain and source.contract_role == role)
-    exact = tuple(source for source in role_sources if source.address == address)
+    role_sources = tuple(
+        source for source in sources
+        if source.chain == chain and source.contract_role == role
+    )
+    exact = tuple(source for source in role_sources if source.address == canonical)
 
     if exact:
         verdict = "PINNED_REFERENCE_DEPLOYMENT_IDENTITY_MATCH"
@@ -52,8 +51,8 @@ def assess_reference_deployment_identity(
         verdict = "UNKNOWN_REFERENCE_DEPLOYMENT_IDENTITY"
 
     return ReferenceDeploymentIdentityAssessment(
-        chain=evidence.chain,
-        address=address,
+        chain=chain,
+        address=canonical,
         contract_role=role,
         matching_source_references=tuple(sorted(source.source_reference for source in exact)),
         verdict=verdict,
@@ -66,4 +65,19 @@ def assess_reference_deployment_identity(
             "DEPLOYMENT_IDENTITY_MATCH_DOES_NOT_PROVE_SWAP_OR_SALE_SUCCESS",
             "DEPLOYMENT_IDENTITY_DEPENDS_ON_PINNED_SOURCE_CATALOG_COVERAGE",
         ),
+    )
+
+
+def assess_reference_deployment_identity(
+    evidence: ContractCodeEvidence,
+    sources: Iterable[DexReferenceContractSource],
+    *,
+    expected_role: str,
+) -> ReferenceDeploymentIdentityAssessment:
+    """Backward-compatible wrapper around address-native deployment identity."""
+    return assess_reference_deployment_address(
+        evidence.chain,
+        evidence.address,
+        sources,
+        expected_role=expected_role,
     )
