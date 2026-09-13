@@ -1,6 +1,5 @@
 """Read-only proxy/authority evidence. No result here proves safety or control."""
 from dataclasses import dataclass
-import re
 from typing import Iterable
 from .evm_consensus import provider_fingerprint
 from .evm_contract_code import ContractCodeEvidence
@@ -14,7 +13,6 @@ EIP1967_IMPLEMENTATION_SLOT = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a
 EIP1967_ADMIN_SLOT = "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103"
 _PFX = "363d3d373d3d3d363d73"
 _SFX = "5af43d82803e903d91602b57fd5bf3"
-_EIP1167_RE = re.compile(rf"^{_PFX}([0-9a-f]{{40}}){_SFX}$")
 
 @dataclass(frozen=True, slots=True)
 class AddressEvidence:
@@ -56,10 +54,17 @@ def _word_address(chain: str, value: str) -> str | None:
 def _eip1167(code: ContractCodeEvidence) -> str | None:
     if not isinstance(code.runtime_bytecode, str) or not code.runtime_bytecode.startswith("0x"):
         return None
-    match = _EIP1167_RE.fullmatch(code.runtime_bytecode[2:].lower())
-    if match is None:
+    body = code.runtime_bytecode[2:].lower()
+    if len(body) != len(_PFX) + 40 + len(_SFX):
         return None
-    return "0x" + match.group(1)
+    if not body.startswith(_PFX) or not body.endswith(_SFX):
+        return None
+    target_hex = body[len(_PFX):len(_PFX) + 40]
+    try:
+        int(target_hex, 16)
+    except ValueError:
+        return None
+    return "0x" + target_hex
 
 
 def _unique_observers(observers: Iterable[EvmReadOnlyRpc], chain: str, quorum: int) -> dict[str, EvmReadOnlyRpc]:
