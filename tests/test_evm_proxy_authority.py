@@ -10,6 +10,7 @@ from stinky_core.evm_contract_code import ContractCodeEvidence, ContractCodeSour
 from stinky_core.evm_proxy_authority import (
     EIP1967_ADMIN_SLOT,
     EIP1967_IMPLEMENTATION_SLOT,
+    _eip1167,
     inspect_proxy_authority,
 )
 from stinky_core.evm_rpc import EvmReadOnlyRpc, EvmRpcError
@@ -113,7 +114,10 @@ def test_storage_read_is_pinned_to_contract_evidence_block():
 
 def test_canonical_eip1167_target_is_detected_only_as_pattern():
     runtime = "0x363d3d373d3d363d73" + TARGET[2:] + "5af43d82803e903d91602b57fd5bf3"
-    result = inspect_proxy_authority([rpc("https://one.example"), rpc("https://two.example")], code(runtime))
+    evidence = code(runtime)
+    assert evidence.runtime_bytecode == runtime
+    assert _eip1167(evidence) == TARGET
+    result = inspect_proxy_authority([rpc("https://one.example"), rpc("https://two.example")], evidence)
     assert result.minimal_proxy_target == TARGET
     assert result.minimal_proxy_status == "CANONICAL_EIP1167_RUNTIME_PATTERN"
 
