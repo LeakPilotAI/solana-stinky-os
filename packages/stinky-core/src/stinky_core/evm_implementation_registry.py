@@ -12,7 +12,7 @@ from typing import Iterable
 
 from .evm_contract_code import ContractCodeEvidence
 
-_ALLOWED_ROLES = frozenset({"FACTORY", "POOL"})
+_ALLOWED_ROLES = frozenset({"FACTORY", "POOL", "ROUTER"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,7 +38,7 @@ class ImplementationFingerprintEntry:
             raise ValueError("byte_length must be positive")
         role = self.contract_role.upper()
         if role not in _ALLOWED_ROLES:
-            raise ValueError("contract_role must be FACTORY or POOL")
+            raise ValueError("contract_role must be FACTORY, POOL, or ROUTER")
         if not self.implementation_family.strip():
             raise ValueError("implementation_family is required")
         if not self.implementation_version.strip():
@@ -91,7 +91,7 @@ def classify_implementation_fingerprint(
     """
     role = expected_role.upper()
     if role not in _ALLOWED_ROLES:
-        raise ValueError("expected_role must be FACTORY or POOL")
+        raise ValueError("expected_role must be FACTORY, POOL, or ROUTER")
 
     matched: list[ImplementationFingerprintMatch] = []
     seen: set[tuple[str, str, str, str, str, tuple[str, ...]]] = set()
