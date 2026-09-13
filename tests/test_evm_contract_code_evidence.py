@@ -1,4 +1,5 @@
 from pathlib import Path
+from dataclasses import replace
 import hashlib
 import json
 import sys
@@ -17,6 +18,11 @@ from stinky_core.evm_dex_discovery import DexPoolCandidate
 from stinky_core.evm_implementation_registry import (
     ImplementationFingerprintEntry,
     classify_implementation_fingerprint,
+)
+from stinky_core.evm_reference_fingerprints import (
+    BASE_UNISWAP_REFERENCE_SOURCES,
+    DexReferenceContractSource,
+    build_reference_fingerprint_entry,
 )
 from stinky_core.evm_rpc import EvmReadOnlyRpc, EvmRpcError
 
@@ -197,3 +203,76 @@ def test_registry_entry_validation_fails_closed_on_bad_metadata():
         ImplementationFingerprintEntry(evidence.fingerprint_sha256, evidence.byte_length, "POOL", "F", "1", "", "")
     with pytest.raises(ValueError, match="expected_role"):
         classify_implementation_fingerprint(evidence, [], expected_role="UNKNOWN")
+
+
+def test_base_uniswap_reference_sources_are_pinned_and_address_only():
+    assert len(BASE_UNISWAP_REFERENCE_SOURCES) == 4
+    assert {(s.implementation_family, s.contract_role) for s in BASE_UNISWAP_REFERENCE_SOURCES} == {
+        ("UNISWAP_V2", "FACTORY"),
+        ("UNISWAP_V2", "ROUTER"),
+        ("UNISWAP_V3", "FACTORY"),
+        ("UNISWAP_V3", "ROUTER"),
+    }
+    assert {s.source_repository for s in BASE_UNISWAP_REFERENCE_SOURCES} == {"Uniswap/sdk-core"}
+    assert {s.source_commit for s in BASE_UNISWAP_REFERENCE_SOURCES} == {
+        "baff6d3c78b09aa0b2f96148bc223b42a57fd28a"
+    }
+    assert {s.source_path for s in BASE_UNISWAP_REFERENCE_SOURCES} == {"src/addresses.ts"}
+    assert {s.implementation_version for s in BASE_UNISWAP_REFERENCE_SOURCES} == {
+        "UNSPECIFIED_BY_PINNED_SOURCE"
+    }
+    assert all(s.contract_role != "POOL" for s in BASE_UNISWAP_REFERENCE_SOURCES)
+
+
+def test_reference_source_binds_measured_code_to_pinned_provenance():
+    source = next(
+        s for s in BASE_UNISWAP_REFERENCE_SOURCES
+        if s.implementation_family == "UNISWAP_V3" and s.contract_role == "FACTORY"
+    )
+    evidence = code_evidence(source.address)
+    entry = build_reference_fingerprint_entry(source, evidence)
+    assert entry.fingerprint_sha256 == evidence.fingerprint_sha256
+    assert entry.byte_length == evidence.byte_length
+    assert entry.contract_role == "FACTORY"
+    assert entry.implementation_family == "UNISWAP_V3"
+    assert entry.source_kind == "PINNED_GITHUB_DEPLOYMENT_REFERENCE"
+    assert entry.source_reference == (
+        "github:Uniswap/sdk-core@baff6d3c78b09aa0b2f96148bc223b42a57fd28a:"
+        "src/addresses.ts#BASE_ADDRESSES.v3CoreFactoryAddress"
+    )
+    result = classify_implementation_fingerprint(evidence, [entry], expected_role="FACTORY")
+    assert result.verdict == "EXACT_IMPLEMENTATION_FINGERPRINT_MATCH"
+
+
+def test_reference_source_chain_and_address_mismatches_fail_closed():
+    source = BASE_UNISWAP_REFERENCE_SOURCES[0]
+    evidence = code_evidence(source.address)
+    with pytest.raises(ValueError, match="share the chain"):
+        build_reference_fingerprint_entry(
+            source,
+            replace(evidence, chain="robinhood", contract_key="robinhood:" + evidence.address),
+        )
+    with pytest.raises(ValueError, match="address does not match"):
+        build_reference_fingerprint_entry(source, code_evidence(POOL))
+
+
+def test_reference_source_metadata_validation_fails_closed():
+    base = dict(
+        chain="base",
+        address="0x" + "55" * 20,
+        contract_role="FACTORY",
+        implementation_family="REFERENCE_FAMILY",
+        implementation_version="UNSPECIFIED_BY_PINNED_SOURCE",
+        source_repository="Org/repo",
+        source_commit="a" * 40,
+        source_path="deployments.ts",
+        source_locator="FACTORY",
+    )
+    with pytest.raises(ValueError, match="40-character git SHA"):
+        DexReferenceContractSource(**{**base, "source_commit": "moving-main"})
+    with pytest.raises(ValueError, match="owner/name"):
+        DexReferenceContractSource(**{**base, "source_repository": "not-a-repository"})
+    with pytest.raises(ValueError, match="canonical chain address"):
+        DexReferenceContractSource(**{**base, "address": "0x1234"})
+    with pytest.raises(ValueError, match="FACTORY, POOL, or ROUTER"):
+        DexReferenceContractSource(**{**base, "contract_role": "UNKNOWN"})
