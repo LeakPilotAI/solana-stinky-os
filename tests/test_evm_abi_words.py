@@ -40,4 +40,6 @@ def test_noncanonical_address_word_fails_closed():
 
 
 def test_pairing_equal_values():
-    assert compare_labels("A", "A").left == "A"
+    row = compare_labels("A", "A")
+    assert row.left == "A"
+    assert row.verdict == "CONSISTENT"
