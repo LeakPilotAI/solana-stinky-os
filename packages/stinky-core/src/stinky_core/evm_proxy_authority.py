@@ -9,6 +9,8 @@ from .multichain_identity import asset_key, canonical_chain_address
 OWNER_SELECTOR = "0x8da5cb5b"
 IMPLEMENTATION_SELECTOR = "0x5c60da1b"
 ADMIN_SELECTOR = "0xf851a440"
+EIP1967_IMPLEMENTATION_SLOT = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+EIP1967_ADMIN_SLOT = "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103"
 _PFX = "363d3d373d3d3d363d73"
 _SFX = "5af43d82803e903d91602b57fd5bf3"
 
@@ -31,6 +33,8 @@ class ProxyAuthorityEvidence:
     implementation: AddressEvidence | None
     admin: AddressEvidence | None
     owner: AddressEvidence | None
+    eip1967_implementation: AddressEvidence | None
+    eip1967_admin: AddressEvidence | None
     status: str
 
 
@@ -54,31 +58,52 @@ def _eip1167(code: ContractCodeEvidence) -> str | None:
     return canonical_chain_address(code.chain, "0x" + body[len(_PFX):len(_PFX)+40])
 
 
-def _selector(observers: Iterable[EvmReadOnlyRpc], code: ContractCodeEvidence, selector: str, label: str, quorum: int) -> AddressEvidence | None:
+def _unique_observers(observers: Iterable[EvmReadOnlyRpc], chain: str, quorum: int) -> dict[str, EvmReadOnlyRpc]:
     unique = {}
     for rpc in observers:
-        if rpc.chain.key == code.chain:
+        if rpc.chain.key == chain:
             unique.setdefault(provider_fingerprint(rpc.rpc_url), rpc)
     if len(unique) < quorum:
         raise EvmRpcError("insufficient distinct RPC providers for authority evidence")
+    return unique
+
+
+def _quorum_address(chain: str, readings: list[tuple[str, str]], source: str, label: str, quorum: int) -> AddressEvidence | None:
     groups: dict[str, list[str]] = {}
-    for provider, rpc in unique.items():
-        try:
-            address = _word_address(code.chain, rpc.call_at_block(code.address, selector, code.block_number))
-        except EvmRpcError:
-            continue
+    for provider, value in readings:
+        address = _word_address(chain, value)
         if address:
             groups.setdefault(address, []).append(provider)
     matches = [(a, p) for a, p in groups.items() if len(p) >= quorum]
     if not matches:
         return None
     if len(matches) != 1:
-        raise EvmRpcError("conflicting authority selector quorum")
+        raise EvmRpcError("conflicting authority evidence quorum")
     address, providers = matches[0]
-    key = asset_key(code.chain, address)
+    key = asset_key(chain, address)
     if key is None:
         raise EvmRpcError("authority identity could not be canonicalized")
-    return AddressEvidence(selector, address, key, label, tuple(sorted(providers)))
+    return AddressEvidence(source, address, key, label, tuple(sorted(providers)))
+
+
+def _selector(observers: Iterable[EvmReadOnlyRpc], code: ContractCodeEvidence, selector: str, label: str, quorum: int) -> AddressEvidence | None:
+    readings = []
+    for provider, rpc in _unique_observers(observers, code.chain, quorum).items():
+        try:
+            readings.append((provider, rpc.call_at_block(code.address, selector, code.block_number)))
+        except EvmRpcError:
+            continue
+    return _quorum_address(code.chain, readings, selector, label, quorum)
+
+
+def _storage(observers: Iterable[EvmReadOnlyRpc], code: ContractCodeEvidence, slot: str, label: str, quorum: int) -> AddressEvidence | None:
+    readings = []
+    for provider, rpc in _unique_observers(observers, code.chain, quorum).items():
+        try:
+            readings.append((provider, rpc.storage_at_block(code.address, slot, code.block_number)))
+        except EvmRpcError:
+            continue
+    return _quorum_address(code.chain, readings, slot, label, quorum)
 
 
 def inspect_proxy_authority(observers: Iterable[EvmReadOnlyRpc], code: ContractCodeEvidence, *, min_quorum: int = 2) -> ProxyAuthorityEvidence:
@@ -86,16 +111,16 @@ def inspect_proxy_authority(observers: Iterable[EvmReadOnlyRpc], code: ContractC
         raise ValueError("min_quorum must be at least 2")
     if len({s.provider for s in code.sources}) < min_quorum:
         raise EvmRpcError("contract code lacks independent quorum provenance")
+    observers = tuple(observers)
     target = _eip1167(code)
     return ProxyAuthorityEvidence(
-        code.chain,
-        code.contract_key,
-        code.block_number,
-        target,
+        code.chain, code.contract_key, code.block_number, target,
         asset_key(code.chain, target) if target else None,
         "CANONICAL_EIP1167_RUNTIME_PATTERN" if target else "NO_CANONICAL_EIP1167_PATTERN",
         _selector(observers, code, IMPLEMENTATION_SELECTOR, "IMPLEMENTATION_SELECTOR_QUORUM_EVIDENCE", min_quorum),
         _selector(observers, code, ADMIN_SELECTOR, "ADMIN_SELECTOR_QUORUM_EVIDENCE", min_quorum),
         _selector(observers, code, OWNER_SELECTOR, "OWNER_SELECTOR_QUORUM_EVIDENCE", min_quorum),
+        _storage(observers, code, EIP1967_IMPLEMENTATION_SLOT, "EIP1967_IMPLEMENTATION_SLOT_QUORUM_EVIDENCE", min_quorum),
+        _storage(observers, code, EIP1967_ADMIN_SLOT, "EIP1967_ADMIN_SLOT_QUORUM_EVIDENCE", min_quorum),
         "UNVERIFIED_PROXY_AUTHORITY_EVIDENCE",
     )
