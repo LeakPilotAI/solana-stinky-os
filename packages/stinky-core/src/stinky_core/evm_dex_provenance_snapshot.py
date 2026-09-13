@@ -2,8 +2,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Iterable
 
-from .evm_dex_provenance_explanation import DexProvenanceExplanation
+from .evm_dex_provenance_explanation import (
+    DexProvenanceExplanation,
+    explain_dex_provenance_from_record,
+)
+from .evm_reference_dex_record import ReferenceDexEvidenceRecord
+from .evm_reference_fingerprints import DexReferenceContractSource
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,3 +50,13 @@ def snapshot_dex_provenance_explanation(
         status=explanation.status,
         limitations=explanation.limitations,
     )
+
+
+def snapshot_dex_provenance_from_record(
+    record: ReferenceDexEvidenceRecord,
+    sources: Iterable[DexReferenceContractSource],
+) -> DexProvenanceExplanationSnapshot:
+    """Compose the existing record-backed explanation and snapshot it without new semantics."""
+    source_items = tuple(sources)
+    explanation = explain_dex_provenance_from_record(record, source_items)
+    return snapshot_dex_provenance_explanation(explanation)
