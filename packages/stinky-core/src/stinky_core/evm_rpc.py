@@ -14,6 +14,7 @@ from typing import Any, Callable
 from urllib import request
 
 from .chains import ChainFamily, get_chain
+from .multichain_identity import canonical_chain_address
 
 
 class EvmRpcError(RuntimeError):
@@ -145,7 +146,6 @@ class EvmReadOnlyRpc:
         )
 
     def get_block_by_number(self, block_number: int) -> dict[str, Any]:
-        """Read one block after attesting this RPC is on the configured chain."""
         if block_number < 0:
             raise ValueError("block_number must be non-negative")
         self.attest_chain()
@@ -163,7 +163,6 @@ class EvmReadOnlyRpc:
         return result
 
     def get_logs_for_block(self, block_hash: str) -> list[dict[str, Any]]:
-        """Read logs anchored to an already consensus-validated block hash."""
         if not isinstance(block_hash, str) or not block_hash.startswith("0x") or len(block_hash) != 66:
             raise ValueError("block_hash must be a 32-byte hex hash")
         self.attest_chain()
@@ -174,3 +173,26 @@ class EvmReadOnlyRpc:
             if item.get("blockHash") != block_hash:
                 raise EvmRpcError("log block hash mismatch")
         return result
+
+    def call_at_block(self, address: str, data: str, block_number: int) -> str:
+        """Perform one read-only eth_call pinned to an explicit historical block."""
+        canonical = canonical_chain_address(self.chain.key, address)
+        if canonical is None:
+            raise ValueError("address must be a valid address for this chain")
+        if block_number < 0:
+            raise ValueError("block_number must be non-negative")
+        if not isinstance(data, str) or not data.startswith("0x") or len(data) < 10 or len(data) % 2:
+            raise ValueError("data must be even-length hex calldata with a selector")
+        try:
+            int(data[2:], 16)
+        except ValueError as exc:
+            raise ValueError("data must be hex calldata") from exc
+        self.attest_chain()
+        result = self._call("eth_call", [{"to": canonical, "data": data.lower()}, hex(block_number)])
+        if not isinstance(result, str) or not result.startswith("0x") or len(result) % 2:
+            raise EvmRpcError("invalid eth_call response")
+        try:
+            int(result[2:] or "0", 16)
+        except ValueError as exc:
+            raise EvmRpcError("invalid eth_call response") from exc
+        return result.lower()
