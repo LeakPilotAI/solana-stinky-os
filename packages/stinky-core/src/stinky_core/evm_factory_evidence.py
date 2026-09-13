@@ -4,8 +4,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable
 
+from .evm_call_consensus import ExactCallObservation
 from .evm_consensus import provider_fingerprint
-from .evm_contract_code import ContractCodeEvidence, observe_contract_code
+from .evm_contract_code import ContractCodeEvidence
 from .evm_dex_discovery import DexPoolCandidate
 from .evm_rpc import EvmReadOnlyRpc, EvmRpcError
 from .multichain_identity import canonical_chain_address
@@ -32,7 +33,7 @@ class FactoryRelationshipEvidence:
     fee_tier: int | None
     block_number: int
     factory_code: ContractCodeEvidence
-    returned_address: str
+    returned_address: str | None
     sources: tuple[FactoryRelationshipSource, ...]
     relationship: str
     status: str
@@ -78,3 +79,48 @@ def _distinct_observers(observers: Iterable[EvmReadOnlyRpc]) -> dict[str, EvmRea
     for observer in observers:
         distinct.setdefault(provider_fingerprint(observer.rpc_url), observer)
     return distinct
+
+
+def classify_factory_relationship(
+    pool: DexPoolCandidate,
+    factory_code: ContractCodeEvidence,
+    observation: ExactCallObservation,
+) -> FactoryRelationshipEvidence:
+    if observation.chain != pool.chain or observation.target != pool.factory_address:
+        raise ValueError("factory observation target does not match pool candidate")
+    if observation.block_number != factory_code.block_number:
+        raise ValueError("factory observation and code evidence must share a historical block")
+
+    if observation.consensus.agreed_result is None:
+        return FactoryRelationshipEvidence(
+            pool.chain, pool.factory_address, pool.pool_address,
+            pool.token0_address, pool.token1_address, pool.event_family,
+            pool.fee_tier, observation.block_number, factory_code, None, (),
+            "UNKNOWN_FACTORY_RELATIONSHIP",
+            "UNVERIFIED_FACTORY_RELATIONSHIP_EVIDENCE",
+            (f"FACTORY_LOOKUP_{observation.consensus.verdict}",),
+        )
+
+    returned = decode_factory_address(pool.chain, observation.consensus.agreed_result)
+    sources = tuple(
+        FactoryRelationshipSource(provider, returned)
+        for provider in observation.consensus.providers
+    )
+    if returned == pool.pool_address:
+        relationship = "FACTORY_LOOKUP_MATCHES_DISCOVERED_POOL"
+    elif returned == ZERO_ADDRESS:
+        relationship = "FACTORY_LOOKUP_REPORTS_NO_POOL"
+    else:
+        relationship = "FACTORY_LOOKUP_CONFLICTS_WITH_DISCOVERED_POOL"
+
+    return FactoryRelationshipEvidence(
+        pool.chain, pool.factory_address, pool.pool_address,
+        pool.token0_address, pool.token1_address, pool.event_family,
+        pool.fee_tier, observation.block_number, factory_code, returned, sources,
+        relationship, "UNVERIFIED_FACTORY_RELATIONSHIP_EVIDENCE",
+        (
+            "FACTORY_LOOKUP_DOES_NOT_PROVE_FACTORY_IMPLEMENTATION_AUTHENTICITY",
+            "FACTORY_LOOKUP_DOES_NOT_PROVE_POOL_IMPLEMENTATION_AUTHENTICITY",
+            "FACTORY_LOOKUP_DOES_NOT_PROVE_LIQUIDITY_QUALITY_OR_SAFETY",
+        ),
+    )
