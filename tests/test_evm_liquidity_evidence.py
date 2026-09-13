@@ -10,7 +10,7 @@ from stinky_core.evm_consensus import EvmConsensusObservation
 from stinky_core.evm_dex_discovery import DexPoolCandidate
 from stinky_core.evm_ingestion import EvmIngestedBlock, EvmLogSource
 from stinky_core.evm_liquidity import PoolStateSource, V2ReserveEvidence, V3LiquidityEvidence, observe_v2_reserves, observe_v3_liquidity
-from stinky_core.evm_liquidity_history import build_v2_reserve_change_history, build_v3_liquidity_change_history
+from stinky_core.evm_liquidity_history import V2_SYNC_TOPIC, build_v2_reserve_change_history, build_v3_liquidity_change_history, classify_v2_sync_events
 from stinky_core.evm_pool_events import collect_pool_event_evidence
 from stinky_core.evm_rpc import EvmReadOnlyRpc, EvmRpcError
 
@@ -89,6 +89,24 @@ def test_pool_logs_are_retained_only_as_unclassified_quorum_evidence():
     assert len(rows) == 1
     assert rows[0].status == "UNCLASSIFIED_POOL_EVENT_EVIDENCE"
     assert rows[0].evidence_providers == ("rpc-a", "rpc-b")
+
+
+def sync_block(data, providers=("rpc-a", "rpc-b")):
+    head = EvmConsensusObservation("base", 8453, 102, 101, 102, 2, "now", ())
+    log = {"address": POOL, "blockHash": BLOCK_HASH, "transactionHash": TX_HASH, "logIndex": "0x1", "topics": [V2_SYNC_TOPIC], "data": data}
+    return EvmIngestedBlock("base", 8453, 100, BLOCK_HASH, "now", head, (), (log,), tuple(EvmLogSource(p, "d", 1) for p in providers))
+
+
+def test_canonical_v2_sync_is_classified_from_quorum_evidence():
+    rows = classify_v2_sync_events(sync_block(words(10, 20)), [pool()])
+    assert len(rows) == 1
+    assert (rows[0].reserve0, rows[0].reserve1) == (10, 20)
+    assert rows[0].status == "CLASSIFIED_V2_SYNC_EVENT_EVIDENCE"
+
+
+def test_sync_malformed_or_single_provider_evidence_is_not_promoted():
+    assert classify_v2_sync_events(sync_block("0x1234"), [pool()]) == ()
+    assert classify_v2_sync_events(sync_block(words(10, 20), providers=("rpc-a",)), [pool()]) == ()
 
 
 def state_sources():
