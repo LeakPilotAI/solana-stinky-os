@@ -12,11 +12,13 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from .evm_consensus import provider_fingerprint
+from .evm_contract_code import ContractCodeEvidence, observe_contract_code
 from .evm_rpc import EvmReadOnlyRpc, EvmRpcError
 from .multichain_identity import asset_key, canonical_chain_address
 
 TRANSFER_SELECTOR = "a9059cbb"
 ALLOWANCE_SELECTOR = "dd62ed3e"
+TRANSFER_FROM_SELECTOR = "23b872dd"
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +68,31 @@ class RouterPairSellPathEvidence:
     limitations: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class TransferFromProviderEvidence:
+    provider: str
+    outcome: str
+
+
+@dataclass(frozen=True, slots=True)
+class RouterPairExecutionFoundationEvidence:
+    chain: str
+    token_key: str
+    block_number: int
+    holder: str
+    router: str
+    pair: str
+    amount: int
+    router_code: ContractCodeEvidence
+    pair_code: ContractCodeEvidence
+    transfer_from_successful_providers: tuple[str, ...]
+    transfer_from_evidence: tuple[TransferFromProviderEvidence, ...]
+    transfer_from_verdict: str
+    verdict: str
+    status: str
+    limitations: tuple[str, ...]
+
+
 def _encode_transfer(recipient: str, amount: int) -> str:
     if amount <= 0:
         raise ValueError("amount must be positive")
@@ -74,6 +101,20 @@ def _encode_transfer(recipient: str, amount: int) -> str:
 
 def _encode_allowance(holder: str, router: str) -> str:
     return "0x" + ALLOWANCE_SELECTOR + ("0" * 24) + holder[2:] + ("0" * 24) + router[2:]
+
+
+def _encode_transfer_from(holder: str, pair: str, amount: int) -> str:
+    if amount <= 0:
+        raise ValueError("amount must be positive")
+    return (
+        "0x"
+        + TRANSFER_FROM_SELECTOR
+        + ("0" * 24)
+        + holder[2:]
+        + ("0" * 24)
+        + pair[2:]
+        + f"{amount:064x}"
+    )
 
 
 def _distinct(observers: Iterable[EvmReadOnlyRpc]) -> dict[str, EvmReadOnlyRpc]:
@@ -269,5 +310,125 @@ def observe_router_pair_sell_prerequisites(
             "DOES_NOT_PROVE_PAIR_SWAP_EXECUTION",
             "DOES_NOT_PROVE_OUTPUT_AMOUNT_OR_TAXES",
             "DOES_NOT_PROVE_REAL_SALE_SUCCESS",
+        ),
+    )
+
+
+def observe_router_pair_execution_foundation(
+    observers: Iterable[EvmReadOnlyRpc],
+    *,
+    chain: str,
+    token: str,
+    holder: str,
+    router: str,
+    pair: str,
+    amount: int,
+    block_number: int,
+    min_quorum: int = 2,
+) -> RouterPairExecutionFoundationEvidence:
+    """Observe router/pair runtime code plus router-as-spender transferFrom evidence.
+
+    Contract-code quorum proves only that runtime bytecode existed at the supplied
+    addresses at the observed block. It does not establish that either address is an
+    authentic or approved DEX component. The transferFrom probe uses ``from=router`` so
+    the token sees the supplied router as msg.sender/spender, but it still does not
+    execute the router or pair contract itself.
+    """
+    if min_quorum < 2:
+        raise ValueError("min_quorum must be at least 2")
+    if block_number < 0:
+        raise ValueError("block_number must be non-negative")
+    if amount <= 0:
+        raise ValueError("amount must be positive")
+
+    token_address = canonical_chain_address(chain, token)
+    holder_address = canonical_chain_address(chain, holder)
+    router_address = canonical_chain_address(chain, router)
+    pair_address = canonical_chain_address(chain, pair)
+    if None in (token_address, holder_address, router_address, pair_address):
+        raise ValueError("token, holder, router, and pair must be valid addresses for the requested chain")
+    assert token_address is not None
+    assert holder_address is not None
+    assert router_address is not None
+    assert pair_address is not None
+
+    distinct = _distinct(observers)
+    if len(distinct) < min_quorum:
+        raise EvmRpcError("insufficient distinct RPC providers for execution-foundation quorum")
+
+    router_code = observe_contract_code(
+        distinct.values(),
+        chain=chain,
+        address=router_address,
+        block_number=block_number,
+        min_quorum=min_quorum,
+    )
+    pair_code = observe_contract_code(
+        distinct.values(),
+        chain=chain,
+        address=pair_address,
+        block_number=block_number,
+        min_quorum=min_quorum,
+    )
+
+    calldata = _encode_transfer_from(holder_address, pair_address, amount)
+    rows: list[TransferFromProviderEvidence] = []
+    successes: list[str] = []
+    for provider, observer in distinct.items():
+        if observer.chain.key != chain:
+            continue
+        try:
+            observer.attest_chain()
+            result = observer._call(
+                "eth_call",
+                [{"to": token_address, "from": router_address, "data": calldata}, hex(block_number)],
+            )
+            if not isinstance(result, str) or not result.startswith("0x") or len(result) % 2:
+                raise EvmRpcError("invalid transferFrom eth_call response")
+            int(result[2:] or "0", 16)
+        except (EvmRpcError, ValueError):
+            rows.append(TransferFromProviderEvidence(provider, "UNKNOWN_CALL_FAILURE"))
+            continue
+        rows.append(TransferFromProviderEvidence(provider, "TRANSFER_FROM_CALL_SUCCEEDED"))
+        successes.append(provider)
+
+    transfer_from_verdict = (
+        "TRANSFER_FROM_CALL_SUCCEEDED"
+        if len(successes) >= min_quorum
+        else "UNKNOWN_TRANSFER_FROM_EVIDENCE"
+    )
+    verdict = (
+        "ROUTER_PAIR_CODE_AND_TRANSFER_FROM_OBSERVED"
+        if transfer_from_verdict == "TRANSFER_FROM_CALL_SUCCEEDED"
+        else "UNKNOWN_EXECUTION_FOUNDATION_EVIDENCE"
+    )
+
+    token_key = asset_key(chain, token_address)
+    if token_key is None:
+        raise EvmRpcError("token identity could not be canonicalized")
+
+    return RouterPairExecutionFoundationEvidence(
+        chain=chain,
+        token_key=token_key,
+        block_number=block_number,
+        holder=holder_address,
+        router=router_address,
+        pair=pair_address,
+        amount=amount,
+        router_code=router_code,
+        pair_code=pair_code,
+        transfer_from_successful_providers=tuple(sorted(successes)),
+        transfer_from_evidence=tuple(sorted(rows, key=lambda row: row.provider)),
+        transfer_from_verdict=transfer_from_verdict,
+        verdict=verdict,
+        status="UNVERIFIED_ROUTER_PAIR_EXECUTION_FOUNDATION_EVIDENCE",
+        limitations=(
+            "CONTRACT_CODE_PRESENCE_DOES_NOT_PROVE_ROUTER_AUTHENTICITY",
+            "CONTRACT_CODE_PRESENCE_DOES_NOT_PROVE_PAIR_AUTHENTICITY",
+            "DOES_NOT_EXECUTE_ROUTER_SWAP",
+            "DOES_NOT_EXECUTE_PAIR_SWAP",
+            "DOES_NOT_PROVE_OUTPUT_AMOUNT_OR_TAXES",
+            "DOES_NOT_PROVE_REAL_SALE_SUCCESS",
+            "CALL_FAILURE_IS_NOT_A_HONEYPOT_VERDICT",
         ),
     )
