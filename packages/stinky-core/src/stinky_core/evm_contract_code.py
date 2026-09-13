@@ -51,6 +51,18 @@ def _fingerprint(code: str) -> tuple[str, int]:
     return sha256(raw).hexdigest(), len(raw)
 
 
+def _get_code_at_block(observer: EvmReadOnlyRpc, address: str, block_number: int) -> str:
+    observer.attest_chain()
+    result = observer._call("eth_getCode", [address, hex(block_number)])
+    if not isinstance(result, str) or not result.startswith("0x") or len(result) % 2:
+        raise EvmRpcError("invalid eth_getCode response")
+    try:
+        int(result[2:] or "0", 16)
+    except ValueError as exc:
+        raise EvmRpcError("invalid eth_getCode response") from exc
+    return result.lower()
+
+
 def observe_contract_code(
     observers: Iterable[EvmReadOnlyRpc],
     *,
@@ -78,7 +90,7 @@ def observe_contract_code(
         if observer.chain.key != chain:
             continue
         try:
-            code = observer.get_code_at_block(canonical, block_number)
+            code = _get_code_at_block(observer, canonical, block_number)
         except EvmRpcError:
             continue
         if code == "0x":
