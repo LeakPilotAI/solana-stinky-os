@@ -43,3 +43,8 @@ def test_pairing_equal_values():
     row = compare_labels("A", "A")
     assert row.left == "A"
     assert row.verdict == "CONSISTENT"
+
+
+def test_pairing_missing_value():
+    row = compare_labels(None, "A")
+    assert row.verdict == "UNKNOWN"
