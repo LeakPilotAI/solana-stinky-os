@@ -2,9 +2,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Iterable
 
-from .evm_reference_dex_identity import ReferenceDexIdentityAssessment
-from .evm_reference_source_alignment import ReferenceSourceAlignmentAssessment
+from .evm_reference_dex_identity import (
+    ReferenceDexIdentityAssessment,
+    compose_reference_dex_identity_from_record,
+)
+from .evm_reference_dex_record import ReferenceDexEvidenceRecord
+from .evm_reference_fingerprints import DexReferenceContractSource
+from .evm_reference_source_alignment import (
+    ReferenceSourceAlignmentAssessment,
+    assess_reference_source_alignment,
+)
 
 _ALIGNED = "REFERENCE_SOURCE_LINEAGE_ALIGNED"
 _CONFLICT = "REFERENCE_SOURCE_LINEAGE_CONFLICT"
@@ -61,4 +70,36 @@ def compose_reference_dex_lineage(
             "DEX_LINEAGE_IDENTITY_DOES_NOT_PROVE_SWAP_OR_SALE_SUCCESS",
             "DEX_LINEAGE_IDENTITY_DEPENDS_ON_PINNED_SOURCE_CATALOG_COVERAGE",
         ),
+    )
+
+
+def compose_reference_dex_lineage_from_record(
+    record: ReferenceDexEvidenceRecord,
+    sources: Iterable[DexReferenceContractSource],
+) -> ReferenceDexLineageAssessment:
+    """Compose DEX identity and source lineage directly from preserved record evidence."""
+    source_items = tuple(sources)
+    identity = compose_reference_dex_identity_from_record(record, source_items)
+    envelope = record.envelope
+
+    factory_alignment = assess_reference_source_alignment(
+        envelope.factory_fingerprint,
+        identity.factory_deployment,
+        source_items,
+    )
+    pool_alignment = assess_reference_source_alignment(
+        envelope.pool_fingerprint,
+        identity.pool_deployment,
+        source_items,
+    )
+    router_alignment = assess_reference_source_alignment(
+        envelope.router_fingerprint,
+        identity.router_deployment,
+        source_items,
+    )
+    return compose_reference_dex_lineage(
+        identity,
+        factory_alignment,
+        pool_alignment,
+        router_alignment,
     )
