@@ -59,7 +59,7 @@ def _eip1167(code: ContractCodeEvidence) -> str | None:
     match = _EIP1167_RE.fullmatch(code.runtime_bytecode[2:].lower())
     if match is None:
         return None
-    return canonical_chain_address(code.chain, "0x" + match.group(1))
+    return "0x" + match.group(1)
 
 
 def _unique_observers(observers: Iterable[EvmReadOnlyRpc], chain: str, quorum: int) -> dict[str, EvmReadOnlyRpc]:
@@ -117,9 +117,12 @@ def inspect_proxy_authority(observers: Iterable[EvmReadOnlyRpc], code: ContractC
         raise EvmRpcError("contract code lacks independent quorum provenance")
     observers = tuple(observers)
     target = _eip1167(code)
+    target_key = asset_key(code.chain, target) if target else None
+    if target is not None and target_key is None:
+        raise EvmRpcError("minimal proxy target identity could not be canonicalized")
     return ProxyAuthorityEvidence(
         code.chain, code.contract_key, code.block_number, target,
-        asset_key(code.chain, target) if target else None,
+        target_key,
         "CANONICAL_EIP1167_RUNTIME_PATTERN" if target else "NO_CANONICAL_EIP1167_PATTERN",
         _selector(observers, code, IMPLEMENTATION_SELECTOR, "IMPLEMENTATION_SELECTOR_QUORUM_EVIDENCE", min_quorum),
         _selector(observers, code, ADMIN_SELECTOR, "ADMIN_SELECTOR_QUORUM_EVIDENCE", min_quorum),
