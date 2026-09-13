@@ -14,6 +14,10 @@ from stinky_core.evm_contract_code import (
     observe_pool_contract_code,
 )
 from stinky_core.evm_dex_discovery import DexPoolCandidate
+from stinky_core.evm_implementation_registry import (
+    ImplementationFingerprintEntry,
+    classify_implementation_fingerprint,
+)
 from stinky_core.evm_rpc import EvmReadOnlyRpc, EvmRpcError
 
 FACTORY = "0x" + "11" * 20
@@ -49,11 +53,28 @@ def pool():
     )
 
 
-def test_exact_code_quorum_produces_unverified_fingerprint_evidence():
-    evidence = observe_contract_code(
+def code_evidence(address=POOL):
+    return observe_contract_code(
         [observer("https://one.example"), observer("https://two.example")],
-        chain="base", address=POOL, block_number=100,
+        chain="base", address=address, block_number=100,
     )
+
+
+def registry_entry(evidence, *, role="POOL", family="REFERENCE_V2", version="1", chains=("base",), source="fixture-a", byte_length=None):
+    return ImplementationFingerprintEntry(
+        fingerprint_sha256=evidence.fingerprint_sha256,
+        byte_length=evidence.byte_length if byte_length is None else byte_length,
+        contract_role=role,
+        implementation_family=family,
+        implementation_version=version,
+        source_kind="TEST_PROVENANCE",
+        source_reference=source,
+        chains=chains,
+    )
+
+
+def test_exact_code_quorum_produces_unverified_fingerprint_evidence():
+    evidence = code_evidence()
     expected = hashlib.sha256(bytes.fromhex(CODE[2:])).hexdigest()
     assert evidence.contract_key == "base:" + POOL
     assert evidence.fingerprint_sha256 == expected
@@ -108,3 +129,71 @@ def test_code_presence_does_not_claim_factory_authenticity():
         pool(), block_number=100,
     )
     assert evidence.status == "UNVERIFIED_CONTRACT_CODE_EVIDENCE"
+
+
+def test_exact_registry_match_preserves_historical_code_identity_without_claiming_safety():
+    evidence = code_evidence()
+    result = classify_implementation_fingerprint(
+        evidence,
+        [registry_entry(evidence)],
+        expected_role="POOL",
+    )
+    assert result.verdict == "EXACT_IMPLEMENTATION_FINGERPRINT_MATCH"
+    assert result.contract_key == evidence.contract_key
+    assert result.block_number == 100
+    assert result.observed_fingerprint_sha256 == evidence.fingerprint_sha256
+    assert len(result.matches) == 1
+    assert result.matches[0].implementation_family == "REFERENCE_V2"
+    assert result.status == "UNVERIFIED_IMPLEMENTATION_FINGERPRINT_EVIDENCE"
+    assert "EXACT_HASH_MATCH_DOES_NOT_PROVE_TOKEN_OR_DEX_SAFETY" in result.limitations
+
+
+def test_unknown_role_chain_and_byte_length_mismatches_stay_unknown():
+    evidence = code_evidence()
+    empty = classify_implementation_fingerprint(evidence, [], expected_role="POOL")
+    wrong_role = classify_implementation_fingerprint(
+        evidence, [registry_entry(evidence, role="FACTORY")], expected_role="POOL"
+    )
+    wrong_chain = classify_implementation_fingerprint(
+        evidence, [registry_entry(evidence, chains=("robinhood",))], expected_role="POOL"
+    )
+    wrong_length = classify_implementation_fingerprint(
+        evidence, [registry_entry(evidence, byte_length=evidence.byte_length + 1)], expected_role="POOL"
+    )
+    assert empty.verdict == "UNKNOWN_IMPLEMENTATION_FINGERPRINT"
+    assert wrong_role.verdict == "UNKNOWN_IMPLEMENTATION_FINGERPRINT"
+    assert wrong_chain.verdict == "UNKNOWN_IMPLEMENTATION_FINGERPRINT"
+    assert wrong_length.verdict == "UNKNOWN_IMPLEMENTATION_FINGERPRINT"
+
+
+def test_duplicate_registry_source_is_deduplicated_but_conflicting_identity_is_ambiguous():
+    evidence = code_evidence()
+    same = registry_entry(evidence, source="same-source")
+    deduped = classify_implementation_fingerprint(evidence, [same, same], expected_role="POOL")
+    assert deduped.verdict == "EXACT_IMPLEMENTATION_FINGERPRINT_MATCH"
+    assert len(deduped.matches) == 1
+
+    conflict = classify_implementation_fingerprint(
+        evidence,
+        [
+            registry_entry(evidence, family="REFERENCE_V2", version="1", source="source-a"),
+            registry_entry(evidence, family="OTHER_FAMILY", version="9", source="source-b"),
+        ],
+        expected_role="POOL",
+    )
+    assert conflict.verdict == "AMBIGUOUS_IMPLEMENTATION_FINGERPRINT"
+    assert len(conflict.matches) == 2
+
+
+def test_registry_entry_validation_fails_closed_on_bad_metadata():
+    evidence = code_evidence()
+    with pytest.raises(ValueError, match="64 hex"):
+        ImplementationFingerprintEntry("bad", evidence.byte_length, "POOL", "F", "1", "SOURCE", "ref")
+    with pytest.raises(ValueError, match="positive"):
+        ImplementationFingerprintEntry(evidence.fingerprint_sha256, 0, "POOL", "F", "1", "SOURCE", "ref")
+    with pytest.raises(ValueError, match="FACTORY or POOL"):
+        registry_entry(evidence, role="ROUTER")
+    with pytest.raises(ValueError, match="provenance"):
+        ImplementationFingerprintEntry(evidence.fingerprint_sha256, evidence.byte_length, "POOL", "F", "1", "", "")
+    with pytest.raises(ValueError, match="expected_role"):
+        classify_implementation_fingerprint(evidence, [], expected_role="ROUTER")
