@@ -9,7 +9,8 @@ sys.path.insert(0, str(ROOT / "packages" / "stinky-core" / "src"))
 from stinky_core.evm_consensus import EvmConsensusObservation
 from stinky_core.evm_dex_discovery import DexPoolCandidate
 from stinky_core.evm_ingestion import EvmIngestedBlock, EvmLogSource
-from stinky_core.evm_liquidity import observe_v2_reserves, observe_v3_liquidity
+from stinky_core.evm_liquidity import PoolStateSource, V2ReserveEvidence, V3LiquidityEvidence, observe_v2_reserves, observe_v3_liquidity
+from stinky_core.evm_liquidity_history import V2_SYNC_TOPIC, build_v2_reserve_change_history, build_v3_liquidity_change_history, classify_v2_sync_events
 from stinky_core.evm_pool_events import collect_pool_event_evidence
 from stinky_core.evm_rpc import EvmReadOnlyRpc, EvmRpcError
 
@@ -88,3 +89,57 @@ def test_pool_logs_are_retained_only_as_unclassified_quorum_evidence():
     assert len(rows) == 1
     assert rows[0].status == "UNCLASSIFIED_POOL_EVENT_EVIDENCE"
     assert rows[0].evidence_providers == ("rpc-a", "rpc-b")
+
+
+def sync_block(data, providers=("rpc-a", "rpc-b")):
+    head = EvmConsensusObservation("base", 8453, 102, 101, 102, 2, "now", ())
+    log = {"address": POOL, "blockHash": BLOCK_HASH, "transactionHash": TX_HASH, "logIndex": "0x1", "topics": [V2_SYNC_TOPIC], "data": data}
+    return EvmIngestedBlock("base", 8453, 100, BLOCK_HASH, "now", head, (), (log,), tuple(EvmLogSource(p, "d", 1) for p in providers))
+
+
+def test_canonical_v2_sync_is_classified_from_quorum_evidence():
+    rows = classify_v2_sync_events(sync_block(words(10, 20)), [pool()])
+    assert len(rows) == 1
+    assert (rows[0].reserve0, rows[0].reserve1) == (10, 20)
+    assert rows[0].status == "CLASSIFIED_V2_SYNC_EVENT_EVIDENCE"
+
+
+def test_sync_malformed_or_single_provider_evidence_is_not_promoted():
+    assert classify_v2_sync_events(sync_block("0x1234"), [pool()]) == ()
+    assert classify_v2_sync_events(sync_block(words(10, 20), providers=("rpc-a",)), [pool()]) == ()
+
+
+def state_sources():
+    return (PoolStateSource("rpc-a", "0x"), PoolStateSource("rpc-b", "0x"))
+
+
+def v2_state(block_number, reserve0, reserve1, pool_key=None):
+    return V2ReserveEvidence("base", pool_key or "base:" + POOL, POOL, block_number, reserve0, reserve1, 1, "UNVERIFIED_V2_RESERVE_EVIDENCE", state_sources())
+
+
+def v3_state(block_number, liquidity):
+    return V3LiquidityEvidence("base", "base:" + POOL, POOL, block_number, liquidity, "UNVERIFIED_V3_LIQUIDITY_EVIDENCE", state_sources())
+
+
+def test_v2_reserve_history_is_cautious_about_add_remove():
+    rows = build_v2_reserve_change_history([v2_state(100, 10, 20), v2_state(101, 15, 30), v2_state(102, 12, 25)])
+    assert [row.classification for row in rows] == ["POSSIBLE_LIQUIDITY_ADD", "POSSIBLE_LIQUIDITY_REMOVE"]
+    assert all(row.status == "UNVERIFIED_V2_RESERVE_CHANGE_EVIDENCE" for row in rows)
+
+
+def test_v2_mixed_change_is_not_promoted_to_add_or_remove():
+    rows = build_v2_reserve_change_history([v2_state(100, 10, 20), v2_state(101, 15, 18)])
+    assert rows[0].classification == "MIXED_RESERVE_CHANGE"
+
+
+def test_v3_liquidity_history_records_direction_only():
+    rows = build_v3_liquidity_change_history([v3_state(100, 1000), v3_state(101, 900), v3_state(102, 900)])
+    assert [row.classification for row in rows] == ["LIQUIDITY_DECREASED", "NO_LIQUIDITY_CHANGE"]
+    assert rows[0].liquidity_delta == -100
+
+
+def test_history_rejects_cross_pool_or_backward_time():
+    with pytest.raises(EvmRpcError, match="cross chains or pools"):
+        build_v2_reserve_change_history([v2_state(100, 10, 20), v2_state(101, 12, 22, pool_key="base:other")])
+    with pytest.raises(EvmRpcError, match="strictly increasing"):
+        build_v2_reserve_change_history([v2_state(101, 10, 20), v2_state(100, 12, 22)])
