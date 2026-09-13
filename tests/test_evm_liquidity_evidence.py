@@ -9,7 +9,8 @@ sys.path.insert(0, str(ROOT / "packages" / "stinky-core" / "src"))
 from stinky_core.evm_consensus import EvmConsensusObservation
 from stinky_core.evm_dex_discovery import DexPoolCandidate
 from stinky_core.evm_ingestion import EvmIngestedBlock, EvmLogSource
-from stinky_core.evm_liquidity import observe_v2_reserves, observe_v3_liquidity
+from stinky_core.evm_liquidity import PoolStateSource, V2ReserveEvidence, V3LiquidityEvidence, observe_v2_reserves, observe_v3_liquidity
+from stinky_core.evm_liquidity_history import build_v2_reserve_change_history, build_v3_liquidity_change_history
 from stinky_core.evm_pool_events import collect_pool_event_evidence
 from stinky_core.evm_rpc import EvmReadOnlyRpc, EvmRpcError
 
@@ -88,3 +89,39 @@ def test_pool_logs_are_retained_only_as_unclassified_quorum_evidence():
     assert len(rows) == 1
     assert rows[0].status == "UNCLASSIFIED_POOL_EVENT_EVIDENCE"
     assert rows[0].evidence_providers == ("rpc-a", "rpc-b")
+
+
+def state_sources():
+    return (PoolStateSource("rpc-a", "0x"), PoolStateSource("rpc-b", "0x"))
+
+
+def v2_state(block_number, reserve0, reserve1, pool_key=None):
+    return V2ReserveEvidence("base", pool_key or "base:" + POOL, POOL, block_number, reserve0, reserve1, 1, "UNVERIFIED_V2_RESERVE_EVIDENCE", state_sources())
+
+
+def v3_state(block_number, liquidity):
+    return V3LiquidityEvidence("base", "base:" + POOL, POOL, block_number, liquidity, "UNVERIFIED_V3_LIQUIDITY_EVIDENCE", state_sources())
+
+
+def test_v2_reserve_history_is_cautious_about_add_remove():
+    rows = build_v2_reserve_change_history([v2_state(100, 10, 20), v2_state(101, 15, 30), v2_state(102, 12, 25)])
+    assert [row.classification for row in rows] == ["POSSIBLE_LIQUIDITY_ADD", "POSSIBLE_LIQUIDITY_REMOVE"]
+    assert all(row.status == "UNVERIFIED_V2_RESERVE_CHANGE_EVIDENCE" for row in rows)
+
+
+def test_v2_mixed_change_is_not_promoted_to_add_or_remove():
+    rows = build_v2_reserve_change_history([v2_state(100, 10, 20), v2_state(101, 15, 18)])
+    assert rows[0].classification == "MIXED_RESERVE_CHANGE"
+
+
+def test_v3_liquidity_history_records_direction_only():
+    rows = build_v3_liquidity_change_history([v3_state(100, 1000), v3_state(101, 900), v3_state(102, 900)])
+    assert [row.classification for row in rows] == ["LIQUIDITY_DECREASED", "NO_LIQUIDITY_CHANGE"]
+    assert rows[0].liquidity_delta == -100
+
+
+def test_history_rejects_cross_pool_or_backward_time():
+    with pytest.raises(EvmRpcError, match="cross chains or pools"):
+        build_v2_reserve_change_history([v2_state(100, 10, 20), v2_state(101, 12, 22, pool_key="base:other")])
+    with pytest.raises(EvmRpcError, match="strictly increasing"):
+        build_v2_reserve_change_history([v2_state(101, 10, 20), v2_state(100, 12, 22)])
