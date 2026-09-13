@@ -5,7 +5,11 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "packages" / "stinky-core" / "src"))
 
-from stinky_core.evm_dex_provenance_explanation import explain_dex_provenance
+import stinky_core.evm_dex_provenance_explanation as explanation_module
+from stinky_core.evm_dex_provenance_explanation import (
+    explain_dex_provenance,
+    explain_dex_provenance_from_record,
+)
 from stinky_core.evm_dex_provenance_interpretation import DexProvenanceInterpretation
 
 
@@ -70,3 +74,27 @@ def test_mismatch_fails_closed():
         pass
     else:
         raise AssertionError("mismatch must fail closed")
+
+
+def test_record_backed_helper_reuses_same_record_and_source_tuple(monkeypatch):
+    record = object()
+    source_items = (SimpleNamespace(name="one"), SimpleNamespace(name="two"))
+    profile = item(
+        "UNKNOWN_OR_INSUFFICIENT_PROVENANCE",
+        "UNKNOWN_DEX_PROVENANCE_PROFILE",
+        "UNKNOWN_REFERENCE_DEX_LINEAGE_IDENTITY",
+        "UNKNOWN_POOL_DEPLOYMENT_EVIDENCE",
+        "UNKNOWN_FACTORY_ATTESTED_POOL_DEPLOYMENT",
+    ).provenance_profile
+    seen = []
+
+    def compose(supplied_record, supplied_sources):
+        seen.append((supplied_record, supplied_sources))
+        return profile
+
+    monkeypatch.setattr(explanation_module, "compose_dex_provenance_profile_from_record", compose)
+    result = explain_dex_provenance_from_record(record, iter(source_items))
+
+    assert seen == [(record, source_items)]
+    assert result.interpretation.provenance_profile is profile
+    assert result.interpretation.category == "UNKNOWN_OR_INSUFFICIENT_PROVENANCE"
