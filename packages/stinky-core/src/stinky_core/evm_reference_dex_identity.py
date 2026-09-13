@@ -2,9 +2,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Iterable
 
-from .evm_reference_deployment_identity import ReferenceDeploymentIdentityAssessment
-from .evm_reference_dex_authenticity import ReferenceDexAuthenticityAssessment
+from .evm_reference_deployment_identity import (
+    ReferenceDeploymentIdentityAssessment,
+    assess_reference_deployment_address,
+)
+from .evm_reference_dex_authenticity import (
+    ReferenceDexAuthenticityAssessment,
+    assess_reference_dex_authenticity,
+)
+from .evm_reference_dex_record import ReferenceDexEvidenceRecord
+from .evm_reference_fingerprints import DexReferenceContractSource
 
 _MATCH = "PINNED_REFERENCE_DEPLOYMENT_IDENTITY_MATCH"
 _CONFLICT = "PINNED_REFERENCE_DEPLOYMENT_IDENTITY_CONFLICT"
@@ -73,4 +82,33 @@ def compose_reference_dex_identity(
             "DEX_IDENTITY_ASSESSMENT_DOES_NOT_PROVE_SWAP_OR_SALE_SUCCESS",
             "DEX_IDENTITY_CONFIRMATION_REQUIRES_EXPLICIT_DEPLOYMENT_IDENTITY_FOR_EACH_COMPONENT",
         ),
+    )
+
+
+def compose_reference_dex_identity_from_record(
+    record: ReferenceDexEvidenceRecord,
+    sources: Iterable[DexReferenceContractSource],
+) -> ReferenceDexIdentityAssessment:
+    """Compose identity directly from preserved record addresses and pinned sources."""
+    source_items = tuple(sources)
+    envelope = record.envelope
+    factory = envelope.factory_fingerprint
+    pool = envelope.pool_fingerprint
+    router = envelope.router_fingerprint
+
+    implementation = assess_reference_dex_authenticity(record)
+    factory_deployment = assess_reference_deployment_address(
+        factory.chain, factory.address, source_items, expected_role="FACTORY"
+    )
+    pool_deployment = assess_reference_deployment_address(
+        pool.chain, pool.address, source_items, expected_role="POOL"
+    )
+    router_deployment = assess_reference_deployment_address(
+        router.chain, router.address, source_items, expected_role="ROUTER"
+    )
+    return compose_reference_dex_identity(
+        implementation,
+        factory_deployment,
+        pool_deployment,
+        router_deployment,
     )
