@@ -2,9 +2,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Iterable
 
-from .evm_factory_attested_pool import FactoryAttestedPoolDeploymentEvidence
-from .evm_reference_deployment_identity import ReferenceDeploymentIdentityAssessment
+from .evm_factory_attested_pool import (
+    FactoryAttestedPoolDeploymentEvidence,
+    assess_factory_attested_pool_deployment,
+)
+from .evm_reference_deployment_identity import (
+    ReferenceDeploymentIdentityAssessment,
+    assess_reference_deployment_address,
+)
+from .evm_reference_dex_record import ReferenceDexEvidenceRecord
+from .evm_reference_fingerprints import DexReferenceContractSource
 
 _PINNED_MATCH = "PINNED_REFERENCE_DEPLOYMENT_IDENTITY_MATCH"
 _PINNED_CONFLICT = "PINNED_REFERENCE_DEPLOYMENT_IDENTITY_CONFLICT"
@@ -73,3 +82,19 @@ def assess_pool_deployment_evidence_tier(
             "POOL_DEPLOYMENT_EVIDENCE_TIER_DOES_NOT_CHANGE_REFERENCE_DEX_IDENTITY_CONFIRMATION_RULES",
         ),
     )
+
+
+def assess_pool_deployment_evidence_tier_from_record(
+    record: ReferenceDexEvidenceRecord,
+    sources: Iterable[DexReferenceContractSource],
+) -> PoolDeploymentEvidenceTierAssessment:
+    """Build a pool evidence tier directly from preserved record evidence."""
+    pool = record.envelope.pool_fingerprint
+    pinned = assess_reference_deployment_address(
+        pool.chain,
+        pool.address,
+        tuple(sources),
+        expected_role="POOL",
+    )
+    attested = assess_factory_attested_pool_deployment(record.relationship)
+    return assess_pool_deployment_evidence_tier(pinned, attested)
