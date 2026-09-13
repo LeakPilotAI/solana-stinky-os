@@ -51,4 +51,5 @@ jobs:
             tests/test_evm_erc20_discovery.py \
             tests/test_evm_dex_discovery.py \
             tests/test_evm_liquidity_evidence.py \
-            tests/test_evm_contract_code_evidence.py
+            tests/test_evm_contract_code_evidence.py \
+            tests/test_evm_proxy_authority.py
