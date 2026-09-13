@@ -37,3 +37,7 @@ def test_dynamic_array_offset_and_trailing_bytes_fail_closed():
 def test_noncanonical_address_word_fails_closed():
     with pytest.raises(ValueError, match="canonically"):
         address_from_word("base", (b"\x01" * 12) + bytes.fromhex(A[2:]))
+
+
+def test_pairing_equal_values():
+    assert compare_labels("A", "A").left == "A"
