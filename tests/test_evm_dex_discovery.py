@@ -1,16 +1,23 @@
 from pathlib import Path
+import json
 import sys
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "packages" / "stinky-core" / "src"))
 
 from stinky_core.evm_consensus import EvmConsensusObservation, RpcEvidenceSource
 from stinky_core.evm_dex_discovery import (
+    DexPoolCandidate,
     V2_PAIR_CREATED_TOPIC,
     V3_POOL_CREATED_TOPIC,
     discover_dex_pool_candidates,
 )
 from stinky_core.evm_ingestion import EvmIngestedBlock, EvmLogSource
+from stinky_core.evm_liquidity import observe_v2_reserves, observe_v3_liquidity
+from stinky_core.evm_pool_events import collect_pool_event_evidence
+from stinky_core.evm_rpc import EvmReadOnlyRpc, EvmRpcError
 
 
 BLOCK_HASH = "0x" + "ab" * 32
@@ -149,3 +156,66 @@ def test_matching_event_does_not_claim_verified_factory_or_pool():
     candidate = discover_dex_pool_candidates(block([v2_log()]))[0]
     assert "VERIFIED" not in candidate.status.replace("UNVERIFIED", "")
     assert candidate.status == "UNVERIFIED_DEX_POOL_CANDIDATE"
+
+
+def _rpc(url, response):
+    def transport(_url, payload, timeout):
+        request = json.loads(payload)
+        result = "0x2105" if request["method"] == "eth_chainId" else response
+        return {"jsonrpc": "2.0", "id": request["id"], "result": result}
+    rpc = EvmReadOnlyRpc("base", transport=transport)
+    rpc.rpc_url = url
+    return rpc
+
+
+def _words(*values):
+    return "0x" + "".join(f"{value:064x}" for value in values)
+
+
+def test_v2_pool_state_requires_matching_distinct_rpc_quorum():
+    candidate = discover_dex_pool_candidates(block([v2_log()]))[0]
+    evidence = observe_v2_reserves(
+        [_rpc("https://one.example", _words(10, 20, 30)), _rpc("https://two.example", _words(10, 20, 30))],
+        candidate,
+        block_number=100,
+    )
+    assert (evidence.reserve0, evidence.reserve1) == (10, 20)
+    assert evidence.status == "UNVERIFIED_V2_RESERVE_EVIDENCE"
+    assert len(evidence.sources) == 2
+
+
+def test_v3_liquidity_requires_matching_distinct_rpc_quorum():
+    candidate = discover_dex_pool_candidates(block([v3_log()]))[0]
+    evidence = observe_v3_liquidity(
+        [_rpc("https://one.example", _words(999)), _rpc("https://two.example", _words(999))],
+        candidate,
+        block_number=100,
+    )
+    assert evidence.liquidity == 999
+    assert evidence.status == "UNVERIFIED_V3_LIQUIDITY_EVIDENCE"
+
+
+def test_pool_state_disagreement_fails_closed():
+    candidate = discover_dex_pool_candidates(block([v2_log()]))[0]
+    with pytest.raises(EvmRpcError, match="quorum"):
+        observe_v2_reserves(
+            [_rpc("https://one.example", _words(10, 20, 30)), _rpc("https://two.example", _words(11, 20, 30))],
+            candidate,
+            block_number=100,
+        )
+
+
+def test_pool_address_logs_are_preserved_as_unclassified_evidence():
+    candidate = discover_dex_pool_candidates(block([v2_log()]))[0]
+    pool_log = {
+        "address": POOL,
+        "blockHash": BLOCK_HASH,
+        "transactionHash": TX_HASH,
+        "logIndex": "0x9",
+        "topics": ["0x" + "12" * 32],
+        "data": "0x",
+    }
+    rows = collect_pool_event_evidence(block([pool_log]), [candidate])
+    assert len(rows) == 1
+    assert rows[0].status == "UNCLASSIFIED_POOL_EVENT_EVIDENCE"
+    assert rows[0].evidence_providers == ("rpc-a", "rpc-b")
