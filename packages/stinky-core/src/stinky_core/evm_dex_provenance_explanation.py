@@ -2,8 +2,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Iterable
 
-from .evm_dex_provenance_interpretation import DexProvenanceInterpretation
+from .evm_dex_provenance_interpretation import (
+    DexProvenanceInterpretation,
+    interpret_dex_provenance,
+)
+from .evm_dex_provenance_profile import compose_dex_provenance_profile_from_record
+from .evm_reference_dex_record import ReferenceDexEvidenceRecord
+from .evm_reference_fingerprints import DexReferenceContractSource
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,3 +64,14 @@ def explain_dex_provenance(
             "PROVENANCE_EXPLANATION_IS_NOT_AN_EXECUTION_AUTHORIZATION",
         ),
     )
+
+
+def explain_dex_provenance_from_record(
+    record: ReferenceDexEvidenceRecord,
+    sources: Iterable[DexReferenceContractSource],
+) -> DexProvenanceExplanation:
+    """Compose record-backed profile, interpretation, and explanation without new semantics."""
+    source_items = tuple(sources)
+    profile = compose_dex_provenance_profile_from_record(record, source_items)
+    interpretation = interpret_dex_provenance(profile)
+    return explain_dex_provenance(interpretation)
