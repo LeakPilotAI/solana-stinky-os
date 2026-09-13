@@ -10,6 +10,7 @@ OWNER_SELECTOR = "0x8da5cb5b"
 IMPLEMENTATION_SELECTOR = "0x5c60da1b"
 ADMIN_SELECTOR = "0xf851a440"
 EIP1967_IMPLEMENTATION_SLOT = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+EIP1967_BEACON_SLOT = "0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d50"
 EIP1967_ADMIN_SLOT = "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103"
 _PFX = "363d3d373d3d3d363d73"
 _SFX = "5af43d82803e903d91602b57fd5bf3"
@@ -34,6 +35,8 @@ class ProxyAuthorityEvidence:
     admin: AddressEvidence | None
     owner: AddressEvidence | None
     eip1967_implementation: AddressEvidence | None
+    eip1967_beacon: AddressEvidence | None
+    beacon_implementation: AddressEvidence | None
     eip1967_admin: AddressEvidence | None
     status: str
 
@@ -95,14 +98,26 @@ def _quorum_address(chain: str, readings: list[tuple[str, str]], source: str, la
     return AddressEvidence(source, address, key, label, tuple(sorted(providers)))
 
 
-def _selector(observers: Iterable[EvmReadOnlyRpc], code: ContractCodeEvidence, selector: str, label: str, quorum: int) -> AddressEvidence | None:
+def _selector_at_address(
+    observers: Iterable[EvmReadOnlyRpc],
+    chain: str,
+    address: str,
+    block_number: int,
+    selector: str,
+    label: str,
+    quorum: int,
+) -> AddressEvidence | None:
     readings = []
-    for provider, rpc in _unique_observers(observers, code.chain, quorum).items():
+    for provider, rpc in _unique_observers(observers, chain, quorum).items():
         try:
-            readings.append((provider, rpc.call_at_block(code.address, selector, code.block_number)))
+            readings.append((provider, rpc.call_at_block(address, selector, block_number)))
         except EvmRpcError:
             continue
-    return _quorum_address(code.chain, readings, selector, label, quorum)
+    return _quorum_address(chain, readings, selector, label, quorum)
+
+
+def _selector(observers: Iterable[EvmReadOnlyRpc], code: ContractCodeEvidence, selector: str, label: str, quorum: int) -> AddressEvidence | None:
+    return _selector_at_address(observers, code.chain, code.address, code.block_number, selector, label, quorum)
 
 
 def _storage(observers: Iterable[EvmReadOnlyRpc], code: ContractCodeEvidence, slot: str, label: str, quorum: int) -> AddressEvidence | None:
@@ -125,6 +140,35 @@ def inspect_proxy_authority(observers: Iterable[EvmReadOnlyRpc], code: ContractC
     target_key = asset_key(code.chain, target) if target else None
     if target is not None and target_key is None:
         raise EvmRpcError("minimal proxy target identity could not be canonicalized")
+
+    eip1967_implementation = _storage(
+        observers,
+        code,
+        EIP1967_IMPLEMENTATION_SLOT,
+        "EIP1967_IMPLEMENTATION_SLOT_QUORUM_EVIDENCE",
+        min_quorum,
+    )
+    eip1967_beacon = None
+    beacon_implementation = None
+    if eip1967_implementation is None:
+        eip1967_beacon = _storage(
+            observers,
+            code,
+            EIP1967_BEACON_SLOT,
+            "EIP1967_BEACON_SLOT_QUORUM_EVIDENCE",
+            min_quorum,
+        )
+        if eip1967_beacon is not None:
+            beacon_implementation = _selector_at_address(
+                observers,
+                code.chain,
+                eip1967_beacon.address,
+                code.block_number,
+                IMPLEMENTATION_SELECTOR,
+                "BEACON_IMPLEMENTATION_SELECTOR_QUORUM_EVIDENCE",
+                min_quorum,
+            )
+
     return ProxyAuthorityEvidence(
         code.chain, code.contract_key, code.block_number, target,
         target_key,
@@ -132,7 +176,9 @@ def inspect_proxy_authority(observers: Iterable[EvmReadOnlyRpc], code: ContractC
         _selector(observers, code, IMPLEMENTATION_SELECTOR, "IMPLEMENTATION_SELECTOR_QUORUM_EVIDENCE", min_quorum),
         _selector(observers, code, ADMIN_SELECTOR, "ADMIN_SELECTOR_QUORUM_EVIDENCE", min_quorum),
         _selector(observers, code, OWNER_SELECTOR, "OWNER_SELECTOR_QUORUM_EVIDENCE", min_quorum),
-        _storage(observers, code, EIP1967_IMPLEMENTATION_SLOT, "EIP1967_IMPLEMENTATION_SLOT_QUORUM_EVIDENCE", min_quorum),
+        eip1967_implementation,
+        eip1967_beacon,
+        beacon_implementation,
         _storage(observers, code, EIP1967_ADMIN_SLOT, "EIP1967_ADMIN_SLOT_QUORUM_EVIDENCE", min_quorum),
         "UNVERIFIED_PROXY_AUTHORITY_EVIDENCE",
     )
