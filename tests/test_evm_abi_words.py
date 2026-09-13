@@ -53,3 +53,4 @@ def test_pairing_missing_value():
 def test_pairing_different_values():
     row = compare_labels("A", "B")
     assert row.left != row.right
+    assert row.verdict != "CONSISTENT"
