@@ -58,6 +58,7 @@ jobs:
             tests/test_evm_reference_dex_composition.py \
             tests/test_evm_reference_dex_envelope.py \
             tests/test_evm_reference_dex_record.py \
+            tests/test_evm_reference_dex_authenticity.py \
             tests/test_evm_proxy_authority.py \
             tests/test_evm_proxy_history.py \
             tests/test_evm_privileged_inventory.py \
