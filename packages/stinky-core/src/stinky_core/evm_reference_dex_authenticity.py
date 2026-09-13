@@ -8,6 +8,10 @@ from .evm_reference_dex_record import ReferenceDexEvidenceRecord
 _EXACT = "EXACT_IMPLEMENTATION_FINGERPRINT_MATCH"
 _RELATIONSHIP_MATCH = "FACTORY_LOOKUP_MATCHES_DISCOVERED_POOL"
 _FAMILY_CONSISTENT = "DEX_IMPLEMENTATION_FAMILY_CONSISTENT"
+_KNOWN_RELATIONSHIP_CONFLICTS = frozenset({
+    "FACTORY_LOOKUP_REPORTS_NO_POOL",
+    "FACTORY_LOOKUP_CONFLICTS_WITH_DISCOVERED_POOL",
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +50,11 @@ def assess_reference_dex_authenticity(
         and dex_family == _FAMILY_CONSISTENT
     ):
         verdict = "REFERENCE_DEX_COMPONENTS_MATCH"
+    elif (
+        relationship in _KNOWN_RELATIONSHIP_CONFLICTS
+        or dex_family == "DEX_IMPLEMENTATION_FAMILY_CONFLICT"
+    ):
+        verdict = "REFERENCE_DEX_COMPONENT_EVIDENCE_CONFLICT"
     elif (
         "AMBIGUOUS_IMPLEMENTATION_FINGERPRINT" in component_verdicts
         or "UNKNOWN_IMPLEMENTATION_FINGERPRINT" in component_verdicts
