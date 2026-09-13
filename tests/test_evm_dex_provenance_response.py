@@ -6,9 +6,13 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "packages" / "stinky-core" / "src"))
 
+import stinky_core.evm_dex_provenance_response as response_module
 from stinky_core.evm_dex_provenance_explanation import explain_dex_provenance
 from stinky_core.evm_dex_provenance_interpretation import DexProvenanceInterpretation
-from stinky_core.evm_dex_provenance_response import serialize_dex_provenance_snapshot
+from stinky_core.evm_dex_provenance_response import (
+    serialize_dex_provenance_from_record,
+    serialize_dex_provenance_snapshot,
+)
 from stinky_core.evm_dex_provenance_snapshot import snapshot_dex_provenance_explanation
 
 
@@ -86,3 +90,29 @@ def test_serializer_does_not_mutate_snapshot_or_share_limitations_container():
 
     assert source.limitations is original_limitations
     assert "MUTATED_RESPONSE_ONLY" not in source.limitations
+
+
+def test_record_backed_response_delegates_to_existing_snapshot_and_serializer(monkeypatch):
+    record = object()
+    sources = (object(), object())
+    source_snapshot = snapshot(
+        "UNKNOWN_OR_INSUFFICIENT_PROVENANCE",
+        "UNKNOWN_DEX_PROVENANCE_PROFILE",
+        "UNKNOWN_REFERENCE_DEX_LINEAGE_IDENTITY",
+        "UNKNOWN_POOL_DEPLOYMENT_EVIDENCE",
+        "UNKNOWN_FACTORY_ATTESTED_POOL_DEPLOYMENT",
+    )
+    calls = []
+
+    def fake_snapshot(actual_record, actual_sources):
+        calls.append((actual_record, actual_sources))
+        return source_snapshot
+
+    monkeypatch.setattr(response_module, "snapshot_dex_provenance_from_record", fake_snapshot)
+
+    result = serialize_dex_provenance_from_record(record, sources)
+
+    assert calls == [(record, sources)]
+    assert result == serialize_dex_provenance_snapshot(source_snapshot)
+    json.dumps(result)
+    assert "explanation" not in result
