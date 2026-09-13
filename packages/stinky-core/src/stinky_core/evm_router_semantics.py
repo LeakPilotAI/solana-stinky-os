@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .multichain_identity import canonical_chain_address
+from .evm_abi_words import address_array_at, address_from_word, uint_from_word, word_at
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,27 +39,6 @@ _SUPPORTED = {
 }
 
 
-def _word(raw: bytes, index: int) -> bytes:
-    start = index * 32
-    end = start + 32
-    if end > len(raw):
-        raise ValueError("ABI word out of bounds")
-    return raw[start:end]
-
-
-def _uint(word: bytes) -> int:
-    return int.from_bytes(word, "big")
-
-
-def _address(chain: str, word: bytes) -> str:
-    if len(word) != 32 or any(word[:12]):
-        raise ValueError("address word is not canonically ABI encoded")
-    canonical = canonical_chain_address(chain, "0x" + word[12:].hex())
-    if canonical is None:
-        raise ValueError("decoded address is invalid for chain")
-    return canonical
-
-
 def decode_router_calldata(*, chain: str, calldata: str, value: int = 0) -> RouterCalldataSemantics:
     if value < 0:
         raise ValueError("value must be non-negative")
@@ -87,23 +66,20 @@ def decode_router_calldata(*, chain: str, calldata: str, value: int = 0) -> Rout
             raise ValueError("calldata shorter than supported ABI head")
         if not native_input and value != 0:
             raise ValueError("nonpayable supported signature received non-zero value")
-        amount_in = value if native_input else _uint(_word(payload, amount_in_i))
-        amount_out_min = _uint(_word(payload, min_out_i))
-        path_offset = _uint(_word(payload, path_i))
-        recipient = _address(chain, _word(payload, recipient_i))
-        deadline = _uint(_word(payload, deadline_i))
-        if path_offset < head_size or path_offset % 32:
-            raise ValueError("path offset is not canonical")
-        if path_offset + 32 > len(payload):
-            raise ValueError("path offset exceeds calldata")
-        path_len = _uint(payload[path_offset:path_offset + 32])
-        if path_len < 2:
+        amount_in = value if native_input else uint_from_word(word_at(payload, amount_in_i))
+        amount_out_min = uint_from_word(word_at(payload, min_out_i))
+        path_offset = uint_from_word(word_at(payload, path_i))
+        recipient = address_from_word(chain, word_at(payload, recipient_i))
+        deadline = uint_from_word(word_at(payload, deadline_i))
+        path = address_array_at(
+            payload,
+            offset=path_offset,
+            minimum_offset=head_size,
+            chain=chain,
+            require_exact_end=True,
+        )
+        if len(path) < 2:
             raise ValueError("router path must contain at least two addresses")
-        path_start = path_offset + 32
-        path_end = path_start + (path_len * 32)
-        if path_end != len(payload):
-            raise ValueError("supported calldata has unexpected trailing or missing bytes")
-        path = tuple(_address(chain, payload[i:i + 32]) for i in range(path_start, path_end, 32))
     except (ValueError, IndexError, TypeError) as exc:
         return RouterCalldataSemantics(
             selector, signature, family, None, None, (), None, None,
