@@ -10,9 +10,6 @@ from stinky_core.evm_contract_code import ContractCodeEvidence, ContractCodeSour
 from stinky_core.evm_proxy_authority import (
     EIP1967_ADMIN_SLOT,
     EIP1967_IMPLEMENTATION_SLOT,
-    _PFX,
-    _SFX,
-    _eip1167,
     inspect_proxy_authority,
 )
 from stinky_core.evm_rpc import EvmReadOnlyRpc, EvmRpcError
@@ -68,8 +65,14 @@ def test_common_selectors_require_matching_quorum():
 
 
 def test_eip1967_storage_requires_matching_quorum():
-    storage = {EIP1967_IMPLEMENTATION_SLOT: word(IMPL), EIP1967_ADMIN_SLOT: word(ADMIN)}
-    result = inspect_proxy_authority([rpc("https://one.example", storage=storage), rpc("https://two.example", storage=storage)], code())
+    storage = {
+        EIP1967_IMPLEMENTATION_SLOT: word(IMPL),
+        EIP1967_ADMIN_SLOT: word(ADMIN),
+    }
+    result = inspect_proxy_authority(
+        [rpc("https://one.example", storage=storage), rpc("https://two.example", storage=storage)],
+        code(),
+    )
     assert result.eip1967_implementation.address == IMPL
     assert result.eip1967_implementation.status == "EIP1967_IMPLEMENTATION_SLOT_QUORUM_EVIDENCE"
     assert result.eip1967_admin.address == ADMIN
@@ -85,17 +88,24 @@ def test_eip1967_storage_disagreement_is_not_promoted():
 
 def test_storage_read_is_pinned_to_contract_evidence_block():
     seen = []
+
     def transport(_url, payload, timeout):
         req = json.loads(payload)
-        if req["method"] == "eth_chainId": result = "0x2105"
-        elif req["method"] == "eth_call": result = "0x"
+        if req["method"] == "eth_chainId":
+            result = "0x2105"
+        elif req["method"] == "eth_call":
+            result = "0x"
         elif req["method"] == "eth_getStorageAt":
             seen.append(req["params"][2])
             result = word(IMPL) if req["params"][1] == EIP1967_IMPLEMENTATION_SLOT else "0x" + "0" * 64
-        else: raise AssertionError(f"unexpected RPC method: {req['method']}")
+        else:
+            raise AssertionError(f"unexpected RPC method: {req['method']}")
         return {"jsonrpc": "2.0", "id": req["id"], "result": result}
-    a = EvmReadOnlyRpc("base", transport=transport); a.rpc_url = "https://one.example"
-    b = EvmReadOnlyRpc("base", transport=transport); b.rpc_url = "https://two.example"
+
+    a = EvmReadOnlyRpc("base", transport=transport)
+    b = EvmReadOnlyRpc("base", transport=transport)
+    a.rpc_url = "https://one.example"
+    b.rpc_url = "https://two.example"
     result = inspect_proxy_authority([a, b], code())
     assert result.eip1967_implementation.address == IMPL
     assert seen and set(seen) == {hex(code().block_number)}
@@ -103,16 +113,9 @@ def test_storage_read_is_pinned_to_contract_evidence_block():
 
 def test_canonical_eip1167_target_is_detected_only_as_pattern():
     runtime = "0x363d3d373d3d3d363d73" + TARGET[2:] + "5af43d82803e903d91602b57fd5bf3"
-    evidence = code(runtime)
-    body = evidence.runtime_bytecode[2:].lower()
-    assert len(TARGET[2:]) == 40
-    assert body.startswith(_PFX)
-    assert body.endswith(_SFX)
-    assert len(body) == len(_PFX) + 40 + len(_SFX)
-    assert body[len(_PFX):len(_PFX) + 40] == TARGET[2:]
-    assert _eip1167(evidence) == TARGET
-    result = inspect_proxy_authority([rpc("https://one.example"), rpc("https://two.example")], evidence)
+    result = inspect_proxy_authority([rpc("https://one.example"), rpc("https://two.example")], code(runtime))
     assert result.minimal_proxy_target == TARGET
+    assert result.minimal_proxy_target_key == "base:" + TARGET
     assert result.minimal_proxy_status == "CANONICAL_EIP1167_RUNTIME_PATTERN"
 
 
