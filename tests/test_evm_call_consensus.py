@@ -117,7 +117,9 @@ def test_exact_call_observation_preserves_block_and_provider_quorum():
     assert obs.block_number == 123
     assert obs.target == FACTORY
     assert obs.consensus.verdict == "EXACT_RESULT_QUORUM"
-    assert obs.consensus.providers == ("one.example", "two.example")
+    assert len(obs.consensus.providers) == 2
+    assert obs.consensus.providers[0].startswith("one.example:")
+    assert obs.consensus.providers[1].startswith("two.example:")
 
 
 def test_exact_call_disagreement_failure_and_duplicates_fail_closed():
