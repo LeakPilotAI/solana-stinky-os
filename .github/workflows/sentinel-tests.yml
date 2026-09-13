@@ -60,4 +60,5 @@ jobs:
             tests/test_evm_call_consensus.py \
             tests/test_evm_router_call.py \
             tests/test_evm_abi_words.py \
-            tests/test_evm_uint_array.py
+            tests/test_evm_uint_array.py \
+            tests/test_evm_pair_identity.py
