@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Iterable
 
-from .evm_contract_code import ContractCodeEvidence
+from .evm_consensus import provider_fingerprint
+from .evm_contract_code import ContractCodeEvidence, observe_contract_code
 from .evm_dex_discovery import DexPoolCandidate
-from .evm_rpc import EvmRpcError
+from .evm_rpc import EvmReadOnlyRpc, EvmRpcError
 from .multichain_identity import canonical_chain_address
 
 V2_FACTORY_LOOKUP_SELECTOR = "0xe6a43905"
@@ -69,3 +71,10 @@ def build_factory_lookup(pool: DexPoolCandidate) -> str:
             raise ValueError("V3 pool candidate requires valid uint24 fee tier")
         return V3_FACTORY_LOOKUP_SELECTOR + _address_word(token0) + _address_word(token1) + f"{pool.fee_tier:064x}"
     raise ValueError("unsupported DEX pool event family")
+
+
+def _distinct_observers(observers: Iterable[EvmReadOnlyRpc]) -> dict[str, EvmReadOnlyRpc]:
+    distinct: dict[str, EvmReadOnlyRpc] = {}
+    for observer in observers:
+        distinct.setdefault(provider_fingerprint(observer.rpc_url), observer)
+    return distinct
