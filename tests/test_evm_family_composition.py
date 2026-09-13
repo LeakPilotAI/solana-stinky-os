@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "packages" / "stinky-core" / "src"))
 
 from stinky_core.evm_contract_code import ContractCodeEvidence
+from stinky_core.evm_dex_family_composition import compose_dex_family_consistency
 from stinky_core.evm_factory_evidence import FactoryRelationshipEvidence
 from stinky_core.evm_family_composition import compose_factory_pool_family_consistency
 from stinky_core.evm_implementation_registry import (
@@ -16,6 +17,7 @@ from stinky_core.evm_implementation_registry import (
 
 FACTORY = "0x" + "11" * 20
 POOL = "0x" + "22" * 20
+ROUTER = "0x" + "55" * 20
 TOKEN0 = "0x" + "33" * 20
 TOKEN1 = "0x" + "44" * 20
 
@@ -80,12 +82,16 @@ def fingerprint(address, role, family, *, chain="base", block=100, verdict="EXAC
     )
 
 
-def test_same_exact_family_is_consistent_at_same_historical_block():
-    result = compose_factory_pool_family_consistency(
-        relationship(),
-        fingerprint(FACTORY, "FACTORY", "REFERENCE_V2"),
-        fingerprint(POOL, "POOL", "REFERENCE_V2"),
+def factory_pool_result(*, family="REFERENCE_V2", pool_family=None, relationship_value="FACTORY_LOOKUP_MATCHES_DISCOVERED_POOL"):
+    return compose_factory_pool_family_consistency(
+        relationship(value=relationship_value),
+        fingerprint(FACTORY, "FACTORY", family),
+        fingerprint(POOL, "POOL", family if pool_family is None else pool_family),
     )
+
+
+def test_same_exact_family_is_consistent_at_same_historical_block():
+    result = factory_pool_result()
     assert result.verdict == "FACTORY_POOL_IMPLEMENTATION_FAMILY_CONSISTENT"
     assert result.factory_family == "REFERENCE_V2"
     assert result.pool_family == "REFERENCE_V2"
@@ -94,11 +100,7 @@ def test_same_exact_family_is_consistent_at_same_historical_block():
 
 
 def test_known_different_families_are_explicit_conflict():
-    result = compose_factory_pool_family_consistency(
-        relationship(),
-        fingerprint(FACTORY, "FACTORY", "REFERENCE_V2"),
-        fingerprint(POOL, "POOL", "OTHER_FAMILY"),
-    )
+    result = factory_pool_result(pool_family="OTHER_FAMILY")
     assert result.verdict == "FACTORY_POOL_IMPLEMENTATION_FAMILY_CONFLICT"
 
 
@@ -119,11 +121,7 @@ def test_missing_or_ambiguous_fingerprint_evidence_stays_unknown():
 
 
 def test_unconfirmed_factory_pool_relationship_stays_unknown():
-    result = compose_factory_pool_family_consistency(
-        relationship(value="FACTORY_LOOKUP_REPORTS_NO_POOL"),
-        fingerprint(FACTORY, "FACTORY", "REFERENCE_V2"),
-        fingerprint(POOL, "POOL", "REFERENCE_V2"),
-    )
+    result = factory_pool_result(relationship_value="FACTORY_LOOKUP_REPORTS_NO_POOL")
     assert result.verdict == "UNKNOWN_FACTORY_POOL_FAMILY_CONSISTENCY"
     assert result.issues == ("FACTORY_POOL_RELATIONSHIP_NOT_CONFIRMED",)
 
@@ -156,10 +154,62 @@ def test_chain_block_address_and_role_mismatches_fail_closed():
 
 
 def test_consistency_result_keeps_non_authenticity_limitations():
-    result = compose_factory_pool_family_consistency(
-        relationship(),
-        fingerprint(FACTORY, "FACTORY", "REFERENCE_V2"),
-        fingerprint(POOL, "POOL", "REFERENCE_V2"),
-    )
+    result = factory_pool_result()
     assert "FAMILY_CONSISTENCY_DOES_NOT_PROVE_FACTORY_OR_POOL_AUTHENTICITY" in result.limitations
     assert "FAMILY_CONSISTENCY_DOES_NOT_PROVE_TOKEN_OR_DEX_SAFETY" in result.limitations
+
+
+def test_router_same_family_completes_dex_family_consistency():
+    result = compose_dex_family_consistency(
+        factory_pool_result(),
+        fingerprint(ROUTER, "ROUTER", "REFERENCE_V2"),
+    )
+    assert result.verdict == "DEX_IMPLEMENTATION_FAMILY_CONSISTENT"
+    assert result.factory_family == result.pool_family == result.router_family == "REFERENCE_V2"
+    assert result.block_number == 100
+    assert result.status == "UNVERIFIED_DEX_FAMILY_CONSISTENCY_EVIDENCE"
+
+
+def test_router_known_family_difference_is_explicit_dex_conflict():
+    result = compose_dex_family_consistency(
+        factory_pool_result(),
+        fingerprint(ROUTER, "ROUTER", "OTHER_FAMILY"),
+    )
+    assert result.verdict == "DEX_IMPLEMENTATION_FAMILY_CONFLICT"
+
+
+def test_router_unknown_or_ambiguous_family_keeps_dex_unknown():
+    result = compose_dex_family_consistency(
+        factory_pool_result(),
+        fingerprint(ROUTER, "ROUTER", None, verdict="UNKNOWN_IMPLEMENTATION_FINGERPRINT"),
+    )
+    assert result.verdict == "UNKNOWN_DEX_IMPLEMENTATION_FAMILY_CONSISTENCY"
+    assert result.issues == ("ROUTER_IMPLEMENTATION_FAMILY_INCOMPLETE_OR_AMBIGUOUS",)
+
+
+def test_unconfirmed_factory_pool_family_keeps_dex_unknown():
+    result = compose_dex_family_consistency(
+        factory_pool_result(pool_family="OTHER_FAMILY"),
+        fingerprint(ROUTER, "ROUTER", "REFERENCE_V2"),
+    )
+    assert result.verdict == "UNKNOWN_DEX_IMPLEMENTATION_FAMILY_CONSISTENCY"
+    assert result.issues == ("FACTORY_POOL_FAMILY_NOT_CONFIRMED",)
+
+
+def test_router_chain_block_and_role_mismatches_fail_closed():
+    base = factory_pool_result()
+    with pytest.raises(ValueError, match="chain"):
+        compose_dex_family_consistency(base, fingerprint(ROUTER, "ROUTER", "REFERENCE_V2", chain="robinhood"))
+    with pytest.raises(ValueError, match="historical block"):
+        compose_dex_family_consistency(base, fingerprint(ROUTER, "ROUTER", "REFERENCE_V2", block=99))
+    with pytest.raises(ValueError, match="ROUTER role"):
+        compose_dex_family_consistency(base, fingerprint(ROUTER, "POOL", "REFERENCE_V2"))
+
+
+def test_dex_family_consistency_keeps_non_authenticity_limitations():
+    result = compose_dex_family_consistency(
+        factory_pool_result(),
+        fingerprint(ROUTER, "ROUTER", "REFERENCE_V2"),
+    )
+    assert "DEX_FAMILY_CONSISTENCY_DOES_NOT_PROVE_FACTORY_POOL_OR_ROUTER_AUTHENTICITY" in result.limitations
+    assert "DEX_FAMILY_CONSISTENCY_DOES_NOT_PROVE_TOKEN_OR_DEX_SAFETY" in result.limitations
