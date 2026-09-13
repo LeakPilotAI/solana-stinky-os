@@ -9,7 +9,9 @@ sys.path.insert(0, str(ROOT / "packages" / "stinky-core" / "src"))
 from stinky_core.evm_contract_code import ContractCodeEvidence, ContractCodeSource
 from stinky_core.evm_proxy_authority import (
     EIP1967_ADMIN_SLOT,
+    EIP1967_BEACON_SLOT,
     EIP1967_IMPLEMENTATION_SLOT,
+    IMPLEMENTATION_SELECTOR,
     inspect_proxy_authority,
 )
 from stinky_core.evm_rpc import EvmReadOnlyRpc, EvmRpcError
@@ -19,6 +21,8 @@ TARGET = "0x" + "22" * 20
 OWNER = "0x" + "33" * 20
 ADMIN = "0x" + "44" * 20
 IMPL = "0x" + "55" * 20
+BEACON = "0x" + "66" * 20
+OTHER = "0x" + "77" * 20
 
 
 def word(address):
@@ -43,7 +47,9 @@ def rpc(url, replies=None, storage=None):
         if req["method"] == "eth_chainId":
             result = "0x2105"
         elif req["method"] == "eth_call":
-            result = replies.get(req["params"][0]["data"], "0x")
+            to = req["params"][0]["to"]
+            data = req["params"][0]["data"]
+            result = replies.get((to, data), replies.get(data, "0x"))
         elif req["method"] == "eth_getStorageAt":
             result = storage.get(req["params"][1], "0x" + "0" * 64)
         else:
@@ -77,6 +83,8 @@ def test_eip1967_storage_requires_matching_quorum():
     assert result.eip1967_implementation.status == "EIP1967_IMPLEMENTATION_SLOT_QUORUM_EVIDENCE"
     assert result.eip1967_admin.address == ADMIN
     assert result.eip1967_admin.status == "EIP1967_ADMIN_SLOT_QUORUM_EVIDENCE"
+    assert result.eip1967_beacon is None
+    assert result.beacon_implementation is None
 
 
 def test_eip1967_storage_disagreement_is_not_promoted():
@@ -84,6 +92,97 @@ def test_eip1967_storage_disagreement_is_not_promoted():
     two = rpc("https://two.example", storage={EIP1967_IMPLEMENTATION_SLOT: word(ADMIN)})
     result = inspect_proxy_authority([one, two], code())
     assert result.eip1967_implementation is None
+
+
+def test_beacon_slot_and_implementation_require_matching_quorum():
+    storage = {EIP1967_BEACON_SLOT: word(BEACON)}
+    replies = {(BEACON, IMPLEMENTATION_SELECTOR): word(IMPL)}
+    result = inspect_proxy_authority(
+        [rpc("https://one.example", replies, storage), rpc("https://two.example", replies, storage)],
+        code(),
+    )
+    assert result.eip1967_implementation is None
+    assert result.eip1967_beacon.address == BEACON
+    assert result.eip1967_beacon.status == "EIP1967_BEACON_SLOT_QUORUM_EVIDENCE"
+    assert result.beacon_implementation.address == IMPL
+    assert result.beacon_implementation.address_key == "base:" + IMPL
+    assert result.beacon_implementation.status == "BEACON_IMPLEMENTATION_SELECTOR_QUORUM_EVIDENCE"
+
+
+def test_direct_implementation_slot_suppresses_beacon_resolution():
+    storage = {
+        EIP1967_IMPLEMENTATION_SLOT: word(IMPL),
+        EIP1967_BEACON_SLOT: word(BEACON),
+    }
+    replies = {(BEACON, IMPLEMENTATION_SELECTOR): word(OTHER)}
+    result = inspect_proxy_authority(
+        [rpc("https://one.example", replies, storage), rpc("https://two.example", replies, storage)],
+        code(),
+    )
+    assert result.eip1967_implementation.address == IMPL
+    assert result.eip1967_beacon is None
+    assert result.beacon_implementation is None
+
+
+def test_beacon_slot_disagreement_is_not_promoted_or_resolved():
+    one = rpc("https://one.example", storage={EIP1967_BEACON_SLOT: word(BEACON)})
+    two = rpc("https://two.example", storage={EIP1967_BEACON_SLOT: word(OTHER)})
+    result = inspect_proxy_authority([one, two], code())
+    assert result.eip1967_beacon is None
+    assert result.beacon_implementation is None
+
+
+def test_beacon_implementation_disagreement_is_not_promoted():
+    storage = {EIP1967_BEACON_SLOT: word(BEACON)}
+    one = rpc("https://one.example", {(BEACON, IMPLEMENTATION_SELECTOR): word(IMPL)}, storage)
+    two = rpc("https://two.example", {(BEACON, IMPLEMENTATION_SELECTOR): word(OTHER)}, storage)
+    result = inspect_proxy_authority([one, two], code())
+    assert result.eip1967_beacon.address == BEACON
+    assert result.beacon_implementation is None
+
+
+def test_malformed_beacon_implementation_response_is_not_promoted():
+    storage = {EIP1967_BEACON_SLOT: word(BEACON)}
+    replies = {(BEACON, IMPLEMENTATION_SELECTOR): "0x1234"}
+    result = inspect_proxy_authority(
+        [rpc("https://one.example", replies, storage), rpc("https://two.example", replies, storage)],
+        code(),
+    )
+    assert result.eip1967_beacon.address == BEACON
+    assert result.beacon_implementation is None
+
+
+def test_beacon_storage_and_resolution_are_pinned_to_contract_evidence_block():
+    seen_storage = []
+    seen_calls = []
+
+    def transport(_url, payload, timeout):
+        req = json.loads(payload)
+        if req["method"] == "eth_chainId":
+            result = "0x2105"
+        elif req["method"] == "eth_call":
+            seen_calls.append((req["params"][0]["to"], req["params"][1]))
+            if req["params"][0]["to"] == BEACON and req["params"][0]["data"] == IMPLEMENTATION_SELECTOR:
+                result = word(IMPL)
+            else:
+                result = "0x"
+        elif req["method"] == "eth_getStorageAt":
+            seen_storage.append((req["params"][1], req["params"][2]))
+            result = word(BEACON) if req["params"][1] == EIP1967_BEACON_SLOT else "0x" + "0" * 64
+        else:
+            raise AssertionError(f"unexpected RPC method: {req['method']}")
+        return {"jsonrpc": "2.0", "id": req["id"], "result": result}
+
+    a = EvmReadOnlyRpc("base", transport=transport)
+    b = EvmReadOnlyRpc("base", transport=transport)
+    a.rpc_url = "https://one.example"
+    b.rpc_url = "https://two.example"
+    result = inspect_proxy_authority([a, b], code())
+    assert result.eip1967_beacon.address == BEACON
+    assert result.beacon_implementation.address == IMPL
+    assert seen_storage and {block for _, block in seen_storage} == {hex(code().block_number)}
+    assert seen_calls and {block for _, block in seen_calls} == {hex(code().block_number)}
+    assert any(address == BEACON for address, _ in seen_calls)
 
 
 def test_storage_read_is_pinned_to_contract_evidence_block():
@@ -112,7 +211,7 @@ def test_storage_read_is_pinned_to_contract_evidence_block():
 
 
 def test_canonical_eip1167_target_is_detected_only_as_pattern():
-    runtime = "0x363d3d373d3d3d363d73" + TARGET[2:] + "5af43d82803e903d91602b57fd5bf3"
+    runtime = "0x363d3d373d3d363d73" + TARGET[2:] + "5af43d82803e903d91602b57fd5bf3"
     result = inspect_proxy_authority([rpc("https://one.example"), rpc("https://two.example")], code(runtime))
     assert result.minimal_proxy_target == TARGET
     assert result.minimal_proxy_target_key == "base:" + TARGET
