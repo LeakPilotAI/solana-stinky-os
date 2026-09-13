@@ -191,9 +191,9 @@ def test_registry_entry_validation_fails_closed_on_bad_metadata():
         ImplementationFingerprintEntry("bad", evidence.byte_length, "POOL", "F", "1", "SOURCE", "ref")
     with pytest.raises(ValueError, match="positive"):
         ImplementationFingerprintEntry(evidence.fingerprint_sha256, 0, "POOL", "F", "1", "SOURCE", "ref")
-    with pytest.raises(ValueError, match="FACTORY or POOL"):
-        registry_entry(evidence, role="ROUTER")
+    with pytest.raises(ValueError, match="FACTORY, POOL, or ROUTER"):
+        registry_entry(evidence, role="UNKNOWN")
     with pytest.raises(ValueError, match="provenance"):
         ImplementationFingerprintEntry(evidence.fingerprint_sha256, evidence.byte_length, "POOL", "F", "1", "", "")
     with pytest.raises(ValueError, match="expected_role"):
-        classify_implementation_fingerprint(evidence, [], expected_role="ROUTER")
+        classify_implementation_fingerprint(evidence, [], expected_role="UNKNOWN")
