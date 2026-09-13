@@ -1,6 +1,7 @@
 import pytest
 
 from stinky_core.evm_abi_words import address_array_at, address_from_word, uint_from_word, word_at
+from stinky_core.evidence_pairing import compare_labels
 
 A = "0x" + "11" * 20
 B = "0x" + "22" * 20
