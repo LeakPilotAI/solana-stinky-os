@@ -113,6 +113,15 @@ The observation command reuses the existing immutable #249 schedule/request type
 
 Successful and failed invocations emit deterministic JSON. Operator responses retain these safety markers:
 
+Observation and preflight failures use fixed diagnostic categories and messages.
+They never echo exception text, malformed input values, credential-bearing RPC
+endpoints, exception context, or local file paths. A failed command returns exit
+code 1 (invalid command syntax retains exit code 2); preflight failures also retain
+`validated_offline=false`. Invalid arguments use sanitized JSON instead of echoing
+argument values to stderr; `--help` remains available. Check the input
+schema/configuration for validation errors and provider/service availability for
+I/O or RPC errors. Successful output contracts are unchanged.
+
 ```json
 {
   "read_only": true,
