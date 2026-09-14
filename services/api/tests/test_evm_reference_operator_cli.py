@@ -9,6 +9,7 @@ from stinky_api.evm_reference_operator_transport import (
     ReferenceSourcePayload,
     build_operator_request,
     serialize_operator_result,
+    validate_operator_payload,
 )
 
 
@@ -74,10 +75,29 @@ def test_transport_builds_existing_immutable_runtime_types():
 
 def test_transport_fails_closed_without_quorum():
     with pytest.raises(ValueError, match="not enough preconfigured observers"):
-        build_operator_request(
-            payload(),
-            (SimpleNamespace(rpc_url="https://rpc-a.example"),),
-        )
+        build_operator_request(payload(), (SimpleNamespace(rpc_url="https://rpc-a.example"),))
+
+
+def test_offline_payload_preflight_is_audit_safe():
+    result = validate_operator_payload(payload())
+    assert result["validated_offline"] is True
+    assert result["read_only"] is True
+    assert result["execution_authorized"] is False
+    assert result["chain"] == "base"
+    assert result["chain_id"] == 8453
+    assert result["source_count"] == 2
+
+
+def test_offline_payload_preflight_fails_closed_on_bad_evidence():
+    with pytest.raises(ValueError, match="chain_id mismatch"):
+        validate_operator_payload(payload().model_copy(update={"chain_id": 1}))
+    with pytest.raises(ValueError, match="32-byte hex"):
+        validate_operator_payload(payload().model_copy(update={"block_hash": "0x1234"}))
+    with pytest.raises(ValueError, match="canonical address"):
+        validate_operator_payload(payload().model_copy(update={"pool_address": "<REPLACE_POOL_ADDRESS>"}))
+    bad_source = payload().sources[0].model_copy(update={"source_repository": "<REPLACE_SOURCE_REPOSITORY>"})
+    with pytest.raises(ValueError, match="unresolved operator template placeholder"):
+        validate_operator_payload(payload().model_copy(update={"sources": (bad_source,)}))
 
 
 def test_result_serialization_is_audit_safe_and_non_execution():
