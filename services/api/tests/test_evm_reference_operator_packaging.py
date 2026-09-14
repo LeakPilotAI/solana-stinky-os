@@ -10,6 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 API_PYPROJECT = REPO_ROOT / "services" / "api" / "pyproject.toml"
 RUNBOOK = REPO_ROOT / "docs" / "EVM_REFERENCE_OPERATOR.md"
 PREFLIGHT_CLI = REPO_ROOT / "services" / "api" / "src" / "stinky_api" / "evm_reference_operator_preflight_cli.py"
+OBSERVE_CLI = REPO_ROOT / "services" / "api" / "src" / "stinky_api" / "evm_reference_operator_cli.py"
 
 
 def test_operator_console_scripts_are_packaged() -> None:
@@ -40,6 +41,18 @@ def test_preflight_source_is_offline_only() -> None:
     assert "--rpc-env" not in text
 
 
+def test_observation_source_pre_attests_providers_before_database() -> None:
+    text = OBSERVE_CLI.read_text(encoding="utf-8")
+    validate_at = text.index("validate_operator_payload(payload)")
+    build_at = text.index("observers = build_cli_observers")
+    attest_at = text.index("attest_cli_observers(observers)")
+    database_at = text.index("async with SessionLocal()")
+    invoke_at = text.index("await invoke_reference_dex_observation")
+    assert validate_at < build_at < attest_at < database_at < invoke_at
+    assert "for observer in observers:" in text
+    assert "observer.attest_chain()" in text
+
+
 def test_operator_runbook_preserves_explicit_read_only_contract() -> None:
     text = RUNBOOK.read_text(encoding="utf-8")
     required = (
@@ -53,6 +66,8 @@ def test_operator_runbook_preserves_explicit_read_only_contract() -> None:
         "Live trading remains locked",
         "exact historical `block_number`",
         "completely offline",
+        "every configured provider",
+        "before `SessionLocal`",
     )
     for phrase in required:
         assert phrase in text

@@ -6,7 +6,7 @@ This runbook covers the explicit, read-only `genesis-evm-reference-observe` comm
 
 The observation command is observation-only. It does not accept private keys, wallets, signers, transaction payloads, approvals, admission decisions, opportunity scores, or execution authorization. It does not start a daemon or polling loop. Each invocation performs at most one explicit durable reference observation through the existing #249/#250 runtime seams.
 
-The observation path always runs the same shared offline payload validation used by preflight before it constructs RPC observers or opens a database session. Invalid chain identity, malformed addresses or hashes, unresolved required placeholders, or other offline-validation failures therefore stop before provider or durable runtime access even if the standalone preflight command was skipped.
+The observation path always runs the same shared offline payload validation used by preflight before it constructs RPC observers or opens a database session. After observer construction, every configured provider must also successfully attest its registered chain through the existing read-only `eth_chainId` check before Genesis opens `SessionLocal` or invokes durable observation. A wrong-chain, malformed, unreachable, or otherwise non-attesting provider fails the entire invocation closed; Genesis does not discard a failed provider to salvage quorum.
 
 The preflight command is stricter: it performs no RPC calls, requires no RPC environment variables, opens no database session, advances no durable trigger state, and performs no observation, scheduling, admission, scoring, signing, wallet, transaction, or execution action.
 
@@ -78,6 +78,8 @@ Each configured URL must:
 - be non-empty,
 - be distinct from every other provider URL,
 - correspond to the chain named in the operator payload.
+
+Before database or durable-runtime access, every configured provider is contacted with the existing read-only chain-attestation method. Every provider must return the expected chain ID. Any provider failure aborts the invocation before `SessionLocal`; failed providers are never silently removed to preserve quorum.
 
 Example PowerShell session:
 
