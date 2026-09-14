@@ -122,6 +122,134 @@ def test_observation_path_validates_before_rpc_or_database(monkeypatch):
     assert touched == []
 
 
+def test_provider_pre_attestation_rejects_one_bad_provider_before_database(monkeypatch):
+    events = []
+
+    class FakeObserver:
+        def __init__(self, name, *, fail=False):
+            self.name = name
+            self.fail = fail
+            self.rpc_url = f"https://{name}.example"
+            self.chain = SimpleNamespace(key="base", chain_id=8453)
+
+        def attest_chain(self):
+            events.append(f"attest:{self.name}")
+            if self.fail:
+                raise cli.EvmRpcError(f"chain ID mismatch for {self.name}")
+            return 8453
+
+    observers = (
+        FakeObserver("rpc-a"),
+        FakeObserver("rpc-b", fail=True),
+        FakeObserver("rpc-c"),
+    )
+
+    monkeypatch.setattr(cli, "build_cli_observers", lambda *args, **kwargs: observers)
+
+    def forbidden_session():
+        events.append("session")
+        raise AssertionError("database session must not open after provider attestation failure")
+
+    async def forbidden_invoke(*args, **kwargs):
+        events.append("invoke")
+        raise AssertionError("durable observation must not run after provider attestation failure")
+
+    monkeypatch.setattr(cli, "SessionLocal", forbidden_session)
+    monkeypatch.setattr(cli, "invoke_reference_dex_observation", forbidden_invoke)
+
+    with pytest.raises(cli.EvmRpcError, match="chain ID mismatch"):
+        asyncio.run(
+            cli.execute_operator_payload(
+                payload(),
+                rpc_env_vars=("GENESIS_RPC_A", "GENESIS_RPC_B", "GENESIS_RPC_C"),
+            )
+        )
+
+    assert events == ["attest:rpc-a", "attest:rpc-b"]
+
+
+def test_all_providers_attest_before_database_and_existing_path_continues(monkeypatch):
+    events = []
+
+    class FakeObserver:
+        def __init__(self, name):
+            self.name = name
+            self.rpc_url = f"https://{name}.example"
+            self.chain = SimpleNamespace(key="base", chain_id=8453)
+
+        def attest_chain(self):
+            events.append(f"attest:{self.name}")
+            return 8453
+
+    observers = tuple(FakeObserver(name) for name in ("rpc-a", "rpc-b", "rpc-c"))
+    monkeypatch.setattr(cli, "build_cli_observers", lambda *args, **kwargs: observers)
+
+    class FakeSession:
+        async def __aenter__(self):
+            events.append("session-enter")
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            events.append("session-exit")
+
+        async def commit(self):
+            events.append("commit")
+
+        async def rollback(self):
+            events.append("rollback")
+
+    def fake_session_local():
+        events.append("session-create")
+        return FakeSession()
+
+    observed_at = datetime(2026, 9, 14, 4, 20, tzinfo=timezone.utc)
+    completed_at = datetime(2026, 9, 14, 4, 21, tzinfo=timezone.utc)
+
+    async def fake_invoke(session, *, schedule, request, now):
+        events.append("invoke")
+        assert request.observers is observers
+        assert request.min_quorum == 2
+        return SimpleNamespace(
+            trigger=SimpleNamespace(
+                triggered=True,
+                reason="OPERATOR_TRIGGERED_REFERENCE_DEX_OBSERVATION",
+                observed_at=observed_at,
+                run=object(),
+            ),
+            state=SimpleNamespace(
+                chain="base",
+                pool_address=payload().pool_address,
+                last_completed_block=payload().block_number,
+                last_completed_at=completed_at,
+            ),
+        )
+
+    monkeypatch.setattr(cli, "SessionLocal", fake_session_local)
+    monkeypatch.setattr(cli, "invoke_reference_dex_observation", fake_invoke)
+
+    result = asyncio.run(
+        cli.execute_operator_payload(
+            payload(),
+            rpc_env_vars=("GENESIS_RPC_A", "GENESIS_RPC_B", "GENESIS_RPC_C"),
+        )
+    )
+
+    assert events == [
+        "attest:rpc-a",
+        "attest:rpc-b",
+        "attest:rpc-c",
+        "session-create",
+        "session-enter",
+        "invoke",
+        "commit",
+        "session-exit",
+    ]
+    assert result["triggered"] is True
+    assert result["read_only"] is True
+    assert result["execution_authorized"] is False
+    assert result["state"]["last_completed_block"] == payload().block_number
+
+
 def test_result_serialization_is_audit_safe_and_non_execution():
     observed_at = datetime(2026, 9, 14, 3, 0, tzinfo=timezone.utc)
     completed_at = datetime(2026, 9, 14, 3, 1, tzinfo=timezone.utc)
