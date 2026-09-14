@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
+import asyncio
 
 import pytest
 
@@ -98,6 +99,27 @@ def test_offline_payload_preflight_fails_closed_on_bad_evidence():
     bad_source = payload().sources[0].model_copy(update={"source_repository": "<REPLACE_SOURCE_REPOSITORY>"})
     with pytest.raises(ValueError, match="unresolved operator template placeholder"):
         validate_operator_payload(payload().model_copy(update={"sources": (bad_source,)}))
+
+
+def test_observation_path_validates_before_rpc_or_database(monkeypatch):
+    touched = []
+
+    def forbidden_observers(*args, **kwargs):
+        touched.append("rpc")
+        raise AssertionError("RPC observer construction must not occur before validation")
+
+    def forbidden_session(*args, **kwargs):
+        touched.append("db")
+        raise AssertionError("database session must not open before validation")
+
+    monkeypatch.setattr(cli, "build_cli_observers", forbidden_observers)
+    monkeypatch.setattr(cli, "SessionLocal", forbidden_session)
+
+    invalid = payload().model_copy(update={"chain_id": 1})
+    with pytest.raises(ValueError, match="chain_id mismatch"):
+        asyncio.run(cli.execute_operator_payload(invalid, rpc_env_vars=("GENESIS_RPC_A", "GENESIS_RPC_B")))
+
+    assert touched == []
 
 
 def test_result_serialization_is_audit_safe_and_non_execution():

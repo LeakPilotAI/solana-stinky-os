@@ -6,6 +6,8 @@ This runbook covers the explicit, read-only `genesis-evm-reference-observe` comm
 
 The observation command is observation-only. It does not accept private keys, wallets, signers, transaction payloads, approvals, admission decisions, opportunity scores, or execution authorization. It does not start a daemon or polling loop. Each invocation performs at most one explicit durable reference observation through the existing #249/#250 runtime seams.
 
+The observation path always runs the same shared offline payload validation used by preflight before it constructs RPC observers or opens a database session. Invalid chain identity, malformed addresses or hashes, unresolved required placeholders, or other offline-validation failures therefore stop before provider or durable runtime access even if the standalone preflight command was skipped.
+
 The preflight command is stricter: it performs no RPC calls, requires no RPC environment variables, opens no database session, advances no durable trigger state, and performs no observation, scheduling, admission, scoring, signing, wallet, transaction, or execution action.
 
 Provider disagreement, quorum failure, malformed evidence, UNKNOWN evidence, or replayed/duplicate historical blocks continue to fail closed through the existing observation stack.
