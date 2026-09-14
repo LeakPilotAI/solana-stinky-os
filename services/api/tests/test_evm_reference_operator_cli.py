@@ -169,6 +169,28 @@ def test_provider_pre_attestation_rejects_one_bad_provider_before_database(monke
     assert events == ["attest:rpc-a", "attest:rpc-b"]
 
 
+@pytest.mark.parametrize("malformed", ["0x02105", "0x21_05", "0x2105 "])
+def test_real_rpc_malformed_chain_quantity_aborts_before_database(monkeypatch, malformed):
+    calls = []
+    def observer(name, result):
+        def transport(url, body, timeout):
+            request = json.loads(body)
+            calls.append((name, request["method"]))
+            return {"jsonrpc": "2.0", "id": request["id"], "result": result}
+        rpc = cli.EvmReadOnlyRpc("base", transport=transport)
+        rpc.rpc_url = f"https://{name}.example"
+        return rpc
+    observers = (observer("a", "0x2105"), observer("b", malformed), observer("c", "0x2105"))
+    monkeypatch.setattr(cli, "build_cli_observers", lambda *args: observers)
+    def forbidden(*args, **kwargs):
+        pytest.fail("malformed provider evidence reached database or audit")
+    monkeypatch.setattr(cli, "SessionLocal", forbidden)
+    monkeypatch.setattr(cli, "append_provider_attestation_audit", forbidden)
+    with pytest.raises(cli.EvmRpcError, match="invalid chain id response"):
+        asyncio.run(cli.execute_operator_payload(payload(), rpc_env_vars=("RPC_A", "RPC_B", "RPC_C")))
+    assert calls == [("a", "eth_chainId"), ("b", "eth_chainId")]
+
+
 def test_attestation_receipt_is_redacted_immutable_and_deterministic():
     class FakeObserver:
         def __init__(self, name, secret):
