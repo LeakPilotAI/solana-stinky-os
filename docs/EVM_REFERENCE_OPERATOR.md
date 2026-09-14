@@ -131,6 +131,22 @@ The provider-attestation receipt is deterministic and sorted by the redacted pro
 
 A successful observation may advance durable #250 completion state only after the underlying #248 observation succeeds. Duplicate or replayed block requests fail closed. Preflight never advances durable state.
 
+Apply `services/api/migrations/010_evm_provider_attestation_audit.sql` before using
+the observation command. Successful triggered observations now append the full
+redacted receipt to `evm_provider_attestation_audit` in the same transaction as
+the evidence and completion state. Each version-1 record binds the chain, pool,
+exact historical block, existing completion timestamp, configured provider count,
+and sorted successful provider receipts. The completion timestamp retains the
+existing runtime convention (the invocation's observation timestamp).
+
+`load_provider_attestation_audit(session, chain=..., pool_address=...,
+block_number=...)` retrieves and validates the exact historical receipt; missing
+receipts return `None`. Earlier observations are not backfilled. UPDATE, DELETE,
+TRUNCATE, and duplicate chain/pool/block inserts are rejected. Disabled/not-due
+runs, replay rejection, failed observations, and rolled-back transactions leave
+no audit record. Audit insertion failure rolls back the observation transaction.
+The existing replay-state upsert and downstream quorum semantics are unchanged.
+
 ## Operational model
 
 These commands are intentionally manual/explicit. Production automation must not wrap observation in a background daemon or automatic polling loop unless a later separately reviewed Genesis execution explicitly authorizes that architecture. Live trading remains locked.

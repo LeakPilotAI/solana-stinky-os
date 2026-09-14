@@ -6,11 +6,17 @@ import asyncio
 import json
 import os
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
 from urllib import request as urllib_request
 
 from stinky_api.db import SessionLocal
+from stinky_api.evm_provider_attestation_audit import (
+    ProviderAttestationReceipt,
+    ProviderAttestationAudit,
+    append_provider_attestation_audit,
+    validate_provider_attestations,
+)
 from stinky_api.evm_reference_observation_operator import invoke_reference_dex_observation
 from stinky_api.evm_reference_operator_transport import (
     ReferenceDexOperatorPayload,
@@ -22,14 +28,6 @@ from stinky_core.evm_consensus import provider_fingerprint
 from stinky_core.evm_rpc import EvmReadOnlyRpc, EvmRpcError
 
 _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
-
-
-@dataclass(frozen=True, slots=True)
-class ProviderAttestationReceipt:
-    provider: str
-    chain: str
-    chain_id: int
-    attested: bool = True
 
 
 def _https_transport(url: str):
@@ -105,6 +103,13 @@ async def execute_operator_payload(
     validate_operator_payload(payload)
     observers = build_cli_observers(payload.chain, rpc_env_vars)
     provider_attestations = attest_cli_observers(observers)
+    validate_provider_attestations(
+        provider_attestations, chain=payload.chain, provider_count=len(observers),
+    )
+    if tuple(row.provider for row in provider_attestations) != tuple(sorted(
+        provider_fingerprint(observer.rpc_url) for observer in observers
+    )):
+        raise EvmRpcError("provider attestation set does not match configured observers")
     schedule, trigger_request = build_operator_request(payload, observers)
     async with SessionLocal() as session:
         try:
@@ -116,6 +121,17 @@ async def execute_operator_payload(
                 request=trigger_request,
                 now=datetime.now(timezone.utc),
             )
+            if result.trigger.triggered:
+                state = result.state
+                if state is None or result.trigger.run is None or (
+                    state.chain, state.pool_address, state.last_completed_block,
+                ) != (payload.chain, trigger_request.pool.pool_address, payload.block_number):
+                    raise ValueError("completed observation identity required for provider audit")
+                await append_provider_attestation_audit(session, ProviderAttestationAudit(
+                    chain=state.chain, pool_address=state.pool_address,
+                    block_number=state.last_completed_block, completed_at=state.last_completed_at,
+                    provider_count=len(observers), provider_attestations=provider_attestations,
+                ))
             await session.commit()
         except BaseException:
             await session.rollback()
