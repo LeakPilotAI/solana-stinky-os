@@ -173,3 +173,54 @@ def test_valid_mixed_case_hash_and_storage_data_preserve_contracts():
     assert rpc.get_logs_for_block(word) == [log]
     rpc = EvmReadOnlyRpc("base", transport=scripted("0x2105", word))
     assert rpc.storage_at_block("0x" + "11" * 20, word, 16) == word.lower()
+
+
+@pytest.mark.parametrize("response", [
+    None, [], "invalid", True,
+    {"jsonrpc": "2.0", "id": True, "result": "0x2105"},
+    {"jsonrpc": "2.0", "id": "1", "result": "0x2105"},
+    {"jsonrpc": "2.0", "id": None, "result": "0x2105"},
+    {"jsonrpc": "2.0", "result": "0x2105"},
+    {"jsonrpc": "1.0", "id": 1, "result": "0x2105"},
+    {"jsonrpc": 2.0, "id": 1, "result": "0x2105"},
+    {"jsonrpc": "2.0", "id": 2, "result": "0x2105"},
+    {"jsonrpc": "2.0", "id": 1.5, "result": "0x2105"},
+    {"jsonrpc": "2.0", "id": 1},
+    {"jsonrpc": "2.0", "id": 1, "error": None, "result": "0x2105"},
+    {"jsonrpc": "2.0", "id": 1, "error": {}, "result": "0x2105"},
+])
+def test_malformed_response_envelopes_fail_before_head_evidence(response):
+    requests = []
+    def transport(url, body, timeout):
+        requests.append(json.loads(body))
+        return response
+    with pytest.raises(EvmRpcError):
+        EvmReadOnlyRpc("base", transport=transport).observe_head()
+    assert len(requests) == 1 and requests[0]["method"] == "eth_chainId"
+
+
+@pytest.mark.parametrize("error", [None, {}, {"code": -32000, "message": "SYNTHETIC_SECRET", "data": "https://rpc.example/SECRET"}])
+def test_remote_error_presence_fails_closed_without_echoing_remote_data(error):
+    rpc = EvmReadOnlyRpc("base", transport=lambda *args: {"jsonrpc": "2.0", "id": 1, "error": error})
+    with pytest.raises(EvmRpcError, match="RPC returned error for eth_chainId") as failure:
+        rpc.attest_chain()
+    assert "SECRET" not in str(failure.value)
+
+
+@pytest.mark.parametrize("floating_ids", [False, True])
+def test_response_ids_track_request_sequence_with_equivalent_json_numbers(floating_ids):
+    requests = []
+    def transport(url, body, timeout):
+        request = json.loads(body)
+        requests.append(request)
+        return {"jsonrpc": "2.0", "id": float(request["id"]) if floating_ids else request["id"],
+                "result": "0x2105" if request["method"] == "eth_chainId" else "0x10"}
+    rpc = EvmReadOnlyRpc("base", transport=transport)
+    assert rpc.observe_head().block_number == 16
+    assert [request["id"] for request in requests] == [1, 2]
+
+
+def test_replayed_response_id_rejected_on_later_read():
+    rpc = EvmReadOnlyRpc("base", transport=lambda *args: {"jsonrpc": "2.0", "id": 1, "result": "0x2105"})
+    with pytest.raises(EvmRpcError, match="envelope mismatch"):
+        rpc.observe_head()

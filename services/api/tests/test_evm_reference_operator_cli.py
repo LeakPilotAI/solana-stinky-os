@@ -191,6 +191,36 @@ def test_real_rpc_malformed_chain_quantity_aborts_before_database(monkeypatch, m
     assert calls == [("a", "eth_chainId"), ("b", "eth_chainId")]
 
 
+@pytest.mark.parametrize("malformed", ["boolean_id", "both_members", "missing_id"])
+def test_real_rpc_malformed_envelope_aborts_before_database(monkeypatch, malformed):
+    calls = []
+    def observer(name):
+        def transport(url, body, timeout):
+            request = json.loads(body)
+            calls.append(name)
+            response = {"jsonrpc": "2.0", "id": request["id"], "result": "0x2105"}
+            if name == "b":
+                if malformed == "boolean_id":
+                    response["id"] = True
+                elif malformed == "both_members":
+                    response["error"] = None
+                else:
+                    del response["id"]
+            return response
+        rpc = cli.EvmReadOnlyRpc("base", transport=transport)
+        rpc.rpc_url = f"https://{name}.example"
+        return rpc
+    observers = tuple(observer(name) for name in ("a", "b", "c"))
+    monkeypatch.setattr(cli, "build_cli_observers", lambda *args: observers)
+    def forbidden(*args, **kwargs):
+        pytest.fail("malformed response envelope reached database or audit")
+    monkeypatch.setattr(cli, "SessionLocal", forbidden)
+    monkeypatch.setattr(cli, "append_provider_attestation_audit", forbidden)
+    with pytest.raises(cli.EvmRpcError):
+        asyncio.run(cli.execute_operator_payload(payload(), rpc_env_vars=("RPC_A", "RPC_B", "RPC_C")))
+    assert calls == ["a", "b"]
+
+
 def test_attestation_receipt_is_redacted_immutable_and_deterministic():
     class FakeObserver:
         def __init__(self, name, secret):
