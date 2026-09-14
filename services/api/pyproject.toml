@@ -23,6 +23,7 @@ dependencies = [
 
 [project.scripts]
 stinky-api = "stinky_api.cli:main"
+genesis-evm-reference-observe = "stinky_api.evm_reference_operator_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/stinky_api"]
