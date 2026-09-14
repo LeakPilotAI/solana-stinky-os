@@ -147,6 +147,21 @@ runs, replay rejection, failed observations, and rolled-back transactions leave
 no audit record. Audit insertion failure rolls back the observation transaction.
 The existing replay-state upsert and downstream quorum semantics are unchanged.
 
+Retrieve a persisted receipt without contacting RPC providers:
+
+```text
+GET /v1/entity-graph/provider-attestations/{chain}/{pool_address}/{block_number}
+```
+
+All three identity fields are required. Chain and pool are canonicalized before
+opening a read session. The block is an explicit non-negative historical integer;
+`latest` is not accepted. The GET response includes the version-1 audit fields
+and `read_only=true`, `execution_authorized=false`. Missing exact-block receipts
+return 404, including observations made before audit storage existed. Malformed
+identity or corrupted stored receipts return sanitized 422 responses. Retrieval
+performs only a SELECT and never commits writes, backfills evidence, invokes RPC,
+or changes observation/replay state.
+
 ## Operational model
 
 These commands are intentionally manual/explicit. Production automation must not wrap observation in a background daemon or automatic polling loop unless a later separately reviewed Genesis execution explicitly authorizes that architecture. Live trading remains locked.
