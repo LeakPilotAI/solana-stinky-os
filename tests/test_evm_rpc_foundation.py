@@ -73,3 +73,33 @@ def test_client_has_no_transaction_submission_surface():
     assert not hasattr(rpc, "send_raw_transaction")
     with pytest.raises(EvmRpcError, match="not allowed"):
         rpc._call("eth_sendRawTransaction", ["0xdeadbeef"])
+
+
+@pytest.mark.parametrize("value", [
+    "0x02105", "0x21_05", "0x2105 ", "0x2105\n", " 0x2105", "0x+2105",
+    "0x-2105", "0x", "0X2105", "0xg", 8453, True, None,
+])
+def test_malformed_quantity_chain_identity_rejected_before_head_read(value):
+    calls = []
+    def transport(url, body, timeout):
+        request = json.loads(body)
+        calls.append(request["method"])
+        return {"jsonrpc": "2.0", "id": request["id"], "result": value}
+    with pytest.raises(EvmRpcError, match="invalid chain id response"):
+        EvmReadOnlyRpc("base", transport=transport).observe_head()
+    assert calls == ["eth_chainId"]
+
+
+@pytest.mark.parametrize("value", ["0x00", "0x01", "0x1_0", "0x10 ", "0x10\n", "0x-1", "0x", False])
+@pytest.mark.parametrize("method", ["block_number", "observe_head", "get_block_by_number"])
+def test_malformed_block_quantities_fail_closed(value, method):
+    result = {"number": value, "hash": "0x" + "11" * 32} if method == "get_block_by_number" else value
+    rpc = EvmReadOnlyRpc("base", transport=scripted("0x2105", result))
+    with pytest.raises(EvmRpcError, match="invalid block number response"):
+        getattr(rpc, method)(16) if method == "get_block_by_number" else getattr(rpc, method)()
+
+
+@pytest.mark.parametrize("quantity,expected", [("0x0", 0), ("0x1", 1), ("0xaF", 175), ("0xABCDEF", 11259375)])
+def test_valid_canonical_quantities_preserve_exact_values(quantity, expected):
+    rpc = EvmReadOnlyRpc("base", transport=scripted("0x2105", quantity))
+    assert rpc.block_number() == expected

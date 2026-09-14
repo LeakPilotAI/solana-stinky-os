@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import os
+import re
 from typing import Any, Callable
 from urllib import request
 
@@ -93,12 +94,11 @@ class EvmReadOnlyRpc:
 
     @staticmethod
     def _hex_int(value: Any, field: str) -> int:
-        if not isinstance(value, str) or not value.startswith("0x"):
+        # EIP-1474 Quantity: minimal hex digits, with zero represented as 0x0.
+        # Python int() alone also accepts whitespace and digit separators.
+        if not isinstance(value, str) or re.fullmatch(r"0x(?:0|[1-9a-fA-F][0-9a-fA-F]*)", value) is None:
             raise EvmRpcError(f"invalid {field} response")
-        try:
-            return int(value, 16)
-        except ValueError as exc:
-            raise EvmRpcError(f"invalid {field} response") from exc
+        return int(value, 16)
 
     def attest_chain(self) -> int:
         observed = self._hex_int(self._call("eth_chainId"), "chain id")
