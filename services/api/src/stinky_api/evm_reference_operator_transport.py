@@ -8,6 +8,7 @@ from stinky_api.evm_reference_observation_trigger import (
     ReferenceDexObservationSchedule,
     ReferenceDexObservationTriggerRequest,
 )
+from stinky_core.chains import ChainFamily, get_chain
 from stinky_core.evm_dex_discovery import DexPoolCandidate
 from stinky_core.evm_reference_fingerprints import DexReferenceContractSource
 from stinky_core.evm_rpc import EvmReadOnlyRpc
@@ -62,6 +63,66 @@ def _canonical_address(chain: str, value: str, field: str) -> str:
     if normalized is None:
         raise ValueError(f"{field} must be a canonical address for {chain}")
     return normalized
+
+
+def _required_text(value: str, field: str) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        raise ValueError(f"{field} must not be empty")
+    if "<REPLACE_" in normalized.upper():
+        raise ValueError(f"{field} contains an unresolved operator template placeholder")
+    return normalized
+
+
+def validate_operator_payload(payload: ReferenceDexOperatorPayload) -> dict:
+    """Validate an operator payload completely offline without RPC or database access."""
+    chain = get_chain(payload.chain)
+    if chain is None or chain.family is not ChainFamily.EVM or chain.chain_id is None:
+        raise ValueError(f"unsupported EVM chain: {payload.chain!r}")
+    if chain.chain_id != payload.chain_id:
+        raise ValueError(
+            f"chain_id mismatch for {payload.chain}: expected {chain.chain_id}, got {payload.chain_id}"
+        )
+
+    factory = _canonical_address(payload.chain, payload.factory_address, "factory_address")
+    pool = _canonical_address(payload.chain, payload.pool_address, "pool_address")
+    token0 = _canonical_address(payload.chain, payload.token0_address, "token0_address")
+    token1 = _canonical_address(payload.chain, payload.token1_address, "token1_address")
+    router = _canonical_address(payload.chain, payload.router_address, "router_address")
+    if token0 == token1:
+        raise ValueError("token0_address and token1_address must differ")
+
+    _required_text(payload.event_family, "event_family")
+    _required_text(payload.log_index, "log_index")
+    _hex32(payload.block_hash, "block_hash")
+    _hex32(payload.transaction_hash, "transaction_hash")
+
+    if not payload.sources:
+        raise ValueError("sources must not be empty")
+    for index, source in enumerate(payload.sources):
+        prefix = f"sources[{index}]"
+        _canonical_address(payload.chain, source.address, f"{prefix}.address")
+        _required_text(source.contract_role, f"{prefix}.contract_role")
+        _required_text(source.implementation_family, f"{prefix}.implementation_family")
+        _required_text(source.implementation_version, f"{prefix}.implementation_version")
+        _required_text(source.source_repository, f"{prefix}.source_repository")
+        _required_text(source.source_commit, f"{prefix}.source_commit")
+        _required_text(source.source_path, f"{prefix}.source_path")
+        _required_text(source.source_locator, f"{prefix}.source_locator")
+
+    return {
+        "chain": payload.chain,
+        "chain_id": payload.chain_id,
+        "factory_address": factory,
+        "pool_address": pool,
+        "router_address": router,
+        "block_number": payload.block_number,
+        "min_quorum": payload.min_quorum,
+        "source_count": len(payload.sources),
+        "validated_offline": True,
+        "read_only": True,
+        "execution_authorized": False,
+    }
 
 
 def build_operator_request(
