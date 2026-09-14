@@ -1,0 +1,31 @@
+{
+  "chain": "base",
+  "chain_id": 8453,
+  "factory_address": "<REPLACE_FACTORY_ADDRESS>",
+  "pool_address": "<REPLACE_POOL_ADDRESS>",
+  "token0_address": "<REPLACE_TOKEN0_ADDRESS>",
+  "token1_address": "<REPLACE_TOKEN1_ADDRESS>",
+  "event_family": "<REPLACE_EVENT_FAMILY>",
+  "fee_tier": null,
+  "first_seen_block": 0,
+  "block_hash": "<REPLACE_32_BYTE_BLOCK_HASH>",
+  "transaction_hash": "<REPLACE_32_BYTE_TRANSACTION_HASH>",
+  "log_index": "<REPLACE_LOG_INDEX>",
+  "router_address": "<REPLACE_ROUTER_ADDRESS>",
+  "sources": [
+    {
+      "address": "<REPLACE_REFERENCE_CONTRACT_ADDRESS>",
+      "contract_role": "<REPLACE_CONTRACT_ROLE>",
+      "implementation_family": "<REPLACE_IMPLEMENTATION_FAMILY>",
+      "implementation_version": "<REPLACE_IMPLEMENTATION_VERSION>",
+      "source_repository": "<REPLACE_SOURCE_REPOSITORY>",
+      "source_commit": "<REPLACE_SOURCE_COMMIT>",
+      "source_path": "<REPLACE_SOURCE_PATH>",
+      "source_locator": "<REPLACE_SOURCE_LOCATOR>"
+    }
+  ],
+  "block_number": 0,
+  "min_quorum": 2,
+  "interval_seconds": 300,
+  "enabled": true
+}

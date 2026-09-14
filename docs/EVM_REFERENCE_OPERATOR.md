@@ -22,6 +22,26 @@ The install exposes:
 genesis-evm-reference-observe
 ```
 
+## Canonical payload template
+
+Start from the repository template:
+
+```text
+operator/base-reference-observation.template.json
+```
+
+Copy it to an operator-owned working file such as:
+
+```text
+operator/base-reference-observation.json
+```
+
+Replace every `<REPLACE_...>` placeholder with evidence for the exact historical observation you intend to perform. Do not invoke the command with unresolved placeholders. The checked-in template is intentionally non-live: unresolved address/hash placeholders fail closed before observation.
+
+Fields that must be replaced or reviewed include factory, pool, token0, token1, router, discovery event metadata, block/transaction hashes, pinned source metadata, exact historical block number, quorum, and scheduling fields. Keep `sources` explicit; do not manufacture or omit provenance.
+
+The template contains no RPC URLs, credentials, private keys, wallet material, transaction payloads, admission decisions, opportunity scores, or execution authority.
+
 ## Trusted RPC configuration
 
 RPC endpoints are supplied only through explicitly named environment variables passed with repeated `--rpc-env` arguments. The JSON payload never contains RPC URLs.
@@ -36,6 +56,8 @@ Each configured URL must:
 Example PowerShell session:
 
 ```powershell
+Copy-Item ".\operator\base-reference-observation.template.json" ".\operator\base-reference-observation.json"
+
 $env:GENESIS_BASE_RPC_A = "https://YOUR-TRUSTED-PROVIDER-A"
 $env:GENESIS_BASE_RPC_B = "https://YOUR-TRUSTED-PROVIDER-B"
 
