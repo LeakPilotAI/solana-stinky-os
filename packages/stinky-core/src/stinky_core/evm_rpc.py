@@ -93,9 +93,12 @@ class EvmReadOnlyRpc:
         self._next_id += 1
         payload = json.dumps({"jsonrpc": "2.0", "id": rpc_id, "method": method, "params": params or []}, separators=(",", ":")).encode("utf-8")
         response = self._transport(self.rpc_url, payload, self.timeout)
-        if response.get("jsonrpc") != "2.0" or response.get("id") != rpc_id:
+        if (not isinstance(response, dict) or response.get("jsonrpc") != "2.0"
+                or type(response.get("id")) not in (int, float) or response["id"] != rpc_id):
             raise EvmRpcError("RPC response envelope mismatch")
-        if response.get("error") is not None:
+        if "error" in response:
+            if "result" in response:
+                raise EvmRpcError("RPC response contains both result and error")
             raise EvmRpcError(f"RPC returned error for {method}")
         if "result" not in response:
             raise EvmRpcError(f"RPC result missing for {method}")
