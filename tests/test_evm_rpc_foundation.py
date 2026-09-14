@@ -103,3 +103,70 @@ def test_malformed_block_quantities_fail_closed(value, method):
 def test_valid_canonical_quantities_preserve_exact_values(quantity, expected):
     rpc = EvmReadOnlyRpc("base", transport=scripted("0x2105", quantity))
     assert rpc.block_number() == expected
+
+
+BAD_WORDS = ["0x" + "z" * 64, "0x1_" + "0" * 62, "0x" + "0" * 63 + " ",
+             "0x" + "0" * 63 + "\n", "0x" + "00" * 31, "0x" + "00" * 33, None]
+
+
+@pytest.mark.parametrize("value", BAD_WORDS)
+@pytest.mark.parametrize("method", ["get_block_by_number", "storage_at_block"])
+def test_malformed_hash_and_storage_response_rejected(value, method):
+    result = {"number": "0x10", "hash": value} if method == "get_block_by_number" else value
+    rpc = EvmReadOnlyRpc("base", transport=scripted("0x2105", result))
+    with pytest.raises(EvmRpcError):
+        if method == "get_block_by_number":
+            rpc.get_block_by_number(16)
+        else:
+            rpc.storage_at_block("0x" + "11" * 20, "0x" + "00" * 32, 16)
+
+
+@pytest.mark.parametrize("value", BAD_WORDS)
+@pytest.mark.parametrize("method", ["get_logs_for_block", "storage_at_block"])
+def test_invalid_hash_or_slot_input_rejected_before_rpc(value, method):
+    def forbidden(*args):
+        pytest.fail("invalid caller data reached RPC")
+    rpc = EvmReadOnlyRpc("base", transport=forbidden)
+    with pytest.raises(ValueError):
+        if method == "get_logs_for_block":
+            rpc.get_logs_for_block(value)
+        else:
+            rpc.storage_at_block("0x" + "11" * 20, value, 16)
+
+
+@pytest.mark.parametrize("value", ["0x12_3", "0x12 3", "0x123 ", "0x123\n", "0xzz", "0x1", None])
+def test_invalid_call_data_response_rejected(value):
+    rpc = EvmReadOnlyRpc("base", transport=scripted("0x2105", value))
+    with pytest.raises(EvmRpcError, match="invalid eth_call response"):
+        rpc.call_at_block("0x" + "11" * 20, "0x12345678", 16)
+
+
+@pytest.mark.parametrize("value", ["0x1234_678", "0x1234567 ", "0x1234567\n", "0x1234567z", "0x1234", None])
+def test_invalid_calldata_rejected_before_rpc(value):
+    def forbidden(*args):
+        pytest.fail("invalid calldata reached RPC")
+    rpc = EvmReadOnlyRpc("base", transport=forbidden)
+    with pytest.raises(ValueError, match="hex calldata"):
+        rpc.call_at_block("0x" + "11" * 20, value, 16)
+
+
+@pytest.mark.parametrize("value", ["0x", "0x00", "0xAbCd"])
+def test_valid_call_data_preserves_historical_request_and_lowercase_response(value):
+    requests = []
+    def transport(url, body, timeout):
+        req = json.loads(body)
+        requests.append(req)
+        return {"jsonrpc": "2.0", "id": req["id"], "result": "0x2105" if req["method"] == "eth_chainId" else value}
+    rpc = EvmReadOnlyRpc("base", transport=transport)
+    assert rpc.call_at_block("0x" + "11" * 20, "0xABCD1234", 16) == value.lower()
+    assert requests[-1]["params"] == [{"to": "0x" + "11" * 20, "data": "0xabcd1234"}, "0x10"]
+
+
+def test_valid_mixed_case_hash_and_storage_data_preserve_contracts():
+    word = "0x" + "aB" * 32
+    rpc = EvmReadOnlyRpc("base", transport=scripted("0x2105", {"number": "0x10", "hash": word}))
+    assert rpc.get_block_by_number(16)["hash"] == word
+    rpc = EvmReadOnlyRpc("base", transport=scripted("0x2105", [{"blockHash": word}]))
+    assert rpc.get_logs_for_block(word) == [{"blockHash": word}]
+    rpc = EvmReadOnlyRpc("base", transport=scripted("0x2105", word))
+    assert rpc.storage_at_block("0x" + "11" * 20, word, 16) == word.lower()

@@ -134,3 +134,23 @@ def test_log_block_hash_mismatch_is_rejected_by_rpc_layer():
 def test_minimum_ingestion_quorum_cannot_be_weakened():
     with pytest.raises(ValueError, match="at least 2"):
         ingest_consensus_block([], min_quorum=1)
+
+
+@pytest.mark.parametrize("malformed", ["0x" + "z" * 64, "0x1_" + "0" * 62, "0x" + "0" * 63 + " "])
+def test_matching_malformed_hashes_cannot_create_consensus_evidence(malformed):
+    with pytest.raises(EvmRpcError, match="block-hash consensus"):
+        ingest_consensus_block([
+            observer("base", "https://one.example", block_hash=malformed),
+            observer("base", "https://two.example", block_hash=malformed),
+        ])
+
+
+def test_malformed_hash_provider_does_not_change_valid_downstream_quorum():
+    result = ingest_consensus_block([
+        observer("base", "https://bad.example", block_hash="0x" + "z" * 64),
+        observer("base", "https://one.example"),
+        observer("base", "https://two.example"),
+    ], min_quorum=2)
+    assert result.block_hash == BLOCK_HASH
+    assert len(result.block_sources) == 2
+    assert all(not source.provider.startswith("bad.example:") for source in result.block_sources)

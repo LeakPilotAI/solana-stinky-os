@@ -33,6 +33,15 @@ class EvmRpcObservation:
 Transport = Callable[[str, bytes, float], dict[str, Any]]
 
 
+def _is_hex_data(value: Any, *, byte_count: int | None = None) -> bool:
+    """EIP-1474 Data consists solely of complete hex bytes after 0x."""
+    return (
+        isinstance(value, str)
+        and re.fullmatch(r"0x(?:[0-9a-fA-F]{2})*", value) is not None
+        and (byte_count is None or len(value) == 2 + 2 * byte_count)
+    )
+
+
 def resolve_rpc_url(chain_key: str) -> str:
     chain = get_chain(chain_key)
     if chain is None or chain.family is not ChainFamily.EVM:
@@ -126,12 +135,12 @@ class EvmReadOnlyRpc:
         block_hash = result.get("hash")
         if observed_number != block_number:
             raise EvmRpcError(f"block number mismatch: expected {block_number}, got {observed_number}")
-        if not isinstance(block_hash, str) or not block_hash.startswith("0x") or len(block_hash) != 66:
+        if not _is_hex_data(block_hash, byte_count=32):
             raise EvmRpcError("invalid block hash")
         return result
 
     def get_logs_for_block(self, block_hash: str) -> list[dict[str, Any]]:
-        if not isinstance(block_hash, str) or not block_hash.startswith("0x") or len(block_hash) != 66:
+        if not _is_hex_data(block_hash, byte_count=32):
             raise ValueError("block_hash must be a 32-byte hex hash")
         self.attest_chain()
         result = self._call("eth_getLogs", [{"blockHash": block_hash}])
@@ -148,20 +157,12 @@ class EvmReadOnlyRpc:
             raise ValueError("address must be a valid address for this chain")
         if block_number < 0:
             raise ValueError("block_number must be non-negative")
-        if not isinstance(data, str) or not data.startswith("0x") or len(data) < 10 or len(data) % 2:
+        if not _is_hex_data(data) or len(data) < 10:
             raise ValueError("data must be even-length hex calldata with a selector")
-        try:
-            int(data[2:], 16)
-        except ValueError as exc:
-            raise ValueError("data must be hex calldata") from exc
         self.attest_chain()
         result = self._call("eth_call", [{"to": canonical, "data": data.lower()}, hex(block_number)])
-        if not isinstance(result, str) or not result.startswith("0x") or len(result) % 2:
+        if not _is_hex_data(result):
             raise EvmRpcError("invalid eth_call response")
-        try:
-            int(result[2:] or "0", 16)
-        except ValueError as exc:
-            raise EvmRpcError("invalid eth_call response") from exc
         return result.lower()
 
     def storage_at_block(self, address: str, slot: str, block_number: int) -> str:
@@ -171,18 +172,10 @@ class EvmReadOnlyRpc:
             raise ValueError("address must be a valid address for this chain")
         if block_number < 0:
             raise ValueError("block_number must be non-negative")
-        if not isinstance(slot, str) or not slot.startswith("0x") or len(slot) != 66:
+        if not _is_hex_data(slot, byte_count=32):
             raise ValueError("slot must be a 32-byte hex storage key")
-        try:
-            int(slot[2:], 16)
-        except ValueError as exc:
-            raise ValueError("slot must be hex") from exc
         self.attest_chain()
         result = self._call("eth_getStorageAt", [canonical, slot.lower(), hex(block_number)])
-        if not isinstance(result, str) or not result.startswith("0x") or len(result) != 66:
+        if not _is_hex_data(result, byte_count=32):
             raise EvmRpcError("invalid eth_getStorageAt response")
-        try:
-            int(result[2:], 16)
-        except ValueError as exc:
-            raise EvmRpcError("invalid eth_getStorageAt response") from exc
         return result.lower()
