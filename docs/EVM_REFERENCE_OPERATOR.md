@@ -1,10 +1,12 @@
 # EVM Reference Observation Operator Runbook
 
-This runbook covers the explicit, read-only `genesis-evm-reference-observe` command added to the `stinky-api` package.
+This runbook covers the explicit, read-only `genesis-evm-reference-observe` command and the completely offline `genesis-evm-reference-preflight` command in the `stinky-api` package.
 
 ## Safety boundary
 
-The command is observation-only. It does not accept private keys, wallets, signers, transaction payloads, approvals, admission decisions, opportunity scores, or execution authorization. It does not start a daemon or polling loop. Each invocation performs at most one explicit durable reference observation through the existing #249/#250 runtime seams.
+The observation command is observation-only. It does not accept private keys, wallets, signers, transaction payloads, approvals, admission decisions, opportunity scores, or execution authorization. It does not start a daemon or polling loop. Each invocation performs at most one explicit durable reference observation through the existing #249/#250 runtime seams.
+
+The preflight command is stricter: it performs no RPC calls, requires no RPC environment variables, opens no database session, advances no durable trigger state, and performs no observation, scheduling, admission, scoring, signing, wallet, transaction, or execution action.
 
 Provider disagreement, quorum failure, malformed evidence, UNKNOWN evidence, or replayed/duplicate historical blocks continue to fail closed through the existing observation stack.
 
@@ -20,6 +22,7 @@ The install exposes:
 
 ```text
 genesis-evm-reference-observe
+genesis-evm-reference-preflight
 ```
 
 ## Canonical payload template
@@ -36,15 +39,36 @@ Copy it to an operator-owned working file such as:
 operator/base-reference-observation.json
 ```
 
-Replace every `<REPLACE_...>` placeholder with evidence for the exact historical observation you intend to perform. Do not invoke the command with unresolved placeholders. The checked-in template is intentionally non-live: unresolved address/hash placeholders fail closed before observation.
+Replace every `<REPLACE_...>` placeholder with evidence for the exact historical observation you intend to perform. The checked-in template is intentionally non-live: unresolved placeholders, malformed addresses/hashes, unsupported chains, and chain-ID mismatch fail closed.
 
 Fields that must be replaced or reviewed include factory, pool, token0, token1, router, discovery event metadata, block/transaction hashes, pinned source metadata, exact historical block number, quorum, and scheduling fields. Keep `sources` explicit; do not manufacture or omit provenance.
 
 The template contains no RPC URLs, credentials, private keys, wallet material, transaction payloads, admission decisions, opportunity scores, or execution authority.
 
+## Offline preflight
+
+Validate the copied payload completely offline before configuring providers:
+
+```powershell
+genesis-evm-reference-preflight `
+  --input ".\operator\base-reference-observation.json"
+```
+
+A successful preflight emits deterministic JSON including:
+
+```json
+{
+  "validated_offline": true,
+  "read_only": true,
+  "execution_authorized": false
+}
+```
+
+Preflight never requires `--rpc-env`. It performs schema validation plus offline chain/address/hash/source validation only. It does not contact RPC providers, open `SessionLocal`, or invoke the durable reference observation runtime.
+
 ## Trusted RPC configuration
 
-RPC endpoints are supplied only through explicitly named environment variables passed with repeated `--rpc-env` arguments. The JSON payload never contains RPC URLs.
+Only after preflight succeeds, configure trusted observation providers. RPC endpoints are supplied only through explicitly named environment variables passed with repeated `--rpc-env` arguments. The JSON payload never contains RPC URLs.
 
 Each configured URL must:
 
@@ -56,8 +80,6 @@ Each configured URL must:
 Example PowerShell session:
 
 ```powershell
-Copy-Item ".\operator\base-reference-observation.template.json" ".\operator\base-reference-observation.json"
-
 $env:GENESIS_BASE_RPC_A = "https://YOUR-TRUSTED-PROVIDER-A"
 $env:GENESIS_BASE_RPC_B = "https://YOUR-TRUSTED-PROVIDER-B"
 
@@ -81,11 +103,11 @@ The input file must contain the explicit historical observation payload validate
 - `min_quorum`,
 - scheduling interval/enabled state.
 
-The command reuses the existing immutable #249 schedule/request types. It does not silently select a latest block or manufacture missing provenance.
+The observation command reuses the existing immutable #249 schedule/request types. It does not silently select a latest block or manufacture missing provenance.
 
 ## Output contract
 
-Successful and failed invocations emit deterministic JSON. The operator response retains these safety markers:
+Successful and failed invocations emit deterministic JSON. Operator responses retain these safety markers:
 
 ```json
 {
@@ -94,8 +116,8 @@ Successful and failed invocations emit deterministic JSON. The operator response
 }
 ```
 
-A successful observation may advance durable #250 completion state only after the underlying #248 observation succeeds. Duplicate or replayed block requests fail closed.
+A successful observation may advance durable #250 completion state only after the underlying #248 observation succeeds. Duplicate or replayed block requests fail closed. Preflight never advances durable state.
 
 ## Operational model
 
-This command is intentionally manual/explicit. Production automation must not wrap it in a background daemon or automatic polling loop unless a later separately reviewed Genesis execution explicitly authorizes that architecture. Live trading remains locked.
+These commands are intentionally manual/explicit. Production automation must not wrap observation in a background daemon or automatic polling loop unless a later separately reviewed Genesis execution explicitly authorizes that architecture. Live trading remains locked.
