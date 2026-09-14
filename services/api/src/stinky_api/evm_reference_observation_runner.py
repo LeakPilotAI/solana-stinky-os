@@ -79,6 +79,31 @@ def _validate_inputs(
     return router
 
 
+def _require_known_relationship(
+    relationship: FactoryRelationshipEvidence,
+) -> FactoryRelationshipEvidence:
+    if relationship.relationship == "UNKNOWN_FACTORY_RELATIONSHIP":
+        raise ValueError("factory relationship evidence is unknown or insufficient")
+    return relationship
+
+
+def _source_evidence_for_sources(
+    sources: tuple[DexReferenceContractSource, ...],
+    factory_code: ContractCodeEvidence,
+    pool_code: ContractCodeEvidence,
+    router_code: ContractCodeEvidence,
+) -> tuple[ContractCodeEvidence, ...]:
+    evidence_by_address = {
+        factory_code.address: factory_code,
+        pool_code.address: pool_code,
+        router_code.address: router_code,
+    }
+    try:
+        return tuple(evidence_by_address[source.address] for source in sources)
+    except KeyError as exc:
+        raise ValueError("reference source has no observed component code evidence") from exc
+
+
 async def observe_and_persist_reference_dex_evidence(
     session: AsyncSession,
     *,
@@ -126,16 +151,16 @@ async def observe_and_persist_reference_dex_evidence(
         block_number=block_number,
         min_quorum=min_quorum,
     )
-    relationship = classify_factory_relationship(pool, factory_code, call_observation)
-    if relationship.relationship == "UNKNOWN_FACTORY_RELATIONSHIP":
-        raise ValueError("factory relationship evidence is unknown or insufficient")
+    relationship = _require_known_relationship(
+        classify_factory_relationship(pool, factory_code, call_observation)
+    )
 
-    evidence_by_address = {
-        factory_code.address: factory_code,
-        pool_code.address: pool_code,
-        router_code.address: router_code,
-    }
-    source_evidence = tuple(evidence_by_address[source.address] for source in sources)
+    source_evidence = _source_evidence_for_sources(
+        sources,
+        factory_code,
+        pool_code,
+        router_code,
+    )
     bundle = materialize_reference_fingerprint_bundle(
         sources,
         source_evidence,
