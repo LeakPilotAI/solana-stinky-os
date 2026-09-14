@@ -5,6 +5,10 @@ import argparse
 import json
 from pathlib import Path
 
+from stinky_api.evm_reference_operator_errors import (
+    OperatorArgumentError, OperatorArgumentParser, serialize_operator_failure,
+)
+
 from stinky_api.evm_reference_operator_transport import (
     ReferenceDexOperatorPayload,
     validate_operator_payload,
@@ -12,7 +16,7 @@ from stinky_api.evm_reference_operator_transport import (
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
+    parser = OperatorArgumentParser(
         prog="genesis-evm-reference-preflight",
         description=(
             "Validate an EVM reference operator payload completely offline. "
@@ -24,21 +28,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parse_args(argv)
     try:
+        args = _parse_args(argv)
         raw = json.loads(Path(args.input).read_text(encoding="utf-8"))
         payload = ReferenceDexOperatorPayload.model_validate(raw)
         output = validate_operator_payload(payload)
     except Exception as exc:
-        print(json.dumps({
-            "ok": False,
-            "error": type(exc).__name__,
-            "detail": str(exc),
-            "validated_offline": False,
-            "read_only": True,
-            "execution_authorized": False,
-        }, sort_keys=True))
-        return 1
+        print(json.dumps(serialize_operator_failure(exc, preflight=True), sort_keys=True))
+        return 2 if isinstance(exc, OperatorArgumentError) else 1
 
     print(json.dumps({"ok": True, **output}, sort_keys=True))
     return 0

@@ -11,6 +11,9 @@ from pathlib import Path
 from urllib import request as urllib_request
 
 from stinky_api.db import SessionLocal
+from stinky_api.evm_reference_operator_errors import (
+    OperatorArgumentError, OperatorArgumentParser, serialize_operator_failure,
+)
 from stinky_api.evm_provider_attestation_audit import (
     ProviderAttestationReceipt,
     ProviderAttestationAudit,
@@ -143,7 +146,7 @@ async def execute_operator_payload(
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
+    parser = OperatorArgumentParser(
         prog="genesis-evm-reference-observe",
         description="Explicit read-only reference DEX observation. No transaction execution.",
     )
@@ -159,20 +162,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parse_args(argv)
     try:
+        args = _parse_args(argv)
         raw = json.loads(Path(args.input).read_text(encoding="utf-8"))
         payload = ReferenceDexOperatorPayload.model_validate(raw)
         output = asyncio.run(execute_operator_payload(payload, rpc_env_vars=tuple(args.rpc_env_vars)))
     except Exception as exc:
-        print(json.dumps({
-            "ok": False,
-            "error": type(exc).__name__,
-            "detail": str(exc),
-            "read_only": True,
-            "execution_authorized": False,
-        }, sort_keys=True))
-        return 1
+        print(json.dumps(serialize_operator_failure(exc), sort_keys=True))
+        return 2 if isinstance(exc, OperatorArgumentError) else 1
     print(json.dumps({"ok": True, **output}, sort_keys=True))
     return 0
 
