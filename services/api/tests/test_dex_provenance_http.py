@@ -42,7 +42,7 @@ def test_http_endpoint_returns_transport_safe_provenance_only(monkeypatch):
 
     async def fake_read(provider, *, chain, pool_address):
         calls.append((provider, chain, pool_address))
-        assert isinstance(provider.session, ReadOnlySession)
+        assert isinstance(provider._session, ReadOnlySession)
         return expected
 
     monkeypatch.setattr(http_module, "read_dex_provenance_response", fake_read)
@@ -73,15 +73,20 @@ def test_http_endpoint_maps_missing_evidence_to_404(monkeypatch):
     assert response.json() == {"detail": "DEX provenance evidence unavailable"}
 
 
-def test_http_endpoint_maps_malformed_identity_to_422(monkeypatch):
+def test_http_endpoint_rejects_malformed_identity_before_provider(monkeypatch):
+    called = False
+
     async def fake_read(provider, *, chain, pool_address):
-        raise ValueError("pool_address required")
+        nonlocal called
+        called = True
+        raise AssertionError("malformed identity must not reach provider")
 
     monkeypatch.setattr(http_module, "read_dex_provenance_response", fake_read)
     response = _client().get("/v1/entity-graph/dex-provenance/base/not-a-valid-pool")
 
     assert response.status_code == 422
-    assert response.json() == {"detail": "pool_address required"}
+    assert response.json() == {"detail": "invalid DEX provenance chain/pool identity"}
+    assert called is False
 
 
 def test_http_endpoint_is_get_only():
