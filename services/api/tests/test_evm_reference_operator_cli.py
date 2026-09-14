@@ -260,6 +260,17 @@ def test_all_providers_attest_before_database_and_existing_path_continues(monkey
     monkeypatch.setattr(cli, "SessionLocal", fake_session_local)
     monkeypatch.setattr(cli, "invoke_reference_dex_observation", fake_invoke)
 
+    async def fake_append(session, record):
+        events.append("audit")
+        assert record.completed_at == completed_at
+        assert record.block_number == payload().block_number
+        assert record.provider_count == len(observers)
+        assert tuple(row.provider for row in record.provider_attestations) == tuple(sorted(
+            cli.provider_fingerprint(observer.rpc_url) for observer in observers
+        ))
+
+    monkeypatch.setattr(cli, "append_provider_attestation_audit", fake_append)
+
     result = asyncio.run(
         cli.execute_operator_payload(
             payload(),
@@ -274,6 +285,7 @@ def test_all_providers_attest_before_database_and_existing_path_continues(monkey
         "session-create",
         "session-enter",
         "invoke",
+        "audit",
         "commit",
         "session-exit",
     ]
