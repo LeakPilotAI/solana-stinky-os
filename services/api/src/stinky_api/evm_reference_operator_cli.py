@@ -71,6 +71,12 @@ def build_cli_observers(chain: str, rpc_env_vars: tuple[str, ...]) -> tuple[EvmR
     return tuple(observers)
 
 
+def attest_cli_observers(observers: tuple[EvmReadOnlyRpc, ...]) -> None:
+    """Fail closed unless every configured provider attests to its registered chain."""
+    for observer in observers:
+        observer.attest_chain()
+
+
 async def execute_operator_payload(
     payload: ReferenceDexOperatorPayload,
     *,
@@ -78,6 +84,7 @@ async def execute_operator_payload(
 ) -> dict:
     validate_operator_payload(payload)
     observers = build_cli_observers(payload.chain, rpc_env_vars)
+    attest_cli_observers(observers)
     schedule, trigger_request = build_operator_request(payload, observers)
     async with SessionLocal() as session:
         try:
