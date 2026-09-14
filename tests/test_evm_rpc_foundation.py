@@ -166,7 +166,10 @@ def test_valid_mixed_case_hash_and_storage_data_preserve_contracts():
     word = "0x" + "aB" * 32
     rpc = EvmReadOnlyRpc("base", transport=scripted("0x2105", {"number": "0x10", "hash": word}))
     assert rpc.get_block_by_number(16)["hash"] == word
-    rpc = EvmReadOnlyRpc("base", transport=scripted("0x2105", [{"blockHash": word}]))
-    assert rpc.get_logs_for_block(word) == [{"blockHash": word}]
+    log = {"blockHash": word, "blockNumber": "0x10", "address": "0x" + "aB" * 20,
+           "transactionHash": word, "transactionIndex": "0x0", "logIndex": "0x0",
+           "removed": False, "topics": [word], "data": "0xaB"}
+    rpc = EvmReadOnlyRpc("base", transport=scripted("0x2105", [log]))
+    assert rpc.get_logs_for_block(word) == [log]
     rpc = EvmReadOnlyRpc("base", transport=scripted("0x2105", word))
     assert rpc.storage_at_block("0x" + "11" * 20, word, 16) == word.lower()

@@ -122,7 +122,7 @@ def ingest_consensus_block(
     log_groups: dict[str, list[tuple[EvmReadOnlyRpc, tuple[dict[str, Any], ...]]]] = {}
     for observer, _ in block_rows:
         try:
-            canonical = _canonical_logs(observer.get_logs_for_block(block_hash))
+            canonical = _canonical_logs(observer.get_logs_for_block(block_hash, expected_block_number=target))
         except EvmRpcError:
             continue
         digest = _logs_digest(canonical)

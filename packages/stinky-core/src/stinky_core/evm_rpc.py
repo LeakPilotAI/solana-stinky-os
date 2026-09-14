@@ -139,16 +139,42 @@ class EvmReadOnlyRpc:
             raise EvmRpcError("invalid block hash")
         return result
 
-    def get_logs_for_block(self, block_hash: str) -> list[dict[str, Any]]:
+    def get_logs_for_block(
+        self, block_hash: str, *, expected_block_number: int | None = None,
+    ) -> list[dict[str, Any]]:
         if not _is_hex_data(block_hash, byte_count=32):
             raise ValueError("block_hash must be a 32-byte hex hash")
+        if expected_block_number is not None and (
+            type(expected_block_number) is not int or expected_block_number < 0
+        ):
+            raise ValueError("expected_block_number must be a non-negative integer")
         self.attest_chain()
         result = self._call("eth_getLogs", [{"blockHash": block_hash}])
         if not isinstance(result, list) or not all(isinstance(item, dict) for item in result):
             raise EvmRpcError("invalid logs response")
+        seen_indices: set[int] = set()
         for item in result:
             if item.get("blockHash") != block_hash:
                 raise EvmRpcError("log block hash mismatch")
+            if not _is_hex_data(item.get("address"), byte_count=20):
+                raise EvmRpcError("invalid log address")
+            if not _is_hex_data(item.get("transactionHash"), byte_count=32):
+                raise EvmRpcError("invalid log transaction hash")
+            number = self._hex_int(item.get("blockNumber"), "log block number")
+            if expected_block_number is not None and number != expected_block_number:
+                raise EvmRpcError("log block number mismatch")
+            index = self._hex_int(item.get("logIndex"), "log index")
+            self._hex_int(item.get("transactionIndex"), "log transaction index")
+            if index in seen_indices:
+                raise EvmRpcError("duplicate log index in provider response")
+            seen_indices.add(index)
+            if item.get("removed") is not False:
+                raise EvmRpcError("historical log must be explicitly nonremoved")
+            if not _is_hex_data(item.get("data")):
+                raise EvmRpcError("invalid log data")
+            topics = item.get("topics")
+            if not isinstance(topics, list) or any(not _is_hex_data(topic, byte_count=32) for topic in topics):
+                raise EvmRpcError("invalid log topics")
         return result
 
     def call_at_block(self, address: str, data: str, block_number: int) -> str:
