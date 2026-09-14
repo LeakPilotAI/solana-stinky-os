@@ -3,18 +3,17 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from stinky_api.db import get_session
 from stinky_api.dex_provenance import read_dex_provenance_response
 from stinky_api.dex_provenance_provider import PostgresDexProvenanceEvidenceProvider
+from stinky_api.entity_graph import router
 from stinky_core.evm_dex_provenance_response import DexProvenanceResponse
 
-router = APIRouter(prefix="/v1/dex-provenance", tags=["dex-provenance"])
 
-
-@router.get("/{chain}/{pool_address}")
+@router.get("/dex-provenance/{chain}/{pool_address}", tags=["dex-provenance"])
 async def dex_provenance_response(
     chain: str,
     pool_address: str,
