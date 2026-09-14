@@ -15,6 +15,7 @@ from stinky_api.evm_reference_operator_transport import (
     ReferenceDexOperatorPayload,
     build_operator_request,
     serialize_operator_result,
+    validate_operator_payload,
 )
 from stinky_core.evm_rpc import EvmReadOnlyRpc, EvmRpcError
 
@@ -75,6 +76,7 @@ async def execute_operator_payload(
     *,
     rpc_env_vars: tuple[str, ...],
 ) -> dict:
+    validate_operator_payload(payload)
     observers = build_cli_observers(payload.chain, rpc_env_vars)
     schedule, trigger_request = build_operator_request(payload, observers)
     async with SessionLocal() as session:
