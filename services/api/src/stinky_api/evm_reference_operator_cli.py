@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import re
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib import request as urllib_request
 
@@ -17,9 +18,18 @@ from stinky_api.evm_reference_operator_transport import (
     serialize_operator_result,
     validate_operator_payload,
 )
+from stinky_core.evm_consensus import provider_fingerprint
 from stinky_core.evm_rpc import EvmReadOnlyRpc, EvmRpcError
 
 _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderAttestationReceipt:
+    provider: str
+    chain: str
+    chain_id: int
+    attested: bool = True
 
 
 def _https_transport(url: str):
@@ -71,10 +81,20 @@ def build_cli_observers(chain: str, rpc_env_vars: tuple[str, ...]) -> tuple[EvmR
     return tuple(observers)
 
 
-def attest_cli_observers(observers: tuple[EvmReadOnlyRpc, ...]) -> None:
-    """Fail closed unless every configured provider attests to its registered chain."""
+def attest_cli_observers(observers: tuple[EvmReadOnlyRpc, ...]) -> tuple[ProviderAttestationReceipt, ...]:
+    receipts: list[ProviderAttestationReceipt] = []
     for observer in observers:
-        observer.attest_chain()
+        observed_chain_id = observer.attest_chain()
+        receipts.append(
+            ProviderAttestationReceipt(
+                provider=provider_fingerprint(observer.rpc_url),
+                chain=observer.chain.key,
+                chain_id=observed_chain_id,
+            )
+        )
+    if len(receipts) != len(observers):
+        raise EvmRpcError("provider attestation receipt is incomplete")
+    return tuple(sorted(receipts, key=lambda receipt: receipt.provider))
 
 
 async def execute_operator_payload(
@@ -84,7 +104,7 @@ async def execute_operator_payload(
 ) -> dict:
     validate_operator_payload(payload)
     observers = build_cli_observers(payload.chain, rpc_env_vars)
-    attest_cli_observers(observers)
+    provider_attestations = attest_cli_observers(observers)
     schedule, trigger_request = build_operator_request(payload, observers)
     async with SessionLocal() as session:
         try:
@@ -100,7 +120,10 @@ async def execute_operator_payload(
         except BaseException:
             await session.rollback()
             raise
-    return serialize_operator_result(result)
+    return {
+        **serialize_operator_result(result),
+        "provider_attestations": [asdict(receipt) for receipt in provider_attestations],
+    }
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -124,9 +147,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         raw = json.loads(Path(args.input).read_text(encoding="utf-8"))
         payload = ReferenceDexOperatorPayload.model_validate(raw)
-        output = asyncio.run(
-            execute_operator_payload(payload, rpc_env_vars=tuple(args.rpc_env_vars))
-        )
+        output = asyncio.run(execute_operator_payload(payload, rpc_env_vars=tuple(args.rpc_env_vars)))
     except Exception as exc:
         print(json.dumps({
             "ok": False,

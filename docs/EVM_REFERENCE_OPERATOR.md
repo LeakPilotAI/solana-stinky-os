@@ -120,6 +120,15 @@ Successful and failed invocations emit deterministic JSON. Operator responses re
 }
 ```
 
+A successful observation also emits a `provider_attestations` array only after every configured provider has successfully completed the mandatory pre-attestation gate. Each row contains only:
+
+- `provider`: the existing redacted `provider_fingerprint(...)` label,
+- `chain`: the configured canonical chain key,
+- `chain_id`: the remotely attested chain ID,
+- `attested`: `true`.
+
+The provider-attestation receipt is deterministic and sorted by the redacted provider label. Its row count equals the complete configured observer count. It never contains raw RPC URLs, URL paths, query strings, credentials, API keys, wallet data, signer material, transaction payloads, or execution authorization. If any provider fails attestation, the invocation fails before `SessionLocal` and no successful provider-attestation receipt is emitted.
+
 A successful observation may advance durable #250 completion state only after the underlying #248 observation succeeds. Duplicate or replayed block requests fail closed. Preflight never advances durable state.
 
 ## Operational model

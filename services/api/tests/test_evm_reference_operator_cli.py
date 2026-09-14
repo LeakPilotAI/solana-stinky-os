@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
 import asyncio
+import json
 
 import pytest
 
@@ -168,6 +169,38 @@ def test_provider_pre_attestation_rejects_one_bad_provider_before_database(monke
     assert events == ["attest:rpc-a", "attest:rpc-b"]
 
 
+def test_attestation_receipt_is_redacted_immutable_and_deterministic():
+    class FakeObserver:
+        def __init__(self, name, secret):
+            self.rpc_url = f"https://{name}.example/rpc?api_key={secret}"
+            self.chain = SimpleNamespace(key="base", chain_id=8453)
+
+        def attest_chain(self):
+            return 8453
+
+    observers = (
+        FakeObserver("rpc-b", "SECRET_B"),
+        FakeObserver("rpc-a", "SECRET_A"),
+    )
+    receipt = cli.attest_cli_observers(observers)
+
+    assert isinstance(receipt, tuple)
+    assert tuple(row.provider for row in receipt) == tuple(sorted(row.provider for row in receipt))
+    assert len(receipt) == len(observers)
+    assert all(row.chain == "base" for row in receipt)
+    assert all(row.chain_id == 8453 for row in receipt)
+    assert all(row.attested is True for row in receipt)
+
+    serialized = json.dumps([cli.asdict(row) for row in receipt], sort_keys=True)
+    assert "SECRET_A" not in serialized
+    assert "SECRET_B" not in serialized
+    assert "api_key" not in serialized
+    assert "https://" not in serialized
+
+    with pytest.raises(Exception):
+        receipt[0].chain_id = 1
+
+
 def test_all_providers_attest_before_database_and_existing_path_continues(monkeypatch):
     events = []
 
@@ -248,6 +281,13 @@ def test_all_providers_attest_before_database_and_existing_path_continues(monkey
     assert result["read_only"] is True
     assert result["execution_authorized"] is False
     assert result["state"]["last_completed_block"] == payload().block_number
+    assert len(result["provider_attestations"]) == len(observers)
+    assert all(row["attested"] is True for row in result["provider_attestations"])
+    assert all(row["chain"] == "base" for row in result["provider_attestations"])
+    assert all(row["chain_id"] == 8453 for row in result["provider_attestations"])
+    assert [row["provider"] for row in result["provider_attestations"]] == sorted(
+        row["provider"] for row in result["provider_attestations"]
+    )
 
 
 def test_result_serialization_is_audit_safe_and_non_execution():
