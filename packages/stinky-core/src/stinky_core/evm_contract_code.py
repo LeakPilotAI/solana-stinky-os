@@ -14,7 +14,7 @@ from typing import Iterable
 
 from .evm_consensus import provider_fingerprint
 from .evm_dex_discovery import DexPoolCandidate
-from .evm_rpc import EvmReadOnlyRpc, EvmRpcError
+from .evm_rpc import EvmReadOnlyRpc, EvmRpcError, _is_hex_data
 from .multichain_identity import asset_key, canonical_chain_address
 
 
@@ -54,12 +54,8 @@ def _fingerprint(code: str) -> tuple[str, int]:
 def _get_code_at_block(observer: EvmReadOnlyRpc, address: str, block_number: int) -> str:
     observer.attest_chain()
     result = observer._call("eth_getCode", [address, hex(block_number)])
-    if not isinstance(result, str) or not result.startswith("0x") or len(result) % 2:
+    if not _is_hex_data(result):
         raise EvmRpcError("invalid eth_getCode response")
-    try:
-        int(result[2:] or "0", 16)
-    except ValueError as exc:
-        raise EvmRpcError("invalid eth_getCode response") from exc
     return result.lower()
 
 

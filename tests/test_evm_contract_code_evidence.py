@@ -113,6 +113,52 @@ def test_empty_code_is_not_promoted_to_contract_evidence():
         )
 
 
+@pytest.mark.parametrize("code", ["0x12  ", "0x12_3", "0x+123", "0x123", "0xzz", "0x12\n\n", "12", None, 12])
+def test_malformed_bytecode_cannot_form_evidence_quorum(code):
+    with pytest.raises(EvmRpcError, match="quorum"):
+        observe_contract_code(
+            [observer("https://one.example", code), observer("https://two.example", code)],
+            chain="base", address=POOL, block_number=100,
+        )
+
+
+@pytest.mark.parametrize("code", ["0x12  ", "0x12_3"])
+def test_malformed_provider_does_not_poison_valid_code_quorum(code):
+    valid = [observer("https://one.example"), observer("https://two.example")]
+    expected = observe_contract_code(valid, chain="base", address=POOL, block_number=100)
+    actual = observe_contract_code(
+        [observer("https://bad.example", code), *valid],
+        chain="base", address=POOL, block_number=100,
+    )
+    assert actual == expected
+
+
+def test_complete_bytecode_preserves_bytes_and_exact_historical_requests():
+    calls = []
+
+    def transport(url, payload, timeout):
+        request = json.loads(payload)
+        calls.append((url, request["method"], request["params"]))
+        result = "0x2105" if request["method"] == "eth_chainId" else "0x00aBcD00"
+        return {"jsonrpc": "2.0", "id": request["id"], "result": result}
+
+    providers = []
+    for url in ("https://one.example", "https://two.example"):
+        rpc = EvmReadOnlyRpc("base", transport=transport)
+        rpc.rpc_url = url
+        providers.append(rpc)
+    evidence = observe_contract_code(providers, chain="base", address=POOL, block_number=100)
+    assert evidence.runtime_bytecode == "0x00abcd00"
+    assert evidence.byte_length == 4
+    assert evidence.fingerprint_sha256 == hashlib.sha256(bytes.fromhex("00abcd00")).hexdigest()
+    assert evidence.block_number == 100
+    assert calls == [
+        (rpc.rpc_url, method, params)
+        for rpc in providers
+        for method, params in [("eth_chainId", []), ("eth_getCode", [POOL, "0x64"])]
+    ]
+
+
 def test_factory_and_pool_helpers_preserve_candidate_identity():
     observers = [observer("https://one.example"), observer("https://two.example")]
     factory = observe_factory_contract_code(observers, pool(), block_number=100)
