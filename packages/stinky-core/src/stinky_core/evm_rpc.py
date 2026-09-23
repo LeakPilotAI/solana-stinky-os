@@ -53,6 +53,25 @@ def resolve_rpc_url(chain_key: str) -> str:
     return url
 
 
+def decode_rpc_response(body: bytes) -> dict[str, Any]:
+    """Reject ambiguous object members before evidence is lost during decoding."""
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON member")
+            result[key] = value
+        return result
+
+    try:
+        decoded = json.loads(body, object_pairs_hook=unique_object)
+    except (TypeError, ValueError) as exc:
+        raise EvmRpcError("RPC returned invalid JSON") from exc
+    if not isinstance(decoded, dict):
+        raise EvmRpcError("RPC returned non-object response")
+    return decoded
+
+
 def _urllib_transport(url: str, payload: bytes, timeout: float) -> dict[str, Any]:
     req = request.Request(url, data=payload, headers={"Content-Type": "application/json", "User-Agent": "genesis-readonly/1"}, method="POST")
     try:
@@ -60,13 +79,7 @@ def _urllib_transport(url: str, payload: bytes, timeout: float) -> dict[str, Any
             body = response.read()
     except Exception as exc:
         raise EvmRpcError(f"RPC request failed: {type(exc).__name__}") from exc
-    try:
-        decoded = json.loads(body)
-    except (TypeError, ValueError) as exc:
-        raise EvmRpcError("RPC returned invalid JSON") from exc
-    if not isinstance(decoded, dict):
-        raise EvmRpcError("RPC returned non-object response")
-    return decoded
+    return decode_rpc_response(body)
 
 
 class EvmReadOnlyRpc:
