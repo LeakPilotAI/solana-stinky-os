@@ -83,6 +83,61 @@ def test_block_hash_disagreement_fails_closed():
         )
 
 
+def fail_head_read(rpc, calls):
+    original = rpc._transport
+    def transport(url, payload, timeout):
+        method = json.loads(payload)["method"]
+        calls.append(method)
+        if method == "eth_blockNumber":
+            raise EvmRpcError("head unavailable")
+        return original(url, payload, timeout)
+    rpc._transport = transport
+    return rpc
+
+
+@pytest.mark.parametrize("phase", ["block", "log"])
+def test_foreign_chain_cannot_replace_missing_quorum_after_head_failure(phase):
+    calls = []
+    foreign = fail_head_read(observer("robinhood", "https://foreign.example"), calls)
+    second = observer("base", "https://two.example", block_hash=OTHER_HASH) if phase == "block" else observer(
+        "base", "https://two.example", logs=[],
+    )
+    with pytest.raises(EvmRpcError, match="block-hash consensus" if phase == "block" else "log-set consensus"):
+        ingest_consensus_block([
+            observer("base", "https://one.example"),
+            second,
+            foreign,
+        ])
+    assert calls == ["eth_chainId", "eth_blockNumber"]
+
+
+def test_foreign_chain_is_excluded_from_valid_block_and_log_provenance():
+    calls = []
+    foreign = fail_head_read(observer("robinhood", "https://foreign.example"), calls)
+    result = ingest_consensus_block([
+        foreign,
+        observer("base", "https://one.example"),
+        observer("base", "https://two.example"),
+    ])
+    assert (result.chain, result.chain_id, result.block_number) == ("base", 8453, 98)
+    assert len(result.block_sources) == len(result.log_sources) == 2
+    assert all(not s.provider.startswith("foreign.example:") for s in (*result.block_sources, *result.log_sources))
+    assert calls == ["eth_chainId", "eth_blockNumber"]
+
+
+def test_same_chain_provider_can_recover_after_head_read_failure():
+    calls = []
+    recovered = fail_head_read(observer("base", "https://recovered.example"), calls)
+    result = ingest_consensus_block([
+        observer("base", "https://one.example"),
+        observer("base", "https://two.example", block_hash=OTHER_HASH),
+        recovered,
+    ])
+    assert len(result.block_sources) == len(result.log_sources) == 2
+    assert any(s.provider.startswith("recovered.example:") for s in result.block_sources)
+    assert calls == ["eth_chainId", "eth_blockNumber", "eth_chainId", "eth_getBlockByNumber", "eth_chainId", "eth_getLogs"]
+
+
 def test_log_set_disagreement_fails_closed():
     first = observer("base", "https://one.example")
     altered_logs = [

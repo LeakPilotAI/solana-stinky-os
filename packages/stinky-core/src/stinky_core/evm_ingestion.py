@@ -98,6 +98,8 @@ def ingest_consensus_block(
 
     block_groups: dict[str, list[tuple[EvmReadOnlyRpc, dict[str, Any]]]] = {}
     for observer in providers:
+        if (observer.chain.key, observer.chain.chain_id) != (head.chain, head.chain_id):
+            continue
         try:
             block = observer.get_block_by_number(target)
         except EvmRpcError:
