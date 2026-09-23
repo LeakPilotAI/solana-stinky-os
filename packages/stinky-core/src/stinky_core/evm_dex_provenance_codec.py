@@ -145,3 +145,20 @@ def validate_record_identity(
     envelope = record.envelope
     if envelope.dex_family.chain != chain or envelope.dex_family.block_number != evidence_block:
         raise ValueError("persisted DEX provenance envelope identity mismatch")
+    factory_code = relationship.factory_code
+    if (factory_code.chain, factory_code.block_number, factory_code.address) != (
+        chain, evidence_block, relationship.factory_address,
+    ):
+        raise ValueError("persisted DEX provenance factory code identity mismatch")
+    components = (
+        (envelope.factory_fingerprint, "FACTORY", relationship.factory_address),
+        (envelope.pool_fingerprint, "POOL", pool_address),
+        (envelope.router_fingerprint, "ROUTER", envelope.router_fingerprint.address),
+    )
+    for component, role, address in components:
+        if (component.chain, component.block_number, component.address, component.expected_role) != (
+            chain, evidence_block, address, role,
+        ):
+            raise ValueError("persisted DEX provenance component identity mismatch")
+    if tuple(item for item in envelope.chain_blocks if item[0] == chain) != ((chain, evidence_block),):
+        raise ValueError("persisted DEX provenance reference block identity mismatch")
