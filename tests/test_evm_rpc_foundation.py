@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+from io import BytesIO
 import sys
 
 import pytest
@@ -8,6 +9,39 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "packages" / "stinky-core" / "src"))
 
 from stinky_core.evm_rpc import EvmReadOnlyRpc, EvmRpcError, resolve_rpc_url
+
+
+@pytest.mark.parametrize("body", [
+    b'{"jsonrpc":"2.0","id":1,"result":"0x1","result":"0x2105"}',
+    b'{"jsonrpc":"2.0","id":99,"id":1,"result":"0x2105"}',
+    b'{"jsonrpc":"1.0","jsonrpc":"2.0","id":1,"result":"0x2105"}',
+    br'{"jsonrpc":"2.0","id":1,"result":"0x1","res\u0075lt":"0x2105"}',
+    b'{"jsonrpc":"2.0","id":1,"result":{"hash":"a","hash":"b"}}',
+    b'{"jsonrpc":"2.0","id":1,"result":[{"address":"a","address":"b"}]}',
+    b'{"jsonrpc":"2.0","id":1,"result":"0x2105","secret_fixture":1,"secret_fixture":2}',
+])
+def test_default_transport_rejects_duplicate_json_members(monkeypatch, body):
+    calls = []
+    def urlopen(req, timeout):
+        calls.append(json.loads(req.data)["method"])
+        return BytesIO(body)
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    with pytest.raises(EvmRpcError, match="^RPC returned invalid JSON$"):
+        EvmReadOnlyRpc("base").observe_head()
+    assert calls == ["eth_chainId"]
+
+
+def test_default_transport_preserves_unambiguous_nested_json(monkeypatch):
+    body = b'{"jsonrpc":"2.0","id":1.0,"result":[{"value":1},{"value":2}],"extra":{"value":3}}'
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **kw: BytesIO(body))
+    assert EvmReadOnlyRpc("base")._call("eth_getLogs") == [{"value": 1}, {"value": 2}]
+
+
+@pytest.mark.parametrize("body, message", [(b'{', "invalid JSON"), (b'[]', "non-object response")])
+def test_default_transport_preserves_invalid_json_errors(monkeypatch, body, message):
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **kw: BytesIO(body))
+    with pytest.raises(EvmRpcError, match=message):
+        EvmReadOnlyRpc("base").attest_chain()
 
 
 def scripted(*results):

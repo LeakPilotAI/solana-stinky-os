@@ -28,7 +28,7 @@ from stinky_api.evm_reference_operator_transport import (
     validate_operator_payload,
 )
 from stinky_core.evm_consensus import provider_fingerprint
-from stinky_core.evm_rpc import EvmReadOnlyRpc, EvmRpcError
+from stinky_core.evm_rpc import EvmReadOnlyRpc, EvmRpcError, decode_rpc_response
 
 _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
@@ -49,13 +49,7 @@ def _https_transport(url: str):
                 body = response.read()
         except Exception as exc:
             raise EvmRpcError(f"RPC request failed: {type(exc).__name__}") from exc
-        try:
-            decoded = json.loads(body)
-        except (TypeError, ValueError) as exc:
-            raise EvmRpcError("RPC returned invalid JSON") from exc
-        if not isinstance(decoded, dict):
-            raise EvmRpcError("RPC returned non-object response")
-        return decoded
+        return decode_rpc_response(body)
 
     return transport
 

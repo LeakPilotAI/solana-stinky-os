@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 import asyncio
 import json
+from io import BytesIO
 
 import pytest
 
@@ -73,6 +74,37 @@ def test_transport_builds_existing_immutable_runtime_types():
     assert request.min_quorum == 2
     assert request.pool.factory_address == payload().factory_address
     assert request.router_address == payload().router_address
+
+
+@pytest.mark.parametrize("members", [
+    '"result":"0x1","result":"0x2105"',
+    '"result":"0x2105","extra":{"secret_fixture":1,"secret_fixture":2}',
+])
+def test_duplicate_raw_rpc_members_abort_before_database(monkeypatch, members):
+    calls = []
+    for name in ("A", "B", "C"):
+        monkeypatch.setenv("RPC_" + name, "https://" + name.lower() + ".example")
+    def urlopen(req, timeout):
+        calls.append(req.full_url)
+        assert json.loads(req.data)["method"] == "eth_chainId"
+        result = members if req.full_url == "https://b.example" else '"result":"0x2105"'
+        return BytesIO(('{"jsonrpc":"2.0","id":1,' + result + '}').encode())
+    monkeypatch.setattr(cli.urllib_request, "urlopen", urlopen)
+    def forbidden(*args, **kwargs):
+        pytest.fail("ambiguous provider response reached durable access")
+    monkeypatch.setattr(cli, "SessionLocal", forbidden)
+    monkeypatch.setattr(cli, "append_provider_attestation_audit", forbidden)
+    with pytest.raises(cli.EvmRpcError, match="^RPC returned invalid JSON$"):
+        asyncio.run(cli.execute_operator_payload(payload(), rpc_env_vars=("RPC_A", "RPC_B", "RPC_C")))
+    assert calls == ["https://a.example", "https://b.example"]
+
+
+def test_operator_transport_preserves_valid_numeric_id(monkeypatch):
+    monkeypatch.setattr(cli.urllib_request, "urlopen", lambda *a, **kw: BytesIO(
+        b'{"jsonrpc":"2.0","id":1.0,"result":"0x2105"}'
+    ))
+    observer = cli.EvmReadOnlyRpc("base", transport=cli._https_transport("https://fixture.example"))
+    assert observer.attest_chain() == 8453
 
 
 def test_transport_fails_closed_without_quorum():
