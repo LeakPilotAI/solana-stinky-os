@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -169,3 +170,60 @@ async def test_postgres_provider_fails_closed_on_identity_mismatch(monkeypatch):
     provider = PostgresDexProvenanceEvidenceProvider(SimpleNamespace())
     with pytest.raises(ValueError):
         await provider.load(chain=CHAIN, pool_address=POOL)
+
+
+def mismatched_records():
+    original = record()
+    for component in ("factory_fingerprint", "pool_fingerprint", "router_fingerprint"):
+        for field, value in (("chain", "robinhood"), ("block_number", BLOCK + 1), ("expected_role", "UNKNOWN")):
+            changed = replace(getattr(original.envelope, component), **{field: value})
+            yield replace(original, envelope=replace(original.envelope, **{component: changed}))
+    for component in ("factory_fingerprint", "pool_fingerprint"):
+        changed = replace(getattr(original.envelope, component), address=ROUTER)
+        yield replace(original, envelope=replace(original.envelope, **{component: changed}))
+    for field, value in (("chain", "robinhood"), ("block_number", BLOCK + 1), ("address", ROUTER)):
+        changed = replace(original.relationship.factory_code, **{field: value})
+        yield replace(original, relationship=replace(original.relationship, factory_code=changed))
+    for blocks in ((), ((CHAIN, BLOCK + 1),), ((CHAIN, BLOCK), (CHAIN, BLOCK + 1))):
+        yield replace(original, envelope=replace(original.envelope, chain_blocks=blocks))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", list(mismatched_records()))
+async def test_provider_and_writer_reject_nested_identity_mismatch(monkeypatch, invalid):
+    import stinky_api.dex_provenance_writer as writer
+    row = persisted(invalid)
+    async def fake_load(*args, **kwargs):
+        return row
+    async def forbidden_append(*args, **kwargs):
+        pytest.fail("inconsistent historical evidence reached append")
+    monkeypatch.setattr(provider_module, "load_latest_dex_provenance_evidence", fake_load)
+    monkeypatch.setattr(writer, "append_dex_provenance_evidence", forbidden_append)
+    with pytest.raises(ValueError, match="identity mismatch"):
+        await PostgresDexProvenanceEvidenceProvider(SimpleNamespace()).load(chain=CHAIN, pool_address=POOL)
+    with pytest.raises(ValueError, match="identity mismatch"):
+        await writer.persist_dex_provenance_evidence(object(), record=invalid, sources=(source(),))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verdict", ["UNKNOWN_IMPLEMENTATION_FINGERPRINT", "AMBIGUOUS_IMPLEMENTATION_FINGERPRINT"])
+async def test_valid_identity_preserves_unknown_and_conflicting_evidence(monkeypatch, verdict):
+    import stinky_api.dex_provenance_writer as writer
+    original = record()
+    original = replace(original, envelope=replace(original.envelope,
+        pool_fingerprint=replace(original.envelope.pool_fingerprint, verdict=verdict),
+        chain_blocks=((CHAIN, BLOCK), ("robinhood", 456)),
+    ))
+    row = persisted(original)
+    async def fake_load(*args, **kwargs):
+        return row
+    captured = []
+    async def append(session, **kwargs):
+        captured.append(kwargs["record_payload"])
+        return 41
+    monkeypatch.setattr(provider_module, "load_latest_dex_provenance_evidence", fake_load)
+    monkeypatch.setattr(writer, "append_dex_provenance_evidence", append)
+    bundle = await PostgresDexProvenanceEvidenceProvider(SimpleNamespace()).load(chain=CHAIN, pool_address=POOL)
+    assert bundle.record == original
+    assert await writer.persist_dex_provenance_evidence(object(), record=original, sources=(source(),)) == 41
+    assert decode_reference_dex_evidence_record(captured[0]) == original
