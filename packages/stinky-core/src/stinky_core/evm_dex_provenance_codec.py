@@ -7,7 +7,8 @@ unsupported schema versions fail closed rather than being guessed or backfilled.
 from __future__ import annotations
 
 from dataclasses import fields, is_dataclass
-from typing import Any, Mapping, Sequence, TypeVar
+from types import UnionType
+from typing import Any, Mapping, Sequence, get_args, get_origin, get_type_hints
 
 from .evm_contract_code import ContractCodeEvidence, ContractCodeSource
 from .evm_dex_family_composition import DexFamilyConsistencyEvidence
@@ -36,7 +37,28 @@ _SUPPORTED_TYPES = {
     )
 }
 
-T = TypeVar("T")
+_FIELD_TYPES = {cls: get_type_hints(cls) for cls in _SUPPORTED_TYPES.values()}
+
+
+def _matches_type(value: Any, expected: Any) -> bool:
+    origin = get_origin(expected)
+    args = get_args(expected)
+    if origin is UnionType:
+        return any(_matches_type(value, option) for option in args)
+    if origin is tuple:
+        if type(value) is not tuple:
+            return False
+        if len(args) == 2 and args[1] is Ellipsis:
+            return all(_matches_type(item, args[0]) for item in value)
+        return len(value) == len(args) and all(
+            _matches_type(item, kind) for item, kind in zip(value, args)
+        )
+    return type(value) is expected
+
+
+def _validate_fields(cls: type, values: Mapping[str, Any]) -> None:
+    if any(not _matches_type(values[name], expected) for name, expected in _FIELD_TYPES[cls].items()):
+        raise ValueError("DEX provenance field type does not match schema")
 
 
 def _encode(value: Any) -> Any:
@@ -48,6 +70,7 @@ def _encode(value: Any) -> Any:
         name = type(value).__name__
         if name not in _SUPPORTED_TYPES or _SUPPORTED_TYPES[name] is not type(value):
             raise ValueError(f"unsupported DEX provenance evidence type: {name}")
+        _validate_fields(type(value), {field.name: getattr(value, field.name) for field in fields(value)})
         return {
             "__type__": name,
             "fields": {field.name: _encode(getattr(value, field.name)) for field in fields(value)},
@@ -80,10 +103,13 @@ def _decode(value: Any) -> Any:
     if actual != expected:
         raise ValueError("encoded DEX provenance fields do not match schema")
     decoded = {field.name: _decode(payload[field.name]) for field in fields(cls)}
+    _validate_fields(cls, decoded)
     return cls(**decoded)
 
 
 def encode_reference_dex_evidence_record(record: ReferenceDexEvidenceRecord) -> dict[str, Any]:
+    if type(record) is not ReferenceDexEvidenceRecord:
+        raise ValueError("DEX provenance payload is not a ReferenceDexEvidenceRecord")
     return {"schema": SCHEMA, "version": VERSION, "value": _encode(record)}
 
 
@@ -92,7 +118,7 @@ def decode_reference_dex_evidence_record(payload: Mapping[str, Any]) -> Referenc
         raise ValueError("DEX provenance record payload must be a mapping")
     if set(payload) != {"schema", "version", "value"}:
         raise ValueError("DEX provenance record payload structure is invalid")
-    if payload["schema"] != SCHEMA or payload["version"] != VERSION:
+    if payload["schema"] != SCHEMA or type(payload["version"]) is not int or payload["version"] != VERSION:
         raise ValueError("unsupported DEX provenance evidence schema version")
     record = _decode(payload["value"])
     if not isinstance(record, ReferenceDexEvidenceRecord):
@@ -105,7 +131,10 @@ def encode_reference_sources(
 ) -> tuple[dict[str, Any], ...]:
     if isinstance(sources, (str, bytes)):
         raise ValueError("reference sources must be a sequence")
-    return tuple({"schema": SCHEMA, "version": VERSION, "value": _encode(source)} for source in sources)
+    source_items = tuple(sources)
+    if any(type(source) is not DexReferenceContractSource for source in source_items):
+        raise ValueError("reference source payload has wrong type")
+    return tuple({"schema": SCHEMA, "version": VERSION, "value": _encode(source)} for source in source_items)
 
 
 def decode_reference_sources(
@@ -119,7 +148,7 @@ def decode_reference_sources(
             raise ValueError("reference source payload must be a mapping")
         if set(payload) != {"schema", "version", "value"}:
             raise ValueError("reference source payload structure is invalid")
-        if payload["schema"] != SCHEMA or payload["version"] != VERSION:
+        if payload["schema"] != SCHEMA or type(payload["version"]) is not int or payload["version"] != VERSION:
             raise ValueError("unsupported DEX provenance evidence schema version")
         source = _decode(payload["value"])
         if not isinstance(source, DexReferenceContractSource):

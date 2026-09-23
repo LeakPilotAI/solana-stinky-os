@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from dataclasses import replace
+from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +14,7 @@ from stinky_core.evm_dex_provenance_codec import (
     decode_reference_dex_evidence_record,
     encode_reference_dex_evidence_record,
     encode_reference_sources,
+    decode_reference_sources,
 )
 from stinky_core.evm_factory_evidence import FactoryRelationshipEvidence, FactoryRelationshipSource
 from stinky_core.evm_implementation_registry import ImplementationFingerprintEvidence, ImplementationFingerprintMatch
@@ -227,3 +229,84 @@ async def test_valid_identity_preserves_unknown_and_conflicting_evidence(monkeyp
     assert bundle.record == original
     assert await writer.persist_dex_provenance_evidence(object(), record=original, sources=(source(),)) == 41
     assert decode_reference_dex_evidence_record(captured[0]) == original
+
+
+_BAD_FIELDS = [
+    (("relationship", "factory_code", "byte_length"), True, True),
+    (("relationship", "factory_code", "byte_length"), "1", "1"),
+    (("relationship", "factory_code", "chain"), 8453, 8453),
+    (("relationship", "fee_tier"), False, False),
+    (("relationship", "returned_address"), 1, 1),
+    (("limitations",), "not a tuple", "not a tuple"),
+    (("limitations",), (1,), {"__tuple__": [1]}),
+    (("envelope", "chain_blocks"), ((CHAIN,),), {"__tuple__": [{"__tuple__": [CHAIN]}]}),
+    (("envelope", "chain_blocks"), ((CHAIN, True),), {"__tuple__": [{"__tuple__": [CHAIN, True]}]}),
+    (("envelope", "pool_fingerprint"), code(POOL), encode_reference_dex_evidence_record(record())["value"]["fields"]["relationship"]["fields"]["factory_code"]),
+]
+
+
+def replace_nested(value, path, replacement):
+    field, *rest = path
+    return replace(value, **{field: replace_nested(getattr(value, field), rest, replacement) if rest else replacement})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path, invalid, encoded", _BAD_FIELDS)
+async def test_codec_type_errors_reject_read_and_write(monkeypatch, path, invalid, encoded):
+    import stinky_api.dex_provenance_writer as writer
+    original_row = persisted()
+    corrupted = deepcopy(original_row.record_payload)
+    target = corrupted["value"]
+    for field in path[:-1]:
+        target = target["fields"][field]
+    target["fields"][path[-1]] = encoded
+    row = replace(original_row, record_payload=corrupted)
+    async def fake_load(*args, **kwargs):
+        return row
+    async def forbidden_append(*args, **kwargs):
+        pytest.fail("malformed typed evidence reached append")
+    monkeypatch.setattr(provider_module, "load_latest_dex_provenance_evidence", fake_load)
+    monkeypatch.setattr(writer, "append_dex_provenance_evidence", forbidden_append)
+    with pytest.raises(ValueError, match="field type"):
+        decode_reference_dex_evidence_record(corrupted)
+    with pytest.raises(ValueError, match="field type"):
+        await PostgresDexProvenanceEvidenceProvider(SimpleNamespace()).load(chain=CHAIN, pool_address=POOL)
+    bad_record = replace_nested(record(), path, invalid)
+    with pytest.raises(ValueError, match="field type"):
+        encode_reference_dex_evidence_record(bad_record)
+    with pytest.raises(ValueError):
+        await writer.persist_dex_provenance_evidence(object(), record=bad_record, sources=(source(),))
+
+
+@pytest.mark.parametrize("version", [True, 1.0, "1", None])
+def test_codec_requires_exact_integer_version(version):
+    encoded = encode_reference_dex_evidence_record(record())
+    encoded["version"] = version
+    with pytest.raises(ValueError, match="schema version"):
+        decode_reference_dex_evidence_record(encoded)
+    sources = list(encode_reference_sources((source(),)))
+    sources[0]["version"] = version
+    with pytest.raises(ValueError, match="schema version"):
+        decode_reference_sources(sources)
+
+
+def test_source_field_types_fail_before_constructor_attribute_errors():
+    encoded = list(encode_reference_sources((source(),)))
+    encoded[0]["value"]["fields"]["source_repository"] = 42
+    with pytest.raises(ValueError, match="field type"):
+        decode_reference_sources(encoded)
+    with pytest.raises(ValueError, match="wrong type"):
+        encode_reference_sources((code(POOL),))
+    with pytest.raises(ValueError, match="ReferenceDexEvidenceRecord"):
+        encode_reference_dex_evidence_record(code(POOL))
+
+
+@pytest.mark.parametrize("fee", [None, 0, 3000])
+def test_codec_preserves_nullable_fields_and_fixed_tuple_structure(fee):
+    original = record()
+    original = replace(original,
+        relationship=replace(original.relationship, fee_tier=fee, returned_address=None),
+        envelope=replace(original.envelope, dex_family=replace(original.envelope.dex_family, pool_family=None)),
+    )
+    assert decode_reference_dex_evidence_record(encode_reference_dex_evidence_record(original)) == original
+    assert decode_reference_sources(encode_reference_sources((source(),))) == (source(),)

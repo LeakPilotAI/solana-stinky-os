@@ -47,6 +47,8 @@ async def persist_dex_provenance_evidence(
     if not sources:
         raise ValueError("DEX provenance sources must not be empty")
 
+    record_payload = encode_reference_dex_evidence_record(record)
+    sources_payload = encode_reference_sources(sources)
     relationship = record.relationship
     chain = relationship.chain
     pool_address = relationship.pool_address
@@ -60,8 +62,6 @@ async def persist_dex_provenance_evidence(
     if chain not in {source.chain for source in sources}:
         raise ValueError("DEX provenance sources do not cover record chain")
 
-    record_payload = encode_reference_dex_evidence_record(record)
-    sources_payload = encode_reference_sources(sources)
     evidence_key = dex_provenance_evidence_key(record, sources)
 
     return await append_dex_provenance_evidence(
