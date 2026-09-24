@@ -140,6 +140,11 @@ The provider-attestation receipt is deterministic and sorted by the redacted pro
 
 A successful observation may advance durable #250 completion state only after the underlying #248 observation succeeds. Duplicate or replayed block requests fail closed. Preflight never advances durable state.
 
+Apply `services/api/migrations/011_dex_provenance_truncate_guard.sql` after the
+preceding migrations to protect persisted DEX provenance snapshots from
+`TRUNCATE`, including `RESTART IDENTITY` and `CASCADE`. The additive guard
+preserves existing evidence, idempotent appends, reads and UPDATE/DELETE locks.
+
 Apply `services/api/migrations/010_evm_provider_attestation_audit.sql` before using
 the observation command. Successful triggered observations now append the full
 redacted receipt to `evm_provider_attestation_audit` in the same transaction as
