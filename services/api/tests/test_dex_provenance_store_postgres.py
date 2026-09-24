@@ -5,6 +5,10 @@ from uuid import uuid4
 
 import asyncpg
 import pytest
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from stinky_api.dex_provenance_store import append_dex_provenance_evidence, load_latest_dex_provenance_evidence
 
 
 DB_URL = os.getenv("API_TEST_DATABASE_URL")
@@ -55,6 +59,59 @@ async def test_provenance_upgrade_blocks_truncate_and_preserves_append_behavior(
         assert await conn.fetchval("SELECT count(*) FROM dex_provenance_evidence_snapshots") == 2
         assert await conn.fetchval("SELECT evidence_block FROM dex_provenance_evidence_snapshots ORDER BY evidence_block DESC LIMIT 1") == 124
     finally:
+        await conn.execute("SET search_path TO public")
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_append_distinguishes_idempotence_from_conflicting_evidence():
+    schema = "test_provenance_" + uuid4().hex
+    conn = await asyncpg.connect(DB_URL)
+    engine = None
+    try:
+        await conn.execute(f'CREATE SCHEMA "{schema}"')
+        await conn.execute(f'SET search_path TO "{schema}"')
+        migrations = Path(__file__).resolve().parents[1] / "migrations"
+        for name in ("008_dex_provenance_evidence.sql", "011_dex_provenance_truncate_guard.sql"):
+            await conn.execute((migrations / name).read_text())
+        await conn.execute("CREATE TABLE transaction_fixture (value INTEGER)")
+        engine = create_async_engine(DB_URL.replace("postgresql://", "postgresql+asyncpg://", 1),
+            connect_args={"server_settings": {"search_path": schema}})
+        sessions = async_sessionmaker(engine)
+        record = {"value": 1, "nested": {"a": "original", "b": 2}}
+        sources = ({"provider": "one"}, {"provider": "two"})
+        async def append(session, rec=record, src=sources, key="legacy-generic-key"):
+            return await append_dex_provenance_evidence(session, chain="base", pool_address="fixture",
+                evidence_block=123, evidence_key=key, record_payload=rec, sources_payload=src)
+        async with sessions() as session:
+            original_id = await append(session)
+            await session.commit()
+            reordered = {"nested": {"b": 2, "a": "original"}, "value": 1}
+            assert await append(session, reordered) == original_id
+            await session.commit()
+            for rec, src in (
+                ({**record, "value": True}, sources),  # JSONB Boolean differs from number.
+                ({**record, "value": "SYNTHETIC_SECRET"}, sources),
+                (record, ({"provider": "other"},)),
+                (record, tuple(reversed(sources))),
+            ):
+                await session.execute(text("INSERT INTO transaction_fixture VALUES (1)"))
+                with pytest.raises(ValueError, match="^DEX provenance evidence key conflicts with stored payload$"):
+                    await append(session, rec, src)
+                await session.rollback()
+                assert await conn.fetchval("SELECT count(*) FROM transaction_fixture") == 0
+                loaded = await load_latest_dex_provenance_evidence(session, chain="base", pool_address="fixture")
+                assert loaded.id == original_id
+                assert loaded.record_payload == record
+                assert loaded.sources_payload == sources
+            # Distinct keys still preserve distinct evidence; no overwritten history.
+            assert await append(session, {"value": "different"}, key="different-key") != original_id
+            await session.commit()
+        assert await conn.fetchval("SELECT count(*) FROM dex_provenance_evidence_snapshots") == 2
+    finally:
+        if engine is not None:
+            await engine.dispose()
         await conn.execute("SET search_path TO public")
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await conn.close()

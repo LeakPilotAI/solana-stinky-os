@@ -74,6 +74,8 @@ async def append_dex_provenance_evidence(
     )
     import json
 
+    record_json = json.dumps(dict(record_payload), sort_keys=True, separators=(",", ":"))
+    sources_json = json.dumps([dict(item) for item in sources], sort_keys=True, separators=(",", ":"))
     result = await session.execute(
         stmt,
         {
@@ -81,8 +83,8 @@ async def append_dex_provenance_evidence(
             "pool_address": normalized_pool,
             "evidence_block": block,
             "evidence_key": key,
-            "record_payload": json.dumps(dict(record_payload), sort_keys=True, separators=(",", ":")),
-            "sources_payload": json.dumps([dict(item) for item in sources], sort_keys=True, separators=(",", ":")),
+            "record_payload": record_json,
+            "sources_payload": sources_json,
         },
     )
     row_id = result.scalar_one_or_none()
@@ -92,7 +94,10 @@ async def append_dex_provenance_evidence(
     existing = await session.execute(
         text(
             """
-            SELECT id FROM dex_provenance_evidence_snapshots
+            SELECT id,
+                   (record_payload = CAST(:record_payload AS JSONB)
+                    AND sources_payload = CAST(:sources_payload AS JSONB)) AS payload_matches
+            FROM dex_provenance_evidence_snapshots
             WHERE chain = :chain AND pool_address = :pool_address
               AND evidence_block = :evidence_block AND evidence_key = :evidence_key
             """
@@ -102,12 +107,16 @@ async def append_dex_provenance_evidence(
             "pool_address": normalized_pool,
             "evidence_block": block,
             "evidence_key": key,
+            "record_payload": record_json,
+            "sources_payload": sources_json,
         },
     )
-    existing_id = existing.scalar_one_or_none()
-    if existing_id is None:
+    existing_row = existing.mappings().first()
+    if existing_row is None:
         raise RuntimeError("DEX provenance evidence append did not persist")
-    return int(existing_id)
+    if existing_row["payload_matches"] is not True:
+        raise ValueError("DEX provenance evidence key conflicts with stored payload")
+    return int(existing_row["id"])
 
 
 async def load_latest_dex_provenance_evidence(
