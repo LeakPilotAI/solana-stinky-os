@@ -45,7 +45,7 @@ class _Session:
 
 @pytest.mark.asyncio
 async def test_append_is_identity_scoped_and_idempotent():
-    session = _Session([_ScalarResult(None), _ScalarResult(17)])
+    session = _Session([_ScalarResult(None), _MappingResult({"id": 17, "payload_matches": True})])
     row_id = await append_dex_provenance_evidence(
         session,
         chain=" base ",
@@ -60,6 +60,18 @@ async def test_append_is_identity_scoped_and_idempotent():
     assert session.calls[0][1]["pool_address"] == "0xpool"
     assert "ON CONFLICT" in session.calls[0][0]
     assert "UPDATE" not in session.calls[0][0].upper()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("row, error", [
+    ({"id": 17, "payload_matches": False}, ValueError),
+    (None, RuntimeError),
+])
+async def test_duplicate_append_requires_matching_payload_readback(row, error):
+    session = _Session([_ScalarResult(None), _MappingResult(row)])
+    with pytest.raises(error):
+        await append_dex_provenance_evidence(session, chain="base", pool_address="fixture",
+            evidence_block=123, evidence_key="key", record_payload={}, sources_payload=())
 
 
 @pytest.mark.asyncio
