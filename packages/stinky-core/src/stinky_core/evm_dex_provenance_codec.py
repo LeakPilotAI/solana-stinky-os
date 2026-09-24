@@ -10,7 +10,8 @@ from dataclasses import fields, is_dataclass
 from types import UnionType
 from typing import Any, Mapping, Sequence, get_args, get_origin, get_type_hints
 
-from .evm_contract_code import ContractCodeEvidence, ContractCodeSource
+from .evm_contract_code import ContractCodeEvidence, ContractCodeSource, _fingerprint
+from .evm_rpc import _is_hex_data
 from .evm_dex_family_composition import DexFamilyConsistencyEvidence
 from .evm_factory_evidence import FactoryRelationshipEvidence, FactoryRelationshipSource
 from .evm_implementation_registry import ImplementationFingerprintEvidence, ImplementationFingerprintMatch
@@ -59,6 +60,17 @@ def _matches_type(value: Any, expected: Any) -> bool:
 def _validate_fields(cls: type, values: Mapping[str, Any]) -> None:
     if any(not _matches_type(values[name], expected) for name, expected in _FIELD_TYPES[cls].items()):
         raise ValueError("DEX provenance field type does not match schema")
+    if cls is ContractCodeEvidence:
+        code = values["runtime_bytecode"]
+        if not _is_hex_data(code) or code == "0x":
+            raise ValueError("DEX provenance contract bytecode is invalid")
+        digest, length = _fingerprint(code)
+        if (values["fingerprint_sha256"], values["byte_length"]) != (digest, length):
+            raise ValueError("DEX provenance contract bytecode metadata mismatch")
+        for source in values["sources"]:
+            _validate_fields(ContractCodeSource, {field.name: getattr(source, field.name) for field in fields(source)})
+            if (source.fingerprint_sha256, source.byte_length) != (digest, length):
+                raise ValueError("DEX provenance contract bytecode source mismatch")
 
 
 def _encode(value: Any) -> Any:
