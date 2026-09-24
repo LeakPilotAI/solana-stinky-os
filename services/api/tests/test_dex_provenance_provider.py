@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from dataclasses import replace
 from copy import deepcopy
+from hashlib import sha256
 from types import SimpleNamespace
 
 import pytest
@@ -29,7 +30,7 @@ ROUTER = "0x3333333333333333333333333333333333333333"
 TOKEN0 = "0x4444444444444444444444444444444444444444"
 TOKEN1 = "0x5555555555555555555555555555555555555555"
 BLOCK = 123
-DIGEST = "a" * 64
+DIGEST = sha256(bytes.fromhex("00")).hexdigest()
 
 
 def code(address):
@@ -310,3 +311,58 @@ def test_codec_preserves_nullable_fields_and_fixed_tuple_structure(fee):
     )
     assert decode_reference_dex_evidence_record(encode_reference_dex_evidence_record(original)) == original
     assert decode_reference_sources(encode_reference_sources((source(),))) == (source(),)
+
+
+_BAD_CODE = [
+    {"runtime_bytecode": value} for value in ("0xzz", "0x", "0x0", "0x00 ", "0x0_", "00", "0X00")
+] + [
+    {"byte_length": -5}, {"byte_length": 2}, {"fingerprint_sha256": "a" * 64},
+    {"sources": (ContractCodeSource("provider-a", "a" * 64, 1),)},
+    {"sources": (ContractCodeSource("provider-a", DIGEST, 2),)},
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changes", _BAD_CODE)
+async def test_contract_code_integrity_rejects_read_and_write(monkeypatch, changes):
+    import stinky_api.dex_provenance_writer as writer
+    original = record()
+    bad_code = replace(original.relationship.factory_code, **changes)
+    bad_record = replace(original, relationship=replace(original.relationship, factory_code=bad_code))
+    row = persisted()
+    corrupted = deepcopy(row.record_payload)
+    payload = corrupted["value"]["fields"]["relationship"]["fields"]["factory_code"]["fields"]
+    for name, value in changes.items():
+        if name == "sources":
+            payload[name]["__tuple__"][0]["fields"].update(
+                fingerprint_sha256=value[0].fingerprint_sha256, byte_length=value[0].byte_length,
+            )
+        else:
+            payload[name] = value
+    async def fake_load(*args, **kwargs):
+        return replace(row, record_payload=corrupted)
+    async def forbidden_append(*args, **kwargs):
+        pytest.fail("invalid contract evidence reached durable append")
+    monkeypatch.setattr(provider_module, "load_latest_dex_provenance_evidence", fake_load)
+    monkeypatch.setattr(writer, "append_dex_provenance_evidence", forbidden_append)
+    with pytest.raises(ValueError, match="contract bytecode"):
+        encode_reference_dex_evidence_record(bad_record)
+    with pytest.raises(ValueError, match="contract bytecode"):
+        decode_reference_dex_evidence_record(corrupted)
+    with pytest.raises(ValueError, match="contract bytecode"):
+        await PostgresDexProvenanceEvidenceProvider(SimpleNamespace()).load(chain=CHAIN, pool_address=POOL)
+    with pytest.raises(ValueError, match="contract bytecode"):
+        await writer.persist_dex_provenance_evidence(object(), record=bad_record, sources=(source(),))
+
+
+@pytest.mark.parametrize("runtime", ["0x00", "0x00aB12", "0x00Ab12"])
+def test_contract_code_integrity_preserves_exact_valid_bytes_and_sources(runtime):
+    digest = sha256(bytes.fromhex(runtime[2:])).hexdigest()
+    length = len(bytes.fromhex(runtime[2:]))
+    original = record()
+    valid_code = replace(original.relationship.factory_code,
+        runtime_bytecode=runtime, byte_length=length, fingerprint_sha256=digest,
+        sources=(ContractCodeSource("provider-a", digest, length), ContractCodeSource("provider-b", digest, length)),
+    )
+    valid_record = replace(original, relationship=replace(original.relationship, factory_code=valid_code))
+    assert decode_reference_dex_evidence_record(encode_reference_dex_evidence_record(valid_record)) == valid_record
