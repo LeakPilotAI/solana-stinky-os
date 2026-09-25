@@ -8,6 +8,7 @@ ContractCodeEvidence for the exact referenced chain address.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 from .evm_contract_code import ContractCodeEvidence
 from .evm_implementation_registry import ImplementationFingerprintEntry
@@ -45,12 +46,8 @@ class DexReferenceContractSource:
         if repository.count("/") != 1 or any(c.isspace() for c in repository):
             raise ValueError("source_repository must be owner/name")
         commit = self.source_commit.lower()
-        if len(commit) != 40:
+        if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
             raise ValueError("source_commit must be a 40-character git SHA")
-        try:
-            int(commit, 16)
-        except ValueError as exc:
-            raise ValueError("source_commit must be a 40-character git SHA") from exc
         if not self.source_path.strip() or not self.source_locator.strip():
             raise ValueError("source path and locator are required")
         object.__setattr__(self, "address", address)

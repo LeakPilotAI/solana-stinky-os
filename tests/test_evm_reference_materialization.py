@@ -103,3 +103,23 @@ def test_expected_block_map_must_cover_reference_chains_exactly():
             all_evidence(),
             expected_block_numbers={"base": -1},
         )
+
+
+@pytest.mark.parametrize("commit", ["1_" + "2" * 38, " " + "1" * 39, "1" * 39 + " ", "+" + "1" * 39, "0x" + "1" * 38, "g" * 40, "1" * 39, "1" * 41])
+def test_pinned_source_rejects_malformed_commit_on_create_and_hydrate(commit):
+    from stinky_core.evm_dex_provenance_codec import encode_reference_sources, decode_reference_sources
+    source = BASE_UNISWAP_REFERENCE_SOURCES[0]
+    with pytest.raises(ValueError, match="source_commit"):
+        replace(source, source_commit=commit)
+    encoded = list(encode_reference_sources((source,)))
+    encoded[0]["value"]["fields"]["source_commit"] = commit
+    with pytest.raises(ValueError, match="source_commit"):
+        decode_reference_sources(encoded)
+
+
+def test_pinned_source_accepts_equivalent_commit_case_and_leading_zero():
+    source = BASE_UNISWAP_REFERENCE_SOURCES[0]
+    for commit in (source.source_commit.upper(), "0" + "Ab" * 19 + "1"):
+        normalized = replace(source, source_commit=commit)
+        assert normalized.source_commit == commit.lower()
+        assert normalized.source_reference == replace(source, source_commit=commit.lower()).source_reference
