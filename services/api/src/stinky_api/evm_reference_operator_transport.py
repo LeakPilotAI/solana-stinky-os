@@ -11,7 +11,7 @@ from stinky_api.evm_reference_observation_trigger import (
 from stinky_core.chains import ChainFamily, get_chain
 from stinky_core.evm_dex_discovery import DexPoolCandidate
 from stinky_core.evm_reference_fingerprints import DexReferenceContractSource
-from stinky_core.evm_rpc import EvmReadOnlyRpc
+from stinky_core.evm_rpc import EvmReadOnlyRpc, EvmRpcError, _is_hex_data
 from stinky_core.multichain_identity import asset_key, canonical_chain_address
 
 
@@ -49,13 +49,17 @@ class ReferenceDexOperatorPayload(BaseModel):
 
 def _hex32(value: str, field: str) -> str:
     normalized = str(value or "").lower()
-    if len(normalized) != 66 or not normalized.startswith("0x"):
+    if not _is_hex_data(normalized, byte_count=32):
         raise ValueError(f"{field} must be a 32-byte hex value")
-    try:
-        int(normalized[2:], 16)
-    except ValueError as exc:
-        raise ValueError(f"{field} must be a 32-byte hex value") from exc
     return normalized
+
+
+def _log_index(value: str) -> str:
+    try:
+        EvmReadOnlyRpc._hex_int(value, "log index")
+    except EvmRpcError as exc:
+        raise ValueError("log_index must be a canonical hex quantity") from exc
+    return value
 
 
 def _canonical_address(chain: str, value: str, field: str) -> str:
@@ -113,7 +117,7 @@ def validate_operator_payload(payload: ReferenceDexOperatorPayload) -> dict:
         raise ValueError("token0_address and token1_address must differ")
 
     _required_text(payload.event_family, "event_family")
-    _required_text(payload.log_index, "log_index")
+    _log_index(payload.log_index)
     _hex32(payload.block_hash, "block_hash")
     _hex32(payload.transaction_hash, "transaction_hash")
 
@@ -180,7 +184,7 @@ def build_operator_request(
         first_seen_block=payload.first_seen_block,
         block_hash=_hex32(payload.block_hash, "block_hash"),
         transaction_hash=_hex32(payload.transaction_hash, "transaction_hash"),
-        log_index=str(payload.log_index),
+        log_index=_log_index(payload.log_index),
         status="UNVERIFIED_DEX_POOL_CANDIDATE",
         evidence_providers=tuple(sorted({observer.rpc_url for observer in observers})),
     )
