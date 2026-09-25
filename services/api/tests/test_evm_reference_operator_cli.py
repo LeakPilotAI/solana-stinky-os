@@ -433,3 +433,42 @@ def test_cli_observers_require_distinct_https_env_urls(monkeypatch):
     monkeypatch.setenv("GENESIS_RPC_B", "https://rpc-a.example")
     with pytest.raises(ValueError, match="distinct URLs"):
         cli.build_cli_observers("base", ("GENESIS_RPC_A", "GENESIS_RPC_B"))
+
+
+_BAD_DISCOVERY_IDENTITY = [
+    (field, value)
+    for field in ("block_hash", "transaction_hash")
+    for value in ("0x1_" + "2" * 62, "0x" + "1" * 63 + " ", "0x+" + "1" * 63, "0x" + "g" * 64, "0x" + "1" * 63)
+] + [("log_index", value) for value in ("arbitrary-index", "0x01", "0x1_0", "0x1 ", "0x", "-1")]
+
+
+@pytest.mark.parametrize("field,value", _BAD_DISCOVERY_IDENTITY)
+def test_operator_discovery_identity_rejects_preflight_and_request(field, value):
+    invalid = payload().model_copy(update={field: value})
+    with pytest.raises(ValueError):
+        validate_operator_payload(invalid)
+    observers = (SimpleNamespace(rpc_url="https://a.example"), SimpleNamespace(rpc_url="https://b.example"))
+    with pytest.raises(ValueError):
+        build_operator_request(invalid, observers)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field,value", _BAD_DISCOVERY_IDENTITY)
+async def test_operator_discovery_identity_fails_before_provider_and_database(monkeypatch, field, value):
+    def forbidden(*args, **kwargs):
+        pytest.fail("malformed discovery identity reached provider or database")
+    monkeypatch.setattr(cli, "build_cli_observers", forbidden)
+    monkeypatch.setattr(cli, "SessionLocal", forbidden)
+    with pytest.raises(ValueError):
+        await cli.execute_operator_payload(payload().model_copy(update={field: value}), rpc_env_vars=("A", "B"))
+
+
+@pytest.mark.parametrize("index", ["0x0", "0x1", "0xaB"])
+def test_operator_discovery_identity_preserves_valid_hash_bytes_and_log_quantity(index):
+    valid = payload().model_copy(update={"block_hash": "0x" + "00aB" * 16, "transaction_hash": "0x" + "00" * 32, "log_index": index})
+    assert validate_operator_payload(valid)["validated_offline"] is True
+    observers = (SimpleNamespace(rpc_url="https://a.example"), SimpleNamespace(rpc_url="https://b.example"))
+    _, request = build_operator_request(valid, observers)
+    assert request.pool.block_hash == valid.block_hash.lower()
+    assert request.pool.transaction_hash == valid.transaction_hash
+    assert request.pool.log_index == index
