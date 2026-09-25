@@ -8,7 +8,7 @@ from .evm_call_consensus import ExactCallObservation
 from .evm_consensus import provider_fingerprint
 from .evm_contract_code import ContractCodeEvidence
 from .evm_dex_discovery import DexPoolCandidate
-from .evm_rpc import EvmReadOnlyRpc, EvmRpcError
+from .evm_rpc import EvmReadOnlyRpc, EvmRpcError, _is_hex_data
 from .multichain_identity import canonical_chain_address
 
 V2_FACTORY_LOOKUP_SELECTOR = "0xe6a43905"
@@ -90,6 +90,12 @@ def classify_factory_relationship(
         raise ValueError("factory observation target does not match pool candidate")
     if observation.block_number != factory_code.block_number:
         raise ValueError("factory observation and code evidence must share a historical block")
+    if (factory_code.chain, factory_code.chain_id, factory_code.address, factory_code.contract_key) != (
+        pool.chain, pool.chain_id, pool.factory_address, pool.factory_key,
+    ):
+        raise ValueError("factory code identity does not match pool candidate")
+    if not _is_hex_data(observation.calldata) or observation.calldata.lower() != build_factory_lookup(pool).lower():
+        raise ValueError("factory observation calldata does not match pool lookup")
 
     if observation.consensus.agreed_result is None:
         return FactoryRelationshipEvidence(

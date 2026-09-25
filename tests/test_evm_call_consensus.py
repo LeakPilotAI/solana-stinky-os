@@ -1,4 +1,5 @@
 from pathlib import Path
+from dataclasses import replace
 import json
 import sys
 import pytest
@@ -179,3 +180,68 @@ def test_factory_relationship_requires_same_target_and_block():
     )
     with pytest.raises(ValueError, match="historical block"):
         classify_factory_relationship(_pool(), _code(block=124), obs)
+
+
+def _lookup_observation(pool):
+    return observe_exact_call(
+        [_observer("https://one.example", _abi_address(POOL)), _observer("https://two.example", _abi_address(POOL))],
+        chain=pool.chain, target=pool.factory_address, calldata=build_factory_lookup(pool), block_number=123,
+    )
+
+
+@pytest.mark.parametrize("family,fee", [("V2_STYLE_PAIR_CREATED", None), ("V3_STYLE_POOL_CREATED", 3000)])
+def test_factory_relationship_binds_selector_tokens_and_fee(family, fee):
+    pool = _pool(family, fee)
+    obs = _lookup_observation(pool)
+    wrong_requests = [
+        "0xdeadbeef" + obs.calldata[10:],
+        build_factory_lookup(replace(pool, token0_address=OTHER)),
+        build_factory_lookup(replace(pool, token1_address=OTHER)),
+        obs.calldata + "00", "0xzz", None,
+    ]
+    if fee is not None:
+        wrong_requests.append(build_factory_lookup(replace(pool, fee_tier=500)))
+    for calldata in wrong_requests:
+        with pytest.raises(ValueError, match="calldata"):
+            classify_factory_relationship(pool, _code(), replace(obs, calldata=calldata))
+    equivalent = replace(obs, calldata="0x" + obs.calldata[2:].upper())
+    assert classify_factory_relationship(pool, _code(), equivalent).relationship == "FACTORY_LOOKUP_MATCHES_DISCOVERED_POOL"
+
+
+@pytest.mark.parametrize("changes", [
+    {"chain": "ethereum"}, {"chain_id": 1}, {"address": OTHER}, {"contract_key": "base:" + OTHER},
+])
+def test_factory_relationship_rejects_foreign_factory_code(changes):
+    pool = _pool()
+    obs = _lookup_observation(pool)
+    with pytest.raises(ValueError, match="factory code identity"):
+        classify_factory_relationship(pool, replace(_code(), **changes), obs)
+
+
+def test_unknown_factory_relationship_still_requires_correct_request_binding():
+    pool = _pool()
+    obs = _lookup_observation(pool)
+    unknown = replace(obs, consensus=classify_exact_results({}))
+    assert classify_factory_relationship(pool, _code(), unknown).relationship == "UNKNOWN_FACTORY_RELATIONSHIP"
+    with pytest.raises(ValueError, match="calldata"):
+        classify_factory_relationship(pool, _code(), replace(unknown, calldata="0xdeadbeef"))
+
+
+@pytest.mark.parametrize("changes", [{"chain": "robinhood"}, {"target": OTHER}, {"block_number": 124}])
+def test_factory_relationship_preserves_observation_identity_checks(changes):
+    pool = _pool()
+    with pytest.raises(ValueError):
+        classify_factory_relationship(pool, _code(), replace(_lookup_observation(pool), **changes))
+
+
+def test_real_unrelated_lookup_observation_cannot_be_reused_for_candidate():
+    pool = _pool("V3_STYLE_POOL_CREATED", 3000)
+    requested = replace(pool, token0_address=OTHER, fee_tier=500)
+    obs = _lookup_observation(requested)
+    assert len(obs.consensus.providers) == 2
+    assert obs.consensus.agreed_result == _abi_address(POOL)
+    with pytest.raises(ValueError, match="calldata"):
+        classify_factory_relationship(pool, _code(), obs)
+    result = classify_factory_relationship(requested, _code(), obs)
+    assert result.relationship == "FACTORY_LOOKUP_MATCHES_DISCOVERED_POOL"
+    assert tuple(source.provider for source in result.sources) == obs.consensus.providers
