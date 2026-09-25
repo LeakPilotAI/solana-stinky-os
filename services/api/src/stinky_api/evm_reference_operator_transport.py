@@ -74,6 +74,26 @@ def _required_text(value: str, field: str) -> str:
     return normalized
 
 
+def _build_reference_sources(payload: ReferenceDexOperatorPayload) -> tuple[DexReferenceContractSource, ...]:
+    sources = tuple(
+        DexReferenceContractSource(
+            chain=payload.chain,
+            address=source.address,
+            contract_role=source.contract_role,
+            implementation_family=source.implementation_family,
+            implementation_version=source.implementation_version,
+            source_repository=source.source_repository,
+            source_commit=source.source_commit,
+            source_path=source.source_path,
+            source_locator=source.source_locator,
+        )
+        for source in payload.sources
+    )
+    if not sources:
+        raise ValueError("sources must not be empty")
+    return sources
+
+
 def validate_operator_payload(payload: ReferenceDexOperatorPayload) -> dict:
     """Validate an operator payload completely offline without RPC or database access."""
     chain = get_chain(payload.chain)
@@ -109,6 +129,8 @@ def validate_operator_payload(payload: ReferenceDexOperatorPayload) -> dict:
         _required_text(source.source_commit, f"{prefix}.source_commit")
         _required_text(source.source_path, f"{prefix}.source_path")
         _required_text(source.source_locator, f"{prefix}.source_locator")
+
+    _build_reference_sources(payload)
 
     return {
         "chain": payload.chain,
@@ -162,22 +184,7 @@ def build_operator_request(
         status="UNVERIFIED_DEX_POOL_CANDIDATE",
         evidence_providers=tuple(sorted({observer.rpc_url for observer in observers})),
     )
-    sources = tuple(
-        DexReferenceContractSource(
-            chain=payload.chain,
-            address=source.address,
-            contract_role=source.contract_role,
-            implementation_family=source.implementation_family,
-            implementation_version=source.implementation_version,
-            source_repository=source.source_repository,
-            source_commit=source.source_commit,
-            source_path=source.source_path,
-            source_locator=source.source_locator,
-        )
-        for source in payload.sources
-    )
-    if not sources:
-        raise ValueError("sources must not be empty")
+    sources = _build_reference_sources(payload)
 
     return (
         ReferenceDexObservationSchedule(
