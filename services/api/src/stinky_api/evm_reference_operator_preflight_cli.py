@@ -10,7 +10,7 @@ from stinky_api.evm_reference_operator_errors import (
 )
 
 from stinky_api.evm_reference_operator_transport import (
-    ReferenceDexOperatorPayload,
+    parse_operator_payload,
     validate_operator_payload,
 )
 
@@ -30,8 +30,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     try:
         args = _parse_args(argv)
-        raw = json.loads(Path(args.input).read_text(encoding="utf-8"))
-        payload = ReferenceDexOperatorPayload.model_validate(raw)
+        payload = parse_operator_payload(Path(args.input).read_text(encoding="utf-8"))
         output = validate_operator_payload(payload)
     except Exception as exc:
         print(json.dumps(serialize_operator_failure(exc, preflight=True), sort_keys=True))

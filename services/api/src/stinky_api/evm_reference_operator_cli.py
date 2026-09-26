@@ -24,6 +24,7 @@ from stinky_api.evm_reference_observation_operator import invoke_reference_dex_o
 from stinky_api.evm_reference_operator_transport import (
     ReferenceDexOperatorPayload,
     build_operator_request,
+    parse_operator_payload,
     serialize_operator_result,
     validate_operator_payload,
 )
@@ -158,8 +159,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     try:
         args = _parse_args(argv)
-        raw = json.loads(Path(args.input).read_text(encoding="utf-8"))
-        payload = ReferenceDexOperatorPayload.model_validate(raw)
+        payload = parse_operator_payload(Path(args.input).read_text(encoding="utf-8"))
         output = asyncio.run(execute_operator_payload(payload, rpc_env_vars=tuple(args.rpc_env_vars)))
     except Exception as exc:
         print(json.dumps(serialize_operator_failure(exc), sort_keys=True))
