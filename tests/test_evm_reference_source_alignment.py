@@ -1,5 +1,8 @@
 from pathlib import Path
+from dataclasses import replace
 import sys
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "packages" / "stinky-core" / "src"))
@@ -8,7 +11,10 @@ from stinky_core.evm_implementation_registry import (
     ImplementationFingerprintEvidence,
     ImplementationFingerprintMatch,
 )
-from stinky_core.evm_reference_deployment_identity import ReferenceDeploymentIdentityAssessment
+from stinky_core.evm_reference_deployment_identity import (
+    ReferenceDeploymentIdentityAssessment,
+    assess_reference_deployment_address,
+)
 from stinky_core.evm_reference_fingerprints import DexReferenceContractSource
 from stinky_core.evm_reference_source_alignment import assess_reference_source_alignment
 
@@ -79,3 +85,42 @@ def test_identity_mismatch_fails_closed():
         assert "address" in str(exc)
     else:
         raise AssertionError("mismatched component identity must fail closed")
+
+
+@pytest.mark.parametrize("changes", [
+    {"address": "0x" + "22" * 20},
+    {"contract_role": "ROUTER"},
+    {"chain": "robinhood"},
+])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_reference_collision_cannot_substitute_another_component_lineage(changes, reverse):
+    intended = source("UNISWAP_V3")
+    unrelated = replace(source(), **changes)
+    catalog = (intended, unrelated) if not reverse else (unrelated, intended)
+    deployment = assess_reference_deployment_address(
+        "base", ADDRESS, catalog, expected_role="FACTORY",
+    )
+    result = assess_reference_source_alignment(impl(), deployment, iter(catalog))
+    assert result.verdict == "REFERENCE_SOURCE_LINEAGE_CONFLICT"
+    assert result.deployment_lineages == (("UNISWAP_V3", "v1"),)
+
+
+@pytest.mark.parametrize("changes", [
+    {"address": "0x" + "22" * 20},
+    {"contract_role": "ROUTER"},
+    {"chain": "robinhood"},
+    {"source_locator": "unselected-reference"},
+])
+def test_missing_exact_source_remains_unknown_despite_reference_collision(changes):
+    result = assess_reference_source_alignment(impl(), dep(), (replace(source(), **changes),))
+    assert result.verdict == "UNKNOWN_REFERENCE_SOURCE_LINEAGE_ALIGNMENT"
+    assert result.deployment_lineages == ()
+
+
+def test_same_component_reference_collision_preserves_all_lineages_independent_of_order():
+    catalog = (source("UNISWAP_V3"), source("OTHER_FAMILY"), source("UNISWAP_V3"))
+    results = [assess_reference_source_alignment(impl(), dep(), items)
+               for items in (catalog, tuple(reversed(catalog)))]
+    assert results[0] == results[1]
+    assert results[0].deployment_lineages == (("OTHER_FAMILY", "v1"), ("UNISWAP_V3", "v1"))
+    assert results[0].verdict == "REFERENCE_SOURCE_LINEAGE_CONFLICT"
