@@ -53,18 +53,20 @@ def resolve_rpc_url(chain_key: str) -> str:
     return url
 
 
+def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Reject duplicate members before constructing an evidence or input object."""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON member")
+        result[key] = value
+    return result
+
+
 def decode_rpc_response(body: bytes) -> dict[str, Any]:
     """Reject ambiguous object members before evidence is lost during decoding."""
-    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValueError("duplicate JSON member")
-            result[key] = value
-        return result
-
     try:
-        decoded = json.loads(body, object_pairs_hook=unique_object)
+        decoded = json.loads(body, object_pairs_hook=unique_json_object)
     except (TypeError, ValueError) as exc:
         raise EvmRpcError("RPC returned invalid JSON") from exc
     if not isinstance(decoded, dict):

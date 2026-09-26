@@ -1,6 +1,7 @@
 """Transport adapter for explicit, read-only reference DEX operator invocation."""
 from __future__ import annotations
 
+import json
 from pydantic import BaseModel, Field
 
 from stinky_api.evm_reference_observation_operator import DurableReferenceDexObservationResult
@@ -11,7 +12,7 @@ from stinky_api.evm_reference_observation_trigger import (
 from stinky_core.chains import ChainFamily, get_chain
 from stinky_core.evm_dex_discovery import DexPoolCandidate
 from stinky_core.evm_reference_fingerprints import DexReferenceContractSource
-from stinky_core.evm_rpc import EvmReadOnlyRpc, EvmRpcError, _is_hex_data
+from stinky_core.evm_rpc import EvmReadOnlyRpc, EvmRpcError, _is_hex_data, unique_json_object
 from stinky_core.multichain_identity import asset_key, canonical_chain_address
 
 
@@ -45,6 +46,12 @@ class ReferenceDexOperatorPayload(BaseModel):
     min_quorum: int = Field(default=2, ge=2)
     interval_seconds: int = Field(default=300, ge=60)
     enabled: bool = True
+
+
+def parse_operator_payload(text: str) -> ReferenceDexOperatorPayload:
+    """Reject ambiguous JSON before validating the operator payload schema."""
+    raw = json.loads(text, object_pairs_hook=unique_json_object)
+    return ReferenceDexOperatorPayload.model_validate(raw)
 
 
 def _hex32(value: str, field: str) -> str:
