@@ -1,6 +1,8 @@
 from pathlib import Path
 import sys
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "packages" / "stinky-core" / "src"))
 
@@ -57,3 +59,31 @@ def test_inconsistent_match_fails_closed():
         pass
     else:
         raise AssertionError("inconsistent factory relationship must fail closed")
+
+
+@pytest.mark.parametrize("providers", [(), ("a",), ("a", "a"), ("a", ""), ("a", " "), ("a", "b", "")])
+def test_match_requires_distinct_nonempty_provider_evidence(providers):
+    relationship = rel("FACTORY_LOOKUP_MATCHES_DISCOVERED_POOL", sources=tuple(
+        FactoryRelationshipSource(provider, POOL) for provider in providers
+    ))
+    with pytest.raises(ValueError, match="distinct provider evidence"):
+        assess_factory_attested_pool_deployment(relationship)
+
+
+def test_repeated_provider_does_not_add_or_remove_independent_evidence():
+    relationship = rel("FACTORY_LOOKUP_MATCHES_DISCOVERED_POOL", sources=(
+        FactoryRelationshipSource("a", POOL), FactoryRelationshipSource("b", POOL),
+        FactoryRelationshipSource("a", POOL),
+    ))
+    result = assess_factory_attested_pool_deployment(relationship)
+    assert result.verdict == "FACTORY_HISTORICALLY_ATTESTS_POOL"
+    assert result.relationship is relationship
+
+
+def test_one_contradictory_source_is_not_discarded_despite_two_matching_sources():
+    relationship = rel("FACTORY_LOOKUP_MATCHES_DISCOVERED_POOL", sources=(
+        FactoryRelationshipSource("a", POOL), FactoryRelationshipSource("b", POOL),
+        FactoryRelationshipSource("c", OTHER),
+    ))
+    with pytest.raises(ValueError, match="sources must return"):
+        assess_factory_attested_pool_deployment(relationship)

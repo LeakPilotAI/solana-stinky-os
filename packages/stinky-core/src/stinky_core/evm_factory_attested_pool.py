@@ -31,6 +31,9 @@ def assess_factory_attested_pool_deployment(
     This is deliberately distinct from externally pinned deployment provenance.
     """
     if relationship.relationship == _MATCH:
+        providers = tuple(source.provider for source in relationship.sources)
+        if any(not isinstance(provider, str) or not provider.strip() for provider in providers) or len(set(providers)) < 2:
+            raise ValueError("matching factory relationship requires distinct provider evidence")
         if relationship.returned_address != relationship.pool_address:
             raise ValueError("matching factory relationship must return the discovered pool")
         if any(source.returned_address != relationship.pool_address for source in relationship.sources):
