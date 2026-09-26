@@ -36,11 +36,14 @@ def assess_reference_source_alignment(
         (match.implementation_family, match.implementation_version)
         for match in implementation.matches
     }))
-    source_by_ref = {source.source_reference: source for source in sources}
+    selected_references = set(deployment.matching_source_references)
     deployment_lineages = tuple(sorted({
-        (source_by_ref[ref].implementation_family, source_by_ref[ref].implementation_version)
-        for ref in deployment.matching_source_references
-        if ref in source_by_ref
+        (source.implementation_family, source.implementation_version)
+        for source in sources
+        if source.source_reference in selected_references
+        and (source.chain, source.address, source.contract_role) == (
+            deployment.chain, deployment.address, deployment.contract_role,
+        )
     }))
 
     if deployment.verdict == "PINNED_REFERENCE_DEPLOYMENT_IDENTITY_CONFLICT":
