@@ -8,6 +8,7 @@ import pytest
 
 import stinky_api.dex_provenance_provider as provider_module
 from stinky_api.dex_provenance_provider import PostgresDexProvenanceEvidenceProvider
+from stinky_api.dex_provenance import read_dex_provenance_response
 from stinky_api.dex_provenance_store import PersistedDexProvenanceEvidence
 from stinky_core.evm_contract_code import ContractCodeEvidence, ContractCodeSource
 from stinky_core.evm_dex_family_composition import DexFamilyConsistencyEvidence
@@ -116,6 +117,29 @@ def test_codec_round_trips_exact_record_and_source_tuple():
     assert restored == original
     assert restored.relationship.factory_code == original.relationship.factory_code
     assert restored.envelope.chain_blocks == ((CHAIN, BLOCK),)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("providers", [(), ("provider-a",), ("provider-a", "provider-a"), ("provider-a", "provider-b")])
+async def test_hydrated_relationship_cannot_assert_attestation_without_independent_sources(monkeypatch, providers):
+    original = record()
+    relationship = replace(original.relationship, sources=tuple(
+        FactoryRelationshipSource(provider, POOL) for provider in providers
+    ))
+    row = persisted(replace(original, relationship=relationship))
+
+    async def fake_load(*args, **kwargs):
+        return row
+
+    monkeypatch.setattr(provider_module, "load_latest_dex_provenance_evidence", fake_load)
+    provider = PostgresDexProvenanceEvidenceProvider(SimpleNamespace())
+    if len(set(providers)) < 2:
+        with pytest.raises(ValueError, match="distinct provider evidence"):
+            await read_dex_provenance_response(provider, chain=CHAIN, pool_address=POOL)
+    else:
+        response = await read_dex_provenance_response(provider, chain=CHAIN, pool_address=POOL)
+        assert response["factory_attestation_verdict"] == "FACTORY_HISTORICALLY_ATTESTS_POOL"
+        assert response["strict_lineage_verdict"] != "REFERENCE_DEX_LINEAGE_IDENTITY_CONFIRMED"
 
 
 def test_codec_rejects_unknown_version_and_unknown_type():
