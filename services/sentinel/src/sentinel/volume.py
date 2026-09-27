@@ -1193,6 +1193,11 @@ class VolumeMonitor:
         # provider latency delay the canonical market/fee observation path.
         depth_task = asyncio.create_task(self._sample_depth_observation(mint))
         depth_task.add_done_callback(self._depth_sample_done)
+        # Preserve the already-fetched canonical market snapshot before any
+        # secondary fee-provider I/O. Fee evidence is independent research data
+        # and must not delay durable market observation.
+        await self._record_market_snapshot(migration, snap)
+
         # Persist fresh prospective fee evidence independently of admission.
         # UNKNOWN and lower-bound observations are retained for research too.
         now_mono = _prospective_fee_clock()
@@ -1214,99 +1219,102 @@ class VolumeMonitor:
                     "fee_observation.followup_failed", mint=mint,
                     error=f"{type(exc).__name__}: {exc}"[:200],
                 )
+    async def _record_market_snapshot(self, migration: DetectedMigration, snap: VolumeSnapshot) -> None:
+        """Persist/evaluate an already-fetched market snapshot without provider I/O."""
+        mint = migration.mint
         at = snap.fetched_at.isoformat() if snap.fetched_at else datetime.now(timezone.utc).isoformat()
-        buys = snap.txns_m5_buys
-        sells = snap.txns_m5_sells
-        txns = (buys or 0) + (sells or 0) if (buys is not None or sells is not None) else None
-        mem = getattr(self, "_memory", None)
-        if mem is not None:
-            mem.record_market_tick(
-                mint=mint,
-                observed_at=at,
-                volume_m5_usd=snap.volume_m5_usd,
-                price_usd=snap.price_usd,
-                liquidity_usd=snap.liquidity_usd,
-                pair_address=snap.pair_address,
-                dex_id=snap.dex_id,
-                market_cap_usd=getattr(snap, "market_cap_usd", None),
-                buys=buys,
-                sells=sells,
-                txns=txns,
-                source="observed",
-            )
-            try:
-                from stinky_core.quality_state import evaluate_quality_state
-
-                rec = next((r for r in mem.investigations if r.get("mint") == mint), None)
-                t0 = (rec or {}).get("gate1_at") or (rec or {}).get("decision_timestamp")
-                if t0:
-                    prev = next((q.get("state") for q in reversed(mem.quality_states) if q.get("mint") == mint), None)
-                    st = evaluate_quality_state(mem, mint=mint, t0=t0, as_of=at, previous_state=prev)
-                    if mem.record_quality_state(st):
-                        if self._sessions:
-                            await self._persist_quality_state(st)
-                        await self._trace(
-                            mint=mint,
-                            kind="quality",
-                            message=f"{st.get('previous_state')} â†’ {st.get('state')}",
-                            extra={
-                                "state": st.get("state"),
-                                "previous_state": st.get("previous_state"),
-                                "why": st.get("why"),
-                                "evidence_quality": st.get("evidence_quality"),
-                            },
-                        )
-                        try:
-                            if st.get("state") != st.get("previous_state"):
-                                evt = Event(
-                                    event_type=EventType.QUALITY_STATE_CHANGED,
-                                    payload={
-                                        "mint": mint,
-                                        "previous_state": st.get("previous_state"),
-                                        "current_state": st.get("state"),
-                                        "state": st.get("state"),
-                                        "severity": st.get("severity"),
-                                        "why": st.get("why"),
-                                        "evidence_quality": st.get("evidence_quality"),
-                                        "unknown": st.get("unknown"),
-                                        "as_of": st.get("as_of"),
-                                        "not_a_buy": True,
-                                        "calibrated_probability": False,
-                                    },
-                                    producer="sentinel-volume",
-                                )
-                                await self._publisher.publish_raw_event(evt, kind="quality")
-                        except Exception as exc:
-                            logger.debug("quality.publish_failed", mint=mint, error=str(exc)[:200])
-            except Exception as exc:
-                logger.debug("quality.eval_failed", mint=mint, error=str(exc)[:200])
-        if not self._sessions:
-            return
-        try:
-            from stinky_core.memory import MEMORY_INSERT_MARKET_OBS
-
-            async with self._sessions() as session:
-                await session.execute(
-                    text(MEMORY_INSERT_MARKET_OBS),
-                    {
-                        "mint": mint,
-                        "observed_at": at,
-                        "volume_m5_usd": snap.volume_m5_usd,
-                        "price_usd": snap.price_usd,
-                        "liquidity_usd": snap.liquidity_usd,
-                        "source": "observed",
-                        "market_cap_usd": getattr(snap, "market_cap_usd", None),
-                        "buys": buys,
-                        "sells": sells,
-                        "txns": txns,
-                        "unique_buyers": None,
-                        "unique_sellers": None,
-                        "volume_since_gate": None,
-                    },
+            buys = snap.txns_m5_buys
+            sells = snap.txns_m5_sells
+            txns = (buys or 0) + (sells or 0) if (buys is not None or sells is not None) else None
+            mem = getattr(self, "_memory", None)
+            if mem is not None:
+                mem.record_market_tick(
+                    mint=mint,
+                    observed_at=at,
+                    volume_m5_usd=snap.volume_m5_usd,
+                    price_usd=snap.price_usd,
+                    liquidity_usd=snap.liquidity_usd,
+                    pair_address=snap.pair_address,
+                    dex_id=snap.dex_id,
+                    market_cap_usd=getattr(snap, "market_cap_usd", None),
+                    buys=buys,
+                    sells=sells,
+                    txns=txns,
+                    source="observed",
                 )
-                await session.commit()
-        except Exception as exc:
-            logger.debug("observation.tick_persist_failed", mint=mint, error=str(exc)[:200])
+                try:
+                    from stinky_core.quality_state import evaluate_quality_state
+    
+                    rec = next((r for r in mem.investigations if r.get("mint") == mint), None)
+                    t0 = (rec or {}).get("gate1_at") or (rec or {}).get("decision_timestamp")
+                    if t0:
+                        prev = next((q.get("state") for q in reversed(mem.quality_states) if q.get("mint") == mint), None)
+                        st = evaluate_quality_state(mem, mint=mint, t0=t0, as_of=at, previous_state=prev)
+                        if mem.record_quality_state(st):
+                            if self._sessions:
+                                await self._persist_quality_state(st)
+                            await self._trace(
+                                mint=mint,
+                                kind="quality",
+                                message=f"{st.get('previous_state')} â†’ {st.get('state')}",
+                                extra={
+                                    "state": st.get("state"),
+                                    "previous_state": st.get("previous_state"),
+                                    "why": st.get("why"),
+                                    "evidence_quality": st.get("evidence_quality"),
+                                },
+                            )
+                            try:
+                                if st.get("state") != st.get("previous_state"):
+                                    evt = Event(
+                                        event_type=EventType.QUALITY_STATE_CHANGED,
+                                        payload={
+                                            "mint": mint,
+                                            "previous_state": st.get("previous_state"),
+                                            "current_state": st.get("state"),
+                                            "state": st.get("state"),
+                                            "severity": st.get("severity"),
+                                            "why": st.get("why"),
+                                            "evidence_quality": st.get("evidence_quality"),
+                                            "unknown": st.get("unknown"),
+                                            "as_of": st.get("as_of"),
+                                            "not_a_buy": True,
+                                            "calibrated_probability": False,
+                                        },
+                                        producer="sentinel-volume",
+                                    )
+                                    await self._publisher.publish_raw_event(evt, kind="quality")
+                            except Exception as exc:
+                                logger.debug("quality.publish_failed", mint=mint, error=str(exc)[:200])
+                except Exception as exc:
+                    logger.debug("quality.eval_failed", mint=mint, error=str(exc)[:200])
+            if not self._sessions:
+                return
+            try:
+                from stinky_core.memory import MEMORY_INSERT_MARKET_OBS
+    
+                async with self._sessions() as session:
+                    await session.execute(
+                        text(MEMORY_INSERT_MARKET_OBS),
+                        {
+                            "mint": mint,
+                            "observed_at": at,
+                            "volume_m5_usd": snap.volume_m5_usd,
+                            "price_usd": snap.price_usd,
+                            "liquidity_usd": snap.liquidity_usd,
+                            "source": "observed",
+                            "market_cap_usd": getattr(snap, "market_cap_usd", None),
+                            "buys": buys,
+                            "sells": sells,
+                            "txns": txns,
+                            "unique_buyers": None,
+                            "unique_sellers": None,
+                            "volume_since_gate": None,
+                        },
+                    )
+                    await session.commit()
+            except Exception as exc:
+                logger.debug("observation.tick_persist_failed", mint=mint, error=str(exc)[:200])
 
     async def _persist_quality_state(self, row: dict[str, Any]) -> None:
         if not self._sessions:
