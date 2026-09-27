@@ -222,9 +222,8 @@ class JupiterDepthClient:
             await self._client.aclose()
 
     async def quote_buy(self, mint: str, input_lamports: int, *, expected_pair_address: str | None = None, expected_dex_id: str | None = None) -> DepthQuoteObservation:
-        at = datetime.now(timezone.utc)
         if not mint or input_lamports <= 0:
-            return parse_quote(mint, input_lamports, None, observed_at=at)
+            return parse_quote(mint, input_lamports, None, observed_at=datetime.now(timezone.utc))
         try:
             response = await self._client.get(
                 JUPITER_QUOTE_URL,
@@ -236,17 +235,18 @@ class JupiterDepthClient:
                     "swapMode": "ExactIn",
                 },
             )
+            received_at = datetime.now(timezone.utc)
             if response.status_code != 200:
                 return DepthQuoteObservation(
-                    mint, at, input_lamports, None, None, False, "UNKNOWN",
+                    mint, received_at, input_lamports, None, None, False, "UNKNOWN",
                     error=f"HTTP_{response.status_code}",
                     expected_pair_address=expected_pair_address,
                     expected_dex_id=expected_dex_id,
                 )
-            return parse_quote(mint, input_lamports, response.json(), observed_at=at, expected_pair_address=expected_pair_address, expected_dex_id=expected_dex_id)
+            return parse_quote(mint, input_lamports, response.json(), observed_at=received_at, expected_pair_address=expected_pair_address, expected_dex_id=expected_dex_id)
         except Exception as exc:
             return DepthQuoteObservation(
-                mint, at, input_lamports, None, None, False, "UNKNOWN",
+                mint, datetime.now(timezone.utc), input_lamports, None, None, False, "UNKNOWN",
                 error=type(exc).__name__,
                 expected_pair_address=expected_pair_address,
                 expected_dex_id=expected_dex_id,
