@@ -17,6 +17,8 @@ def _payload(**overrides):
         "outAmount": "250000000",
         "priceImpactPct": "0.0125",
         "routePlan": [{"swapInfo": {"label": "Pump.fun Amm"}}],
+        "contextSlot": 350000001,
+        "timeTaken": 0.012,
     }
     row.update(overrides)
     return row
@@ -30,6 +32,8 @@ def test_valid_quote_is_verified_observation_only():
     assert obs.input_lamports == 10_000_000
     assert obs.out_amount_atomic == 250_000_000
     assert obs.price_impact_pct == pytest.approx(0.0125)
+    assert obs.quote_context_slot == 350000001
+    assert obs.quote_time_taken_sec == pytest.approx(0.012)
 
 
 @pytest.mark.parametrize("payload,error", [
@@ -38,6 +42,9 @@ def test_valid_quote_is_verified_observation_only():
     (_payload(priceImpactPct="nan"), "MALFORMED_QUOTE"),
     (_payload(priceImpactPct="-1"), "MALFORMED_QUOTE"),
     (_payload(routePlan=[]), "NO_ROUTE"),
+    ({k: v for k, v in _payload().items() if k != "contextSlot"}, "MISSING_QUOTE_PROVENANCE"),
+    (_payload(contextSlot="bad"), "MISSING_QUOTE_PROVENANCE"),
+    (_payload(timeTaken="nan"), "MALFORMED_QUOTE_PROVENANCE"),
 ])
 def test_bad_or_mismatched_quote_fails_closed(payload, error):
     obs = parse_quote(MINT, 10_000_000, payload)
