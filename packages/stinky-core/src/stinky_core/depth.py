@@ -29,6 +29,8 @@ class DepthQuoteObservation:
     status: str
     source: str = SOURCE
     error: str | None = None
+    quote_context_slot: int | None = None
+    quote_time_taken_sec: float | None = None
 
     @property
     def usable(self) -> bool:
@@ -59,7 +61,17 @@ def parse_quote(mint: str, input_lamports: int, payload: Any, *, observed_at: da
     route = payload.get("routePlan")
     if not isinstance(route, list) or not route:
         return unknown("NO_ROUTE")
-    return DepthQuoteObservation(mint, at, input_lamports, out, impact, True, "VERIFIED")
+    try:
+        context_slot = int(payload["contextSlot"])
+        time_taken = float(payload["timeTaken"])
+    except (KeyError, TypeError, ValueError):
+        return unknown("MISSING_QUOTE_PROVENANCE")
+    if context_slot <= 0 or not math.isfinite(time_taken) or time_taken < 0:
+        return unknown("MALFORMED_QUOTE_PROVENANCE")
+    return DepthQuoteObservation(
+        mint, at, input_lamports, out, impact, True, "VERIFIED",
+        quote_context_slot=context_slot, quote_time_taken_sec=time_taken,
+    )
 
 
 class JupiterDepthClient:
@@ -112,7 +124,9 @@ CREATE TABLE IF NOT EXISTS depth_quote_observations (
     route_found BOOLEAN NOT NULL,
     status TEXT NOT NULL,
     source TEXT NOT NULL,
-    error TEXT
+    error TEXT,
+    quote_context_slot BIGINT,
+    quote_time_taken_sec DOUBLE PRECISION
 );
 """
 DEPTH_OBSERVATIONS_INDEXES = (
@@ -121,10 +135,10 @@ DEPTH_OBSERVATIONS_INDEXES = (
 DEPTH_OBSERVATIONS_INSERT = """
 INSERT INTO depth_quote_observations (
     mint, observed_at, input_lamports, out_amount_atomic, price_impact_pct,
-    route_found, status, source, error
+    route_found, status, source, error, quote_context_slot, quote_time_taken_sec
 ) VALUES (
     :mint, :observed_at, :input_lamports, :out_amount_atomic, :price_impact_pct,
-    :route_found, :status, :source, :error
+    :route_found, :status, :source, :error, :quote_context_slot, :quote_time_taken_sec
 )
 """
 
@@ -141,4 +155,6 @@ def depth_persist_params(obs: DepthQuoteObservation) -> dict[str, Any]:
         "status": obs.status,
         "source": obs.source,
         "error": obs.error,
+        "quote_context_slot": obs.quote_context_slot,
+        "quote_time_taken_sec": obs.quote_time_taken_sec,
     }
