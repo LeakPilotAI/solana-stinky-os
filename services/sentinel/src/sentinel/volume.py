@@ -548,12 +548,26 @@ class VolumeMonitor:
         if degraded is None:
             degraded = {}
             self._observation_persistence_degraded = degraded
-        degraded[stream] = str(exc)[:200]
+        error = str(exc)[:200]
+        was_degraded = stream in degraded
+        degraded[stream] = error
+        if not was_degraded:
+            logger.error(
+                "observation_persistence.degraded",
+                stream=stream,
+                error=error,
+                degraded_streams=sorted(degraded),
+            )
 
     def _clear_observation_persistence_degraded(self, stream: str) -> None:
         degraded = getattr(self, "_observation_persistence_degraded", None)
-        if degraded is not None:
+        if degraded is not None and stream in degraded:
             degraded.pop(stream, None)
+            logger.info(
+                "observation_persistence.recovered",
+                stream=stream,
+                degraded_streams=sorted(degraded),
+            )
 
     @property
     def observation_persistence_degraded(self) -> dict[str, str]:
