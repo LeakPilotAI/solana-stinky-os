@@ -531,6 +531,7 @@ class VolumeMonitor:
         # Rate-limit fresh public fee samples; persisted rows remain truth.
         self._last_fee_sample_monotonic: dict[str, float] = {}
         self._last_depth_sample_monotonic: dict[str, float] = {}
+        self._last_depth_sample_monotonic: dict[str, float] = {}
 
     async def start(self) -> None:
         """Hydrate memory and resume open T+1800 watches. Fail-soft."""
