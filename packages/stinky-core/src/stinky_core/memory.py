@@ -1433,6 +1433,8 @@ class IntelligenceMemory:
                 volume_m5_usd=_maybe_float(d.get("volume_m5_usd")),
                 price_usd=_maybe_float(d.get("price_usd")),
                 liquidity_usd=_maybe_float(d.get("liquidity_usd")),
+                pair_address=str(d.get("pair_address") or "").strip() or None,
+                dex_id=str(d.get("dex_id") or "").strip() or None,
                 source=str(d.get("source") or "observed"),
                 market_cap_usd=_maybe_float(d.get("market_cap_usd")),
                 buys=_maybe_int(d.get("buys")),
