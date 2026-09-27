@@ -599,11 +599,36 @@ class VolumeMonitor:
             elapsed = (now - t0).total_seconds()
             if not watch_should_resume(elapsed_sec=elapsed, max_watch_sec=self._max_watch):
                 continue
+            market_ticks = [
+                tick for tick in list(getattr(mem, "market_ticks", []) or [])
+                if str(getattr(tick, "mint", "")) == mint
+            ]
+            latest_tick = max(
+                market_ticks,
+                key=lambda tick: _parse_ts(getattr(tick, "observed_at", None))
+                or datetime.min.replace(tzinfo=timezone.utc),
+                default=None,
+            )
+            persisted_pair = (
+                getattr(latest_tick, "pair_address", None) if latest_tick is not None else None
+            )
+            persisted_dex = (
+                getattr(latest_tick, "dex_id", None) if latest_tick is not None else None
+            )
             mig = DetectedMigration(
                 mint=mint,
-                pool=str(rec.get("pair_identifier") or rec.get("pool") or ""),
+                pool=str(
+                    persisted_pair
+                    or rec.get("pair_identifier")
+                    or rec.get("pool")
+                    or ""
+                ),
                 creator=rec.get("creator"),
-                destination=str(rec.get("protocol") or "pumpswap"),
+                destination=str(
+                    persisted_dex
+                    or rec.get("protocol")
+                    or "pumpswap"
+                ),
                 source="resume-watch",
                 block_time=t0,
             )
