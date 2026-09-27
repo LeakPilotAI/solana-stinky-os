@@ -451,6 +451,7 @@ class VolumeMonitor:
                 await session.execute(text(FEE_OBSERVATIONS_INSERT), obs.persist_params())
                 await session.commit()
         except Exception as exc:
+            self._mark_observation_persistence_degraded("fee_observation", exc)
             logger.warning(
                 "fee_observation.persist_failed",
                 mint=obs.mint,
@@ -493,6 +494,7 @@ class VolumeMonitor:
                 )
                 await session.commit()
         except Exception as exc:
+            self._mark_observation_persistence_degraded("market_snapshot", exc)
             logger.warning("volume.snapshot_persist_failed", mint=mint, error=str(exc)[:200])
 
 
@@ -532,6 +534,21 @@ class VolumeMonitor:
         # Rate-limit fresh public fee samples; persisted rows remain truth.
         self._last_fee_sample_monotonic: dict[str, float] = {}
         self._last_depth_sample_monotonic: dict[str, float] = {}
+        # Observation durability is part of evidence quality. A failed write must
+        # remain visible to operators instead of being indistinguishable from
+        # healthy collection.
+        self._observation_persistence_degraded: dict[str, str] = {}
+
+    def _mark_observation_persistence_degraded(self, stream: str, exc: Exception | str) -> None:
+        degraded = getattr(self, "_observation_persistence_degraded", None)
+        if degraded is None:
+            degraded = {}
+            self._observation_persistence_degraded = degraded
+        degraded[stream] = str(exc)[:200]
+
+    @property
+    def observation_persistence_degraded(self) -> dict[str, str]:
+        return dict(getattr(self, "_observation_persistence_degraded", {}))
 
     async def start(self) -> None:
         """Hydrate memory and resume open T+1800 watches. Fail-soft."""
@@ -1161,6 +1178,7 @@ class VolumeMonitor:
                 await session.execute(text(DEPTH_OBSERVATIONS_INSERT), depth_persist_params(obs))
                 await session.commit()
         except Exception as exc:
+            self._mark_observation_persistence_degraded("depth_observation", exc)
             logger.warning("depth_observation.persist_failed", mint=getattr(obs, "mint", None), error=str(exc)[:200])
 
     async def _sample_depth_observation(self, mint: str, *, pair_address: str | None = None, dex_id: str | None = None) -> None:
