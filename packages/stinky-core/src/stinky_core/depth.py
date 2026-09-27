@@ -34,6 +34,9 @@ class DepthQuoteObservation:
     error: str | None = None
     quote_context_slot: int | None = None
     quote_time_taken_sec: float | None = None
+    expected_pair_address: str | None = None
+    expected_dex_id: str | None = None
+    route_amm_keys: tuple[str, ...] = ()
 
     @property
     def usable(self) -> bool:
@@ -137,7 +140,7 @@ def latest_usable_depth_observation(
     return latest
 
 
-def parse_quote(mint: str, input_lamports: int, payload: Any, *, observed_at: datetime | None = None) -> DepthQuoteObservation:
+def parse_quote(mint: str, input_lamports: int, payload: Any, *, observed_at: datetime | None = None, expected_pair_address: str | None = None, expected_dex_id: str | None = None) -> DepthQuoteObservation:
     at = observed_at or datetime.now(timezone.utc)
     unknown = lambda err: DepthQuoteObservation(mint, at, input_lamports, None, None, False, "UNKNOWN", error=err)
     if not mint or input_lamports <= 0 or not isinstance(payload, dict):
@@ -155,6 +158,19 @@ def parse_quote(mint: str, input_lamports: int, payload: Any, *, observed_at: da
     route = payload.get("routePlan")
     if not isinstance(route, list) or not route:
         return unknown("NO_ROUTE")
+    route_amm_keys = tuple(
+        str(step.get("swapInfo", {}).get("ammKey") or "").strip()
+        for step in route if isinstance(step, dict)
+    )
+    route_amm_keys = tuple(key for key in route_amm_keys if key)
+    if not route_amm_keys:
+        return unknown("MISSING_ROUTE_PROVENANCE")
+    if expected_pair_address and expected_pair_address not in route_amm_keys:
+        return DepthQuoteObservation(
+            mint, at, input_lamports, None, None, False, "UNKNOWN",
+            error="EXPECTED_PAIR_NOT_IN_ROUTE", expected_pair_address=expected_pair_address,
+            expected_dex_id=expected_dex_id, route_amm_keys=route_amm_keys,
+        )
     try:
         context_slot = int(payload["contextSlot"])
         time_taken = float(payload["timeTaken"])
@@ -165,6 +181,8 @@ def parse_quote(mint: str, input_lamports: int, payload: Any, *, observed_at: da
     return DepthQuoteObservation(
         mint, at, input_lamports, out, impact, True, "VERIFIED",
         quote_context_slot=context_slot, quote_time_taken_sec=time_taken,
+        expected_pair_address=expected_pair_address, expected_dex_id=expected_dex_id,
+        route_amm_keys=route_amm_keys,
     )
 
 
@@ -179,7 +197,7 @@ class JupiterDepthClient:
         if self._owns_client:
             await self._client.aclose()
 
-    async def quote_buy(self, mint: str, input_lamports: int) -> DepthQuoteObservation:
+    async def quote_buy(self, mint: str, input_lamports: int, *, expected_pair_address: str | None = None, expected_dex_id: str | None = None) -> DepthQuoteObservation:
         at = datetime.now(timezone.utc)
         if not mint or input_lamports <= 0:
             return parse_quote(mint, input_lamports, None, observed_at=at)
@@ -199,7 +217,7 @@ class JupiterDepthClient:
                     mint, at, input_lamports, None, None, False, "UNKNOWN",
                     error=f"HTTP_{response.status_code}",
                 )
-            return parse_quote(mint, input_lamports, response.json(), observed_at=at)
+            return parse_quote(mint, input_lamports, response.json(), observed_at=at, expected_pair_address=expected_pair_address, expected_dex_id=expected_dex_id)
         except Exception as exc:
             return DepthQuoteObservation(
                 mint, at, input_lamports, None, None, False, "UNKNOWN",
@@ -220,7 +238,10 @@ CREATE TABLE IF NOT EXISTS depth_quote_observations (
     source TEXT NOT NULL,
     error TEXT,
     quote_context_slot BIGINT,
-    quote_time_taken_sec DOUBLE PRECISION
+    quote_time_taken_sec DOUBLE PRECISION,
+    expected_pair_address TEXT,
+    expected_dex_id TEXT,
+    route_amm_keys TEXT
 );
 """
 DEPTH_OBSERVATIONS_INDEXES = (
@@ -229,10 +250,12 @@ DEPTH_OBSERVATIONS_INDEXES = (
 DEPTH_OBSERVATIONS_INSERT = """
 INSERT INTO depth_quote_observations (
     mint, observed_at, input_lamports, out_amount_atomic, price_impact_pct,
-    route_found, status, source, error, quote_context_slot, quote_time_taken_sec
+    route_found, status, source, error, quote_context_slot, quote_time_taken_sec,
+    expected_pair_address, expected_dex_id, route_amm_keys
 ) VALUES (
     :mint, :observed_at, :input_lamports, :out_amount_atomic, :price_impact_pct,
-    :route_found, :status, :source, :error, :quote_context_slot, :quote_time_taken_sec
+    :route_found, :status, :source, :error, :quote_context_slot, :quote_time_taken_sec,
+    :expected_pair_address, :expected_dex_id, :route_amm_keys
 )
 """
 
@@ -251,4 +274,7 @@ def depth_persist_params(obs: DepthQuoteObservation) -> dict[str, Any]:
         "error": obs.error,
         "quote_context_slot": obs.quote_context_slot,
         "quote_time_taken_sec": obs.quote_time_taken_sec,
+        "expected_pair_address": obs.expected_pair_address,
+        "expected_dex_id": obs.expected_dex_id,
+        "route_amm_keys": ",".join(obs.route_amm_keys),
     }
