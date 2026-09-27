@@ -362,3 +362,24 @@ async def test_successful_memory_hydration_clears_only_hydration_degradation():
     assert monitor.observation_persistence_degraded == {
         "market_observation": "write failed"
     }
+
+
+def test_restart_critical_hydration_reads_are_not_silently_downgraded():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).parents[1] / "src" / "sentinel" / "volume.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("async def _hydrate_memory")
+    end = source.index("async def _persist_memory_decision", start)
+    block = source[start:end]
+
+    for selector in (
+        "MEMORY_SELECT_DECISION",
+        "MEMORY_SELECT_MARKET_OBS",
+        "MEMORY_SELECT_INVESTIGATION",
+    ):
+        read = f"session.execute(text({selector}))"
+        assert read in block
+        prefix = block[: block.index(read)]
+        assert "except Exception:\n                    " + selector.lower() not in prefix[-250:]
