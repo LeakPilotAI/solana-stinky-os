@@ -1193,6 +1193,11 @@ class VolumeMonitor:
         # provider latency delay the canonical market/fee observation path.
         depth_task = asyncio.create_task(self._sample_depth_observation(mint))
         depth_task.add_done_callback(self._depth_sample_done)
+        # Preserve the already-fetched canonical market snapshot before any
+        # secondary fee-provider I/O. Fee evidence is independent research data
+        # and must not delay durable market observation.
+        await self._record_market_snapshot(migration, snap)
+
         # Persist fresh prospective fee evidence independently of admission.
         # UNKNOWN and lower-bound observations are retained for research too.
         now_mono = _prospective_fee_clock()
@@ -1214,6 +1219,9 @@ class VolumeMonitor:
                     "fee_observation.followup_failed", mint=mint,
                     error=f"{type(exc).__name__}: {exc}"[:200],
                 )
+    async def _record_market_snapshot(self, migration: DetectedMigration, snap: VolumeSnapshot) -> None:
+        """Persist/evaluate an already-fetched market snapshot without provider I/O."""
+        mint = migration.mint
         at = snap.fetched_at.isoformat() if snap.fetched_at else datetime.now(timezone.utc).isoformat()
         buys = snap.txns_m5_buys
         sells = snap.txns_m5_sells
