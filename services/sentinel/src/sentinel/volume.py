@@ -1173,11 +1173,26 @@ class VolumeMonitor:
         except Exception as exc:
             logger.warning("depth_observation.followup_failed", mint=mint, error=f"{type(exc).__name__}: {exc}"[:200])
 
+    @staticmethod
+    def _depth_sample_done(task: asyncio.Task) -> None:
+        """Consume background sampler failures so they cannot become unhandled."""
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.warning(
+                "depth_observation.background_failed",
+                error=f"{type(exc).__name__}: {exc}"[:200],
+            )
+
     async def _record_followup_tick(self, migration: DetectedMigration, snap: VolumeSnapshot) -> None:
         """Post-Gate-1 market tick. Missing fields stay None. Never interpolates."""
         mint = migration.mint
-        # Read-only executable-depth evidence is research-only and independent of admission.
-        await self._sample_depth_observation(mint)
+        # Read-only executable-depth evidence is research-only. Do not let its
+        # provider latency delay the canonical market/fee observation path.
+        depth_task = asyncio.create_task(self._sample_depth_observation(mint))
+        depth_task.add_done_callback(self._depth_sample_done)
         # Persist fresh prospective fee evidence independently of admission.
         # UNKNOWN and lower-bound observations are retained for research too.
         now_mono = _prospective_fee_clock()
