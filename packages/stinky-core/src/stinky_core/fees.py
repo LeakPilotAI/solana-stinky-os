@@ -205,6 +205,51 @@ class FeeObservation:
         }
 
 
+
+def fee_velocity_sol_per_minute(
+    older: FeeObservation,
+    newer: FeeObservation,
+) -> float | None:
+    """Return a defensible prospective fee velocity, otherwise UNKNOWN.
+
+    Velocity is only meaningful when both observations are exact, complete,
+    verified cumulative totals for the same mint.  Lower bounds from bounded
+    on-chain scans must never be subtracted as if they were exact totals.
+    Non-monotonic totals are contradictory evidence and also return UNKNOWN.
+    """
+    if not isinstance(older, FeeObservation) or not isinstance(newer, FeeObservation):
+        return None
+    if not older.mint or older.mint != newer.mint:
+        return None
+    for obs in (older, newer):
+        if (
+            not obs.fees_verified
+            or obs.fees_status != FeeStatus.VERIFIED
+            or obs.global_fees_sol is None
+            or not obs.scan_complete
+            or obs.lower_bound
+        ):
+            return None
+        try:
+            value = float(obs.global_fees_sol)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(value) or value < 0:
+            return None
+    try:
+        t0 = datetime.fromisoformat(older.fees_observed_at.replace("Z", "+00:00"))
+        t1 = datetime.fromisoformat(newer.fees_observed_at.replace("Z", "+00:00"))
+        seconds = (t1.astimezone(timezone.utc) - t0.astimezone(timezone.utc)).total_seconds()
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if seconds <= 0:
+        return None
+    delta = float(newer.global_fees_sol) - float(older.global_fees_sol)
+    if delta < -1e-12:
+        return None
+    return delta / (seconds / 60.0)
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
