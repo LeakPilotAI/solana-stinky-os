@@ -83,6 +83,60 @@ def depth_observation_matches_order(
     )
 
 
+def latest_depth_observation(
+    observations: list[DepthQuoteObservation],
+    *,
+    mint: str,
+    input_lamports: int,
+    as_of: datetime,
+) -> DepthQuoteObservation | None:
+    """Return the latest applicable evidence, including negative/UNKNOWN evidence.
+
+    Critically, this selects by identity/time before judging usability. A newer
+    NO_ROUTE/provider failure therefore masks an older good quote rather than
+    allowing stale-good fallback. Future-dated observations are ignored.
+    """
+    if not mint or input_lamports <= 0 or as_of.tzinfo is None:
+        return None
+    candidates: list[DepthQuoteObservation] = []
+    for obs in observations:
+        if not isinstance(obs, DepthQuoteObservation):
+            continue
+        if obs.mint != mint or obs.input_lamports != input_lamports:
+            continue
+        if obs.observed_at.tzinfo is None:
+            continue
+        try:
+            if obs.observed_at.astimezone(timezone.utc) <= as_of.astimezone(timezone.utc):
+                candidates.append(obs)
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            continue
+    if not candidates:
+        return None
+    return max(candidates, key=lambda obs: obs.observed_at.astimezone(timezone.utc))
+
+
+def latest_usable_depth_observation(
+    observations: list[DepthQuoteObservation],
+    *,
+    mint: str,
+    input_lamports: int,
+    as_of: datetime,
+    max_age_sec: float = MAX_DEPTH_AGE_SEC,
+) -> DepthQuoteObservation | None:
+    """Usable only when the *latest* applicable evidence is itself fresh/verified."""
+    latest = latest_depth_observation(
+        observations, mint=mint, input_lamports=input_lamports, as_of=as_of
+    )
+    if latest is None:
+        return None
+    if not depth_observation_matches_order(latest, mint=mint, input_lamports=input_lamports):
+        return None
+    if not depth_observation_is_fresh(latest, as_of=as_of, max_age_sec=max_age_sec):
+        return None
+    return latest
+
+
 def parse_quote(mint: str, input_lamports: int, payload: Any, *, observed_at: datetime | None = None) -> DepthQuoteObservation:
     at = observed_at or datetime.now(timezone.utc)
     unknown = lambda err: DepthQuoteObservation(mint, at, input_lamports, None, None, False, "UNKNOWN", error=err)
