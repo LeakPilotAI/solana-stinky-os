@@ -1050,18 +1050,9 @@ class VolumeMonitor:
                 cout = (await session.execute(text(MEMORY_SELECT_CREATOR_OUTCOME))).mappings().all()
                 fps = (await session.execute(text(MEMORY_SELECT_FINGERPRINT))).mappings().all()
                 fpout = (await session.execute(text(MEMORY_SELECT_FINGERPRINT_OUTCOME))).mappings().all()
-                try:
-                    decs = (await session.execute(text(MEMORY_SELECT_DECISION))).mappings().all()
-                except Exception:
-                    decs = []
-                try:
-                    ticks = (await session.execute(text(MEMORY_SELECT_MARKET_OBS))).mappings().all()
-                except Exception:
-                    ticks = []
-                try:
-                    invs = (await session.execute(text(MEMORY_SELECT_INVESTIGATION))).mappings().all()
-                except Exception:
-                    invs = []
+                decs = (await session.execute(text(MEMORY_SELECT_DECISION))).mappings().all()
+                ticks = (await session.execute(text(MEMORY_SELECT_MARKET_OBS))).mappings().all()
+                invs = (await session.execute(text(MEMORY_SELECT_INVESTIGATION))).mappings().all()
                 try:
                     qstates = (await session.execute(text(MEMORY_SELECT_QUALITY))).mappings().all()
                 except Exception:
