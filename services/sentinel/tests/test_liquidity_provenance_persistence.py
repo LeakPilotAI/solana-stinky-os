@@ -55,3 +55,19 @@ def test_resume_watch_prefers_persisted_market_identity_contract():
     assert 'getattr(latest_tick, "dex_id", None)' in block
     assert "persisted_pair" in block
     assert "persisted_dex" in block
+
+
+def test_followup_market_persistence_includes_canonical_pair_identity():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).parents[1] / "src" / "sentinel" / "volume.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("async def _record_market_snapshot")
+    end = source.index("async def _persist_quality_state", start)
+    block = source[start:end]
+
+    assert '"pair_address": snap.pair_address' in block
+    assert '"dex_id": snap.dex_id' in block
+    assert block.count('"pair_address": snap.pair_address') >= 1
+    assert block.count('"dex_id": snap.dex_id') >= 1
