@@ -142,7 +142,10 @@ def latest_usable_depth_observation(
 
 def parse_quote(mint: str, input_lamports: int, payload: Any, *, observed_at: datetime | None = None, expected_pair_address: str | None = None, expected_dex_id: str | None = None) -> DepthQuoteObservation:
     at = observed_at or datetime.now(timezone.utc)
-    unknown = lambda err: DepthQuoteObservation(mint, at, input_lamports, None, None, False, "UNKNOWN", error=err)
+    unknown = lambda err: DepthQuoteObservation(
+        mint, at, input_lamports, None, None, False, "UNKNOWN", error=err,
+        expected_pair_address=expected_pair_address, expected_dex_id=expected_dex_id,
+    )
     if not mint or input_lamports <= 0 or not isinstance(payload, dict):
         return unknown("INVALID_INPUT")
     if payload.get("inputMint") != WSOL_MINT or payload.get("outputMint") != mint:
@@ -224,12 +227,16 @@ class JupiterDepthClient:
                 return DepthQuoteObservation(
                     mint, at, input_lamports, None, None, False, "UNKNOWN",
                     error=f"HTTP_{response.status_code}",
+                    expected_pair_address=expected_pair_address,
+                    expected_dex_id=expected_dex_id,
                 )
             return parse_quote(mint, input_lamports, response.json(), observed_at=at, expected_pair_address=expected_pair_address, expected_dex_id=expected_dex_id)
         except Exception as exc:
             return DepthQuoteObservation(
                 mint, at, input_lamports, None, None, False, "UNKNOWN",
                 error=type(exc).__name__,
+                expected_pair_address=expected_pair_address,
+                expected_dex_id=expected_dex_id,
             )
 
 
