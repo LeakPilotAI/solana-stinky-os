@@ -19,7 +19,15 @@ REQUIRED_PAPER_RUNTIME_TABLES = (
     "paper_runtime_intake", "paper_runtime_record",
     "paper_intake_producer_state", "paper_prospective_candidate",
 )
-REQUIRED_TABLES = REQUIRED_EXECUTOR_TABLES + REQUIRED_PAPER_RUNTIME_TABLES
+REQUIRED_OBSERVATION_TABLES = (
+    "filter_evaluations", "fee_observations", "market_snapshots",
+    "market_observations", "depth_quote_observations",
+)
+REQUIRED_TABLES = (
+    REQUIRED_EXECUTOR_TABLES
+    + REQUIRED_PAPER_RUNTIME_TABLES
+    + REQUIRED_OBSERVATION_TABLES
+)
 
 # This migration predates the strict gate and is a one-time bootstrap: it uses
 # plain CREATE TABLE statements and cannot be replayed safely on an initialized DB.
@@ -90,7 +98,7 @@ def main() -> int:
         observed=existing_tables(docker, REQUIRED_TABLES)
         missing=sorted(set(REQUIRED_TABLES)-observed)
         if missing: raise RuntimeError("required tables missing after migrations: "+", ".join(missing))
-        print("  STRICT SCHEMA GATE PASS: %d applied, %d verified/skipped; executor + paper persistence verified" % (applied, skipped),flush=True); return 0
+        print("  STRICT SCHEMA GATE PASS: %d applied, %d verified/skipped; executor + paper + observation persistence verified" % (applied, skipped),flush=True); return 0
     except Exception as exc:
         print("\nGENESIS STARTUP BLOCKED BY STRICT SCHEMA GATE",flush=True); print("Reason: %s" % exc,flush=True); print("No Genesis application services were started by this gate.",flush=True); return 1
 if __name__ == "__main__": sys.exit(main())
