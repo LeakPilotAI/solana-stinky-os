@@ -516,6 +516,7 @@ class VolumeMonitor:
         # Observation window includes T+1800. Never stop collecting earlier than that.
         self._max_watch = max(watch, 1800.0)
         self._active: set[str] = set()
+        self._background_tasks: set[asyncio.Task] = set()
         self._engine = create_async_engine(
             settings.database_url, pool_pre_ping=True, pool_size=3
         )
@@ -530,7 +531,6 @@ class VolumeMonitor:
         self._memory_hydrated = False
         # Rate-limit fresh public fee samples; persisted rows remain truth.
         self._last_fee_sample_monotonic: dict[str, float] = {}
-        self._last_depth_sample_monotonic: dict[str, float] = {}
         self._last_depth_sample_monotonic: dict[str, float] = {}
 
     async def start(self) -> None:
@@ -568,9 +568,11 @@ class VolumeMonitor:
                 block_time=t0,
             )
             self._active.add(mint)
-            asyncio.create_task(
-                self._run_watch(mig, started=t0, investigated=True, resumed=True),
-                name=f"vol-resume-{mint[:8]}",
+            self._track_background_task(
+                asyncio.create_task(
+                    self._run_watch(mig, started=t0, investigated=True, resumed=True),
+                    name=f"vol-resume-{mint[:8]}",
+                )
             )
             n += 1
             await self._trace(
@@ -582,7 +584,23 @@ class VolumeMonitor:
         if n:
             logger.info("volume.watches_resumed", n=n, max_watch_sec=self._max_watch)
 
+    def _track_background_task(self, task: asyncio.Task) -> asyncio.Task:
+        """Own fire-and-forget work so shutdown can cancel and drain it."""
+        tasks = getattr(self, "_background_tasks", None)
+        if tasks is None:
+            tasks = set()
+            self._background_tasks = tasks
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+        return task
+
     async def close(self) -> None:
+        tasks = list(getattr(self, "_background_tasks", set()))
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         await self._client.close()
         await self._engine.dispose()
 
@@ -726,7 +744,9 @@ class VolumeMonitor:
         if migration.mint in self._active:
             return
         self._active.add(migration.mint)
-        asyncio.create_task(self._run_watch(migration), name=f"vol-{migration.mint[:8]}")
+        self._track_background_task(
+            asyncio.create_task(self._run_watch(migration), name=f"vol-{migration.mint[:8]}")
+        )
 
     async def _run_watch(
         self,
@@ -1191,7 +1211,9 @@ class VolumeMonitor:
         mint = migration.mint
         # Read-only executable-depth evidence is research-only. Do not let its
         # provider latency delay the canonical market/fee observation path.
-        depth_task = asyncio.create_task(self._sample_depth_observation(mint))
+        depth_task = self._track_background_task(
+            asyncio.create_task(self._sample_depth_observation(mint))
+        )
         depth_task.add_done_callback(self._depth_sample_done)
         # Preserve the already-fetched canonical market snapshot before any
         # secondary fee-provider I/O. Fee evidence is independent research data
