@@ -313,7 +313,10 @@ async def test_investigation_memory_persists_canonical_market_identity():
 
 @pytest.mark.asyncio
 async def test_failed_memory_hydration_stays_retryable_and_degraded():
+    from stinky_core.memory import IntelligenceMemory
+
     monitor = _monitor()
+    monitor._memory = IntelligenceMemory()
     monitor._memory_hydrated = False
 
     await monitor._hydrate_memory()
