@@ -50,3 +50,14 @@ def test_gate_contains_no_solana_execution_capability():
     assert "signed_transaction" not in lowered
     assert "sendtransaction" not in lowered
     assert "order_submission_allowed" not in lowered
+
+
+def test_current_observation_persistence_tables_are_mandatory():
+    assert set(gate.REQUIRED_OBSERVATION_TABLES) == {
+        "filter_evaluations",
+        "fee_observations",
+        "market_snapshots",
+        "market_observations",
+        "depth_quote_observations",
+    }
+    assert set(gate.REQUIRED_OBSERVATION_TABLES).issubset(set(gate.REQUIRED_TABLES))
