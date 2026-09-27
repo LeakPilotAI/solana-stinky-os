@@ -164,3 +164,16 @@ async def test_successful_filter_evaluation_clears_only_its_degradation():
     assert monitor.observation_persistence_degraded == {
         "depth_observation": "depth failed"
     }
+
+
+def test_persistence_health_emits_only_state_transitions(capsys):
+    monitor = _monitor()
+
+    monitor._mark_observation_persistence_degraded("depth_observation", "first failure")
+    monitor._mark_observation_persistence_degraded("depth_observation", "second failure")
+    monitor._clear_observation_persistence_degraded("depth_observation")
+
+    output = capsys.readouterr().out
+    assert output.count("observation_persistence.degraded") == 1
+    assert output.count("observation_persistence.recovered") == 1
+    assert "depth_observation" in output
