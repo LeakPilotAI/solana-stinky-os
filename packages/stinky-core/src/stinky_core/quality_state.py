@@ -148,10 +148,24 @@ def evaluate_quality_state(
 
     g_liq = gate.liquidity_usd if gate else None
     l_liq = latest.liquidity_usd
-    liq_drop = _drop(g_liq, l_liq)
-    liq_ch = _change(g_liq, l_liq)
+    gate_pair = getattr(gate, "pair_address", None) if gate else None
+    latest_pair = getattr(latest, "pair_address", None)
+    gate_dex = getattr(gate, "dex_id", None) if gate else None
+    latest_dex = getattr(latest, "dex_id", None)
+    liquidity_continuous = bool(
+        gate_pair and latest_pair and gate_pair == latest_pair
+        and gate_dex and latest_dex and gate_dex == latest_dex
+    )
+    liq_drop = _drop(g_liq, l_liq) if liquidity_continuous else None
+    liq_ch = _change(g_liq, l_liq) if liquidity_continuous else None
     if g_liq is None or l_liq is None:
         unknown.append("liquidity")
+    elif not liquidity_continuous:
+        unknown.append("liquidity_continuity")
+        why.append(_why(
+            "liquidity_usd", g_liq, l_liq, None, latest.observed_at,
+            "liquidity pair/DEX continuity UNKNOWN or changed; values are not compared",
+        ))
     else:
         known.append("liquidity")
         if liq_drop is not None and liq_drop >= LIQ_FAILED:
@@ -249,11 +263,15 @@ def evaluate_quality_state(
         "gate": {
             "volume_m5_usd": g_vol,
             "liquidity_usd": g_liq,
+            "pair_address": gate_pair,
+            "dex_id": gate_dex,
             "price_usd": gate.price_usd if gate else None,
         },
         "latest": {
             "volume_m5_usd": l_vol,
             "liquidity_usd": l_liq,
+            "pair_address": latest_pair,
+            "dex_id": latest_dex,
             "price_usd": latest.price_usd,
             "buy_sell_ratio": ratio,
             "observed_at": latest.observed_at.isoformat() if latest.observed_at else None,
