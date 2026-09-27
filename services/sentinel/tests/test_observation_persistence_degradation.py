@@ -177,3 +177,51 @@ def test_persistence_health_emits_only_state_transitions(capsys):
     assert output.count("observation_persistence.degraded") == 1
     assert output.count("observation_persistence.recovered") == 1
     assert "depth_observation" in output
+
+
+def _market_tick_snap():
+    from datetime import datetime, timezone
+    return type(
+        "Snap",
+        (),
+        {
+            "fetched_at": datetime.now(timezone.utc),
+            "volume_m5_usd": 50_000.0,
+            "price_usd": 1.0,
+            "liquidity_usd": 10_000.0,
+            "pair_address": "pair-a",
+            "dex_id": "pumpswap",
+            "market_cap_usd": 75_000.0,
+            "txns_m5_buys": 10,
+            "txns_m5_sells": 3,
+        },
+    )()
+
+
+@pytest.mark.asyncio
+async def test_market_observation_failure_marks_observation_degraded():
+    monitor = _monitor()
+    monitor._memory = None
+    migration = type("Migration", (), {"mint": "mint-a"})()
+
+    await monitor._record_market_snapshot(migration, _market_tick_snap())
+
+    state = monitor.observation_persistence_degraded
+    assert "market_observation" in state
+    assert "database unavailable" in state["market_observation"]
+
+
+@pytest.mark.asyncio
+async def test_successful_market_observation_clears_only_its_degradation():
+    monitor = _monitor()
+    monitor._memory = None
+    monitor._mark_observation_persistence_degraded("market_observation", "tick failed")
+    monitor._mark_observation_persistence_degraded("depth_observation", "depth failed")
+    monitor._sessions = _healthy_sessions
+    migration = type("Migration", (), {"mint": "mint-a"})()
+
+    await monitor._record_market_snapshot(migration, _market_tick_snap())
+
+    assert monitor.observation_persistence_degraded == {
+        "depth_observation": "depth failed"
+    }
