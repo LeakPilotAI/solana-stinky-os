@@ -12,6 +12,7 @@ from stinky_core.fees import (
     RESOLVER_VERSION,
     FeeResolver,
     FeeStatus,
+    PROTOCOL_FEE_RECIPIENTS,
     cache_clear,
     coerce_fees_verified,
     extract_explicit_api_fees,
@@ -25,6 +26,84 @@ from stinky_core.fees import (
 
 MINT = "AbCdEf1234567890AbCdEf1234567890pump"
 FIXTURE = Path(__file__).parent / "fixtures" / "pump_amm_fee_tx.json"
+
+
+def _resolve_trade_signatures(signatures, *, max_txs=80, threshold=1.0):
+    recipient = sorted(PROTOCOL_FEE_RECIPIENTS)[0]
+    tx = {
+        "transaction": {"message": {"accountKeys": [recipient]}},
+        "meta": {"err": None, "preBalances": [0], "postBalances": [600_000_000]},
+    }
+    calls = []
+
+    def get(url):
+        if "frontend-api" in url:
+            return {"mint": MINT}
+        return {"trades": [{"tx": signature, "amountSol": 5} for signature in signatures],
+                "pagination": {"hasMore": False}}
+
+    def rpc(method, params):
+        calls.append(params[0])
+        return tx
+
+    obs = FeeResolver(http_get=get, rpc_call=rpc, max_txs=max_txs,
+                      pass_threshold_sol=threshold).resolve(MINT, protocol="pumpswap", use_cache=False)
+    return obs, calls
+
+
+def test_duplicate_transaction_cannot_inflate_verified_fee_lower_bound():
+    obs, calls = _resolve_trade_signatures(["same", "same"])
+    assert calls == ["same"]
+    assert obs.fees_status == FeeStatus.UNKNOWN
+    assert obs.global_fees_sol is None
+    assert obs.raw_reference["observed_protocol_fees_sol"] == 0.6
+    assert obs.raw_reference["tx_refs"] == ["same"]
+    assert obs.txs_parsed == 1
+    assert obs.lower_bound is True
+
+
+def test_duplicates_do_not_consume_distinct_transaction_scan_budget():
+    obs, calls = _resolve_trade_signatures(["first", "first", "second"], max_txs=2)
+    assert calls == ["first", "second"]
+    assert obs.fees_status == FeeStatus.VERIFIED
+    assert obs.global_fees_sol == 1.2
+    assert obs.raw_reference["tx_refs"] == ["first", "second"]
+    assert obs.lower_bound is True
+    assert obs.scan_complete is False
+
+
+def test_complete_unique_scan_below_threshold_preserves_unknown():
+    obs, calls = _resolve_trade_signatures(["first", "first", "second"], threshold=10)
+    assert calls == ["first", "second"]
+    assert obs.fees_status == FeeStatus.UNKNOWN
+    assert obs.scan_complete is True
+    assert obs.raw_reference["observed_protocol_fees_sol"] == 1.2
+
+
+def test_overlapping_pages_and_signature_alias_count_transaction_once():
+    recipient = sorted(PROTOCOL_FEE_RECIPIENTS)[0]
+    tx = {"transaction": {"message": {"accountKeys": [recipient]}},
+          "meta": {"err": None, "preBalances": [0], "postBalances": [600_000_000]}}
+    calls = []
+
+    def get(url):
+        if "frontend-api" in url:
+            return {"mint": MINT}
+        if "cursor=next" in url:
+            return {"trades": [{"signature": "same", "amountSol": 5}],
+                    "pagination": {"hasMore": False}}
+        return {"trades": [{"tx": "same", "amountSol": 5}],
+                "pagination": {"hasMore": True, "nextCursor": "next"}}
+
+    def rpc(method, params):
+        calls.append(params[0])
+        return tx
+
+    obs = FeeResolver(http_get=get, rpc_call=rpc).resolve(MINT, protocol="pumpswap", use_cache=False)
+    assert calls == ["same"]
+    assert obs.fees_status == FeeStatus.UNKNOWN
+    assert obs.raw_reference["observed_protocol_fees_sol"] == 0.6
+    assert obs.txs_parsed == 1
 
 
 def _base_market(**kw):

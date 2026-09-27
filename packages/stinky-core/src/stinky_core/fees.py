@@ -661,6 +661,19 @@ class FeeResolver:
             key=lambda r: float(r.get("amountSol") or 0) if _is_num(r.get("amountSol")) else 0.0,
             reverse=True,
         )
+        # Trade pages may overlap or contain multiple rows for one transaction.
+        # Recipient deltas are transaction-wide and must be counted only once.
+        distinct_trades: list[dict[str, Any]] = []
+        seen_signatures: set[str] = set()
+        for row in trades:
+            signature = row.get("tx") or row.get("signature")
+            if signature:
+                key = str(signature)
+                if key in seen_signatures:
+                    continue
+                seen_signatures.add(key)
+            distinct_trades.append(row)
+        trades = distinct_trades
         total = 0.0
         parsed = 0
         refs: list[str] = []
