@@ -64,3 +64,19 @@ async def test_completed_background_task_removes_itself_from_registry():
     assert await task == 1
     await asyncio.sleep(0)
     assert task not in monitor._background_tasks
+
+
+def test_unexpected_watch_failure_persists_failed_runtime_state():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).parents[1] / "src" / "sentinel" / "volume.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("async def _run_watch")
+    end = source.index("async def _persist_inspection", start)
+    block = source[start:end]
+    failure = block[block.index('logger.error("volume.watch_failed"'):]
+
+    assert "await self._upsert_watch(" in failure
+    assert 'status="FAILED"' in failure
+    assert 'stop_reason=f"RUNTIME_ERROR:{type(exc).__name__}"' in failure
