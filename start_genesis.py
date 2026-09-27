@@ -1169,7 +1169,13 @@ def main() -> int:
             ok("SENTINEL process running (WS reachability is verified from the desk, not invented here)")
         else:
             HEALTH["SENTINEL"] = "DOWN"
-            warn("SENTINEL process not running - see logs\\sentinel.log")
+            fail(
+                "SENTINEL",
+                "DOWN",
+                "sentinel process did not remain running after startup",
+                str(LOG_DIR / "sentinel.log"),
+                "See logs\\sentinel.log and logs\\startup.log before retrying.",
+            )
 
         op = get_json("http://127.0.0.1:8010/v1/operator") if api_ok else None
         fill_operator(op)
