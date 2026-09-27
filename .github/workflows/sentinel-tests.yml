@@ -41,6 +41,7 @@ jobs:
       - name: Run maintained Genesis runtime and launcher contracts
         run: |
           python -m pytest -q \
+            packages/stinky-core/tests/test_fee_resolver.py \
             tests/test_genesis_runtime.py \
             tests/test_launcher_contract.py \
             tests/test_runtime_watchdog_safe_stop.py \
