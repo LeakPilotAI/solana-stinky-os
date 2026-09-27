@@ -1151,11 +1151,17 @@ class VolumeMonitor:
             amount = max(1, int(getattr(settings, "depth_observation_input_lamports", 10_000_000) or 10_000_000))
         except (TypeError, ValueError):
             interval, amount = 60.0, 10_000_000
-        previous = self._last_depth_sample_monotonic.get(mint)
+        samples = getattr(self, "_last_depth_sample_monotonic", None)
+        if samples is None:
+            # Some recovery/test construction paths intentionally bypass __init__.
+            # Lazily create observation-only sampler state rather than failing the watch.
+            samples = {}
+            self._last_depth_sample_monotonic = samples
+        previous = samples.get(mint)
         if previous is not None and now_mono - previous < interval:
             return
         # Reserve before I/O to prevent overlapping request bursts.
-        self._last_depth_sample_monotonic[mint] = now_mono
+        samples[mint] = now_mono
         try:
             from stinky_core.depth import JupiterDepthClient
             client = JupiterDepthClient()
