@@ -7,6 +7,7 @@ import logging
 import sys
 
 import structlog
+from stinky_core.evm_consensus import provider_fingerprint
 
 from sentinel.config import settings
 from sentinel.history import WalletHistory
@@ -53,9 +54,9 @@ async def _run() -> None:
     log.info(
         "sentinel.starting",
         service=settings.service_name,
-        rpc=settings.solana_rpc_url.split("?")[0],
-        redis=settings.redis_url,
-        event_log=settings.event_log_url,
+        rpc=provider_fingerprint(settings.solana_rpc_url),
+        redis=provider_fingerprint(settings.redis_url),
+        event_log=provider_fingerprint(settings.event_log_url),
         modes=sorted(modes),
         volume_threshold_usd=settings.volume_threshold_usd,
         rate_limit_cooldown_sec=settings.rate_limit_cooldown_sec,

@@ -16,6 +16,7 @@ import logging
 import sys
 
 import structlog
+from stinky_core.evm_consensus import provider_fingerprint
 
 from post_migration.config import settings
 from post_migration.service import CollectorService
@@ -127,7 +128,7 @@ def main() -> None:
         "collector.booting",
         cmd=cmd,
         max_early_buyers=settings.max_early_buyers,
-        redis=settings.redis_url,
+        redis=provider_fingerprint(settings.redis_url),
         enable_helius=bool(getattr(settings, "enable_helius", False)),
         trade_source="pump.v2",
         service=settings.service_name if hasattr(settings, "service_name") else "post-migration-collector",
