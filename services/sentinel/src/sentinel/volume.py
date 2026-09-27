@@ -1377,8 +1377,10 @@ class VolumeMonitor:
                     },
                 )
                 await session.commit()
+            self._clear_observation_persistence_degraded("market_observation")
         except Exception as exc:
-            logger.debug("observation.tick_persist_failed", mint=mint, error=str(exc)[:200])
+            self._mark_observation_persistence_degraded("market_observation", exc)
+            logger.warning("observation.tick_persist_failed", mint=mint, error=str(exc)[:200])
 
     async def _persist_quality_state(self, row: dict[str, Any]) -> None:
         if not self._sessions:
