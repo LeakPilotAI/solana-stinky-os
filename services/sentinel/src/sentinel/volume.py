@@ -450,6 +450,7 @@ class VolumeMonitor:
                     await session.execute(text(idx))
                 await session.execute(text(FEE_OBSERVATIONS_INSERT), obs.persist_params())
                 await session.commit()
+            self._clear_observation_persistence_degraded("fee_observation")
         except Exception as exc:
             self._mark_observation_persistence_degraded("fee_observation", exc)
             logger.warning(
@@ -493,6 +494,7 @@ class VolumeMonitor:
                     },
                 )
                 await session.commit()
+            self._clear_observation_persistence_degraded("market_snapshot")
         except Exception as exc:
             self._mark_observation_persistence_degraded("market_snapshot", exc)
             logger.warning("volume.snapshot_persist_failed", mint=mint, error=str(exc)[:200])
@@ -545,6 +547,11 @@ class VolumeMonitor:
             degraded = {}
             self._observation_persistence_degraded = degraded
         degraded[stream] = str(exc)[:200]
+
+    def _clear_observation_persistence_degraded(self, stream: str) -> None:
+        degraded = getattr(self, "_observation_persistence_degraded", None)
+        if degraded is not None:
+            degraded.pop(stream, None)
 
     @property
     def observation_persistence_degraded(self) -> dict[str, str]:
@@ -1177,6 +1184,7 @@ class VolumeMonitor:
                     await session.execute(text(idx))
                 await session.execute(text(DEPTH_OBSERVATIONS_INSERT), depth_persist_params(obs))
                 await session.commit()
+            self._clear_observation_persistence_degraded("depth_observation")
         except Exception as exc:
             self._mark_observation_persistence_degraded("depth_observation", exc)
             logger.warning("depth_observation.persist_failed", mint=getattr(obs, "mint", None), error=str(exc)[:200])
