@@ -71,15 +71,16 @@ async def test_client_only_gets_quote_and_http_failure_is_unknown():
 async def test_client_timestamps_verified_quote_after_provider_response(monkeypatch):
     before = datetime(2026, 9, 27, 13, 0, 0, tzinfo=timezone.utc)
     after = datetime(2026, 9, 27, 13, 0, 9, tzinfo=timezone.utc)
-    ticks = iter([before, after])
+    state = {"responded": False}
 
     class Clock:
         @classmethod
         def now(cls, tz=None):
-            value = next(ticks)
+            value = after if state["responded"] else before
             return value if tz is not None else value.replace(tzinfo=None)
 
     def handler(_request: httpx.Request):
+        state["responded"] = True
         return httpx.Response(200, json=_payload())
 
     import stinky_core.depth as depth_module
