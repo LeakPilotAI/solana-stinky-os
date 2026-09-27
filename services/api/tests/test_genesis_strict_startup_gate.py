@@ -61,3 +61,13 @@ def test_current_observation_persistence_tables_are_mandatory():
         "depth_quote_observations",
     }
     assert set(gate.REQUIRED_OBSERVATION_TABLES).issubset(set(gate.REQUIRED_TABLES))
+
+
+def test_launcher_fails_readiness_when_sentinel_does_not_stay_running():
+    text = (ROOT / "start_genesis.py").read_text(encoding="utf-8")
+    sentinel_health = text.index('HEALTH["SENTINEL"] = "DOWN"')
+    operator_fetch = text.index('op = get_json("http://127.0.0.1:8010/v1/operator")')
+    block = text[sentinel_health:operator_fetch]
+    assert 'fail(' in block
+    assert '"SENTINEL"' in block
+    assert "sentinel process did not remain running after startup" in block
