@@ -20,7 +20,8 @@ def test_runtime_depth_contract_cannot_drift_from_migration_columns():
     for column in (
         "mint", "observed_at", "input_lamports", "out_amount_atomic",
         "price_impact_pct", "route_found", "status", "source", "error",
-        "quote_context_slot", "quote_time_taken_sec",
+        "quote_context_slot", "quote_time_taken_sec", "expected_pair_address",
+        "expected_dex_id", "route_amm_keys",
     ):
         assert column in sql
         assert column in DEPTH_OBSERVATIONS_DDL
