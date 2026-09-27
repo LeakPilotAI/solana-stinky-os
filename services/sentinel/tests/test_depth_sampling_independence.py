@@ -42,11 +42,13 @@ async def test_followup_tick_does_not_wait_for_depth_provider(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_background_depth_failure_is_consumed(caplog):
+async def test_background_depth_failure_is_consumed(capsys):
     async def fail():
         raise RuntimeError("provider down")
 
     task = asyncio.create_task(fail())
     await asyncio.sleep(0)
     VolumeMonitor._depth_sample_done(task)
-    assert "depth_observation.background_failed" in caplog.text
+    captured = capsys.readouterr()
+    assert "depth_observation.background_failed" in captured.out
+    assert "provider down" in captured.out
