@@ -16,7 +16,7 @@ async def test_market_snapshot_is_recorded_before_fee_provider_io(monkeypatch):
     order = []
     depth_release = asyncio.Event()
 
-    async def depth(_mint):
+    async def depth(_mint, **_kwargs):
         await depth_release.wait()
 
     async def record_market(_migration, _snap):
@@ -55,7 +55,7 @@ async def test_slow_fee_provider_cannot_delay_market_snapshot(monkeypatch):
     fee_release = asyncio.Event()
     depth_release = asyncio.Event()
 
-    async def depth(_mint):
+    async def depth(_mint, **_kwargs):
         await depth_release.wait()
 
     async def record_market(_migration, _snap):
