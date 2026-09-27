@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     # Early migration observation threshold (not Gate 1)
     volume_threshold_usd: float = 25_000.0
     volume_poll_interval_sec: float = 20.0
+    # Fresh prospective global-fee evidence cadence. Research only; not admission.
+    fee_observation_interval_sec: float = 60.0
     volume_max_watch_sec: float = 1800.0
 
     allowed_dex_ids: str = "pumpswap,pumpfun,pump"
