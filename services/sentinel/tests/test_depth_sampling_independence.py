@@ -16,7 +16,7 @@ async def test_followup_tick_does_not_wait_for_depth_provider(monkeypatch):
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def slow_depth(mint):
+    async def slow_depth(mint, **_kwargs):
         started.set()
         await release.wait()
 
