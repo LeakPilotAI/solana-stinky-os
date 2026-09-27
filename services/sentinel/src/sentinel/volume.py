@@ -250,9 +250,15 @@ class DexScreenerClient:
             return None
 
         # Pump-only: never use Meteora/Raydium/etc as the volume pair
-        sol_pairs = [p for p in pairs if p.get("chainId") == "solana"]
-        if not sol_pairs:
-            sol_pairs = pairs
+        sol_pairs = [
+            p for p in pairs
+            if isinstance(p, dict)
+            and p.get("chainId") == "solana"
+            and isinstance(p.get("baseToken"), dict)
+            and p["baseToken"].get("address") == mint
+            and isinstance(p.get("pairAddress"), str)
+            and p["pairAddress"].strip()
+        ]
 
         pump_pairs = [p for p in sol_pairs if _dex_allowed(p.get("dexId"))]
         if not pump_pairs:
@@ -1750,6 +1756,5 @@ class VolumeMonitor:
             producer="sentinel-volume",
         )
         await self._publisher.publish_raw_event(alert_event, kind="alert")
-
 
 
