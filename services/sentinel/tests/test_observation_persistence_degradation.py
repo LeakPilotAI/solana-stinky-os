@@ -64,3 +64,64 @@ def test_persistence_degradation_property_returns_copy():
     snapshot["depth_observation"] = "mutated"
 
     assert monitor.observation_persistence_degraded["depth_observation"] == "failed"
+
+
+class _HealthySession:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return False
+
+    async def execute(self, *_args, **_kwargs):
+        return None
+
+    async def commit(self):
+        return None
+
+
+def _healthy_sessions():
+    return _HealthySession()
+
+
+@pytest.mark.asyncio
+async def test_successful_depth_write_clears_current_degradation():
+    monitor = _monitor()
+    monitor._mark_observation_persistence_degraded("depth_observation", "database unavailable")
+    monitor._sessions = _healthy_sessions
+    obs = type(
+        "Obs",
+        (),
+        {
+            "mint": "mint-a",
+            "observed_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+            "input_lamports": 10_000_000,
+            "out_amount_atomic": None,
+            "price_impact_pct": None,
+            "route_found": False,
+            "status": "UNKNOWN",
+            "source": "test",
+            "error": "HTTP_429",
+            "quote_context_slot": None,
+            "quote_time_taken_sec": None,
+            "expected_pair_address": "pair-a",
+            "expected_dex_id": "pumpswap",
+            "route_amm_keys": (),
+        },
+    )()
+
+    await monitor._persist_depth_observation(obs)
+
+    assert "depth_observation" not in monitor.observation_persistence_degraded
+
+
+def test_recovery_of_one_stream_does_not_clear_other_failures():
+    monitor = _monitor()
+    monitor._mark_observation_persistence_degraded("depth_observation", "depth failed")
+    monitor._mark_observation_persistence_degraded("market_snapshot", "market failed")
+
+    monitor._clear_observation_persistence_degraded("depth_observation")
+
+    assert monitor.observation_persistence_degraded == {
+        "market_snapshot": "market failed"
+    }
