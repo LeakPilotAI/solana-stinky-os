@@ -126,6 +126,8 @@ CREATE TABLE IF NOT EXISTS market_observations (
     volume_m5_usd DOUBLE PRECISION,
     price_usd DOUBLE PRECISION,
     liquidity_usd DOUBLE PRECISION,
+    pair_address TEXT,
+    dex_id TEXT,
     source TEXT NOT NULL DEFAULT 'observed'
 );
 CREATE INDEX IF NOT EXISTS idx_mkt_obs_mint_time ON market_observations (mint, observed_at);
@@ -210,6 +212,8 @@ MEMORY_ALTERS = (
     "ALTER TABLE wallet_observations ADD COLUMN IF NOT EXISTS exit_size DOUBLE PRECISION",
     "ALTER TABLE wallet_observations ADD COLUMN IF NOT EXISTS exit_price DOUBLE PRECISION",
     "ALTER TABLE wallet_observations ADD COLUMN IF NOT EXISTS ret_pct DOUBLE PRECISION",
+    "ALTER TABLE market_observations ADD COLUMN IF NOT EXISTS pair_address TEXT",
+    "ALTER TABLE market_observations ADD COLUMN IF NOT EXISTS dex_id TEXT",
     "ALTER TABLE market_observations ADD COLUMN IF NOT EXISTS market_cap_usd DOUBLE PRECISION",
     "ALTER TABLE market_observations ADD COLUMN IF NOT EXISTS buys INTEGER",
     "ALTER TABLE market_observations ADD COLUMN IF NOT EXISTS sells INTEGER",
@@ -296,16 +300,16 @@ FROM intelligence_decisions
 """
 MEMORY_INSERT_MARKET_OBS = """
 INSERT INTO market_observations (
-    mint, observed_at, volume_m5_usd, price_usd, liquidity_usd, source,
+    mint, observed_at, volume_m5_usd, price_usd, liquidity_usd, pair_address, dex_id, source,
     market_cap_usd, buys, sells, txns, unique_buyers, unique_sellers, volume_since_gate
 )
 VALUES (
-    :mint, :observed_at, :volume_m5_usd, :price_usd, :liquidity_usd, :source,
+    :mint, :observed_at, :volume_m5_usd, :price_usd, :liquidity_usd, :pair_address, :dex_id, :source,
     :market_cap_usd, :buys, :sells, :txns, :unique_buyers, :unique_sellers, :volume_since_gate
 )
 """
 MEMORY_SELECT_MARKET_OBS = """
-SELECT mint, observed_at, volume_m5_usd, price_usd, liquidity_usd, source,
+SELECT mint, observed_at, volume_m5_usd, price_usd, liquidity_usd, pair_address, dex_id, source,
        market_cap_usd, buys, sells, txns, unique_buyers, unique_sellers, volume_since_gate
 FROM market_observations
 """
@@ -1280,7 +1284,8 @@ class IntelligenceMemory:
         market_ticks = [
             {"mint": t.mint, "observed_at": _iso(t.observed_at),
              "volume_m5_usd": t.volume_m5_usd, "price_usd": t.price_usd,
-             "liquidity_usd": t.liquidity_usd, "source": t.source,
+             "liquidity_usd": t.liquidity_usd, "pair_address": t.pair_address,
+             "dex_id": t.dex_id, "source": t.source,
              "market_cap_usd": t.market_cap_usd, "buys": t.buys, "sells": t.sells,
              "txns": t.txns, "unique_buyers": t.unique_buyers, "unique_sellers": t.unique_sellers,
              "volume_since_gate": t.volume_since_gate, "buy_sell_ratio": t.buy_sell_ratio}
@@ -1428,6 +1433,8 @@ class IntelligenceMemory:
                 volume_m5_usd=_maybe_float(d.get("volume_m5_usd")),
                 price_usd=_maybe_float(d.get("price_usd")),
                 liquidity_usd=_maybe_float(d.get("liquidity_usd")),
+                pair_address=str(d.get("pair_address") or "").strip() or None,
+                dex_id=str(d.get("dex_id") or "").strip() or None,
                 source=str(d.get("source") or "observed"),
                 market_cap_usd=_maybe_float(d.get("market_cap_usd")),
                 buys=_maybe_int(d.get("buys")),
