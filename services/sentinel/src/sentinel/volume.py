@@ -79,6 +79,10 @@ from stinky_core.observation import watch_should_resume, watch_tick_decision
 
 logger = structlog.get_logger(__name__)
 
+# Narrow clock seam for deterministic sampling tests; avoids patching the
+# process-wide monotonic clock used internally by asyncio.
+_prospective_fee_clock = time.monotonic
+
 def _allowed_dexes() -> set[str]:
     raw = getattr(settings, "allowed_dex_ids", "pumpswap,pumpfun,pump") or ""
     return {x.strip().lower() for x in raw.split(",") if x.strip()}
@@ -1117,7 +1121,7 @@ class VolumeMonitor:
         mint = migration.mint
         # Persist fresh prospective fee evidence independently of admission.
         # UNKNOWN and lower-bound observations are retained for research too.
-        now_mono = time.monotonic()
+        now_mono = _prospective_fee_clock()
         try:
             interval = max(15.0, float(getattr(settings, "fee_observation_interval_sec", 60.0) or 60.0))
         except (TypeError, ValueError):
