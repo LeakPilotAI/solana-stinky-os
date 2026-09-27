@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     volume_poll_interval_sec: float = 20.0
     # Fresh prospective global-fee evidence cadence. Research only; not admission.
     fee_observation_interval_sec: float = 60.0
+    # Prospective read-only depth evidence. Research only; not admission/trading.
+    depth_observation_interval_sec: float = 60.0
+    # Fixed research probe size (0.01 SOL). Not a trading recommendation/threshold.
+    depth_observation_input_lamports: int = 10_000_000
     volume_max_watch_sec: float = 1800.0
 
     allowed_dex_ids: str = "pumpswap,pumpfun,pump"

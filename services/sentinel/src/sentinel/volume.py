@@ -82,6 +82,7 @@ logger = structlog.get_logger(__name__)
 # Narrow clock seam for deterministic sampling tests; avoids patching the
 # process-wide monotonic clock used internally by asyncio.
 _prospective_fee_clock = time.monotonic
+_prospective_depth_clock = time.monotonic
 
 def _allowed_dexes() -> set[str]:
     raw = getattr(settings, "allowed_dex_ids", "pumpswap,pumpfun,pump") or ""
@@ -529,6 +530,8 @@ class VolumeMonitor:
         self._memory_hydrated = False
         # Rate-limit fresh public fee samples; persisted rows remain truth.
         self._last_fee_sample_monotonic: dict[str, float] = {}
+        self._last_depth_sample_monotonic: dict[str, float] = {}
+        self._last_depth_sample_monotonic: dict[str, float] = {}
 
     async def start(self) -> None:
         """Hydrate memory and resume open T+1800 watches. Fail-soft."""
@@ -1120,9 +1123,61 @@ class VolumeMonitor:
         except Exception as exc:
             logger.warning("memory.persist_failed", mint=mint, error=str(exc)[:200])
 
+    async def _persist_depth_observation(self, obs: Any) -> None:
+        """Append-only prospective quote evidence. UNKNOWN is retained."""
+        if not self._sessions:
+            return
+        try:
+            from stinky_core.depth import (
+                DEPTH_OBSERVATIONS_DDL,
+                DEPTH_OBSERVATIONS_INDEXES,
+                DEPTH_OBSERVATIONS_INSERT,
+                depth_persist_params,
+            )
+            async with self._sessions() as session:
+                await session.execute(text(DEPTH_OBSERVATIONS_DDL))
+                for idx in DEPTH_OBSERVATIONS_INDEXES:
+                    await session.execute(text(idx))
+                await session.execute(text(DEPTH_OBSERVATIONS_INSERT), depth_persist_params(obs))
+                await session.commit()
+        except Exception as exc:
+            logger.warning("depth_observation.persist_failed", mint=getattr(obs, "mint", None), error=str(exc)[:200])
+
+    async def _sample_depth_observation(self, mint: str) -> None:
+        """Rate-limited read-only quote sampling; never affects admission."""
+        now_mono = _prospective_depth_clock()
+        try:
+            interval = max(15.0, float(getattr(settings, "depth_observation_interval_sec", 60.0) or 60.0))
+            amount = max(1, int(getattr(settings, "depth_observation_input_lamports", 10_000_000) or 10_000_000))
+        except (TypeError, ValueError):
+            interval, amount = 60.0, 10_000_000
+        samples = getattr(self, "_last_depth_sample_monotonic", None)
+        if samples is None:
+            # Some recovery/test construction paths intentionally bypass __init__.
+            # Lazily create observation-only sampler state rather than failing the watch.
+            samples = {}
+            self._last_depth_sample_monotonic = samples
+        previous = samples.get(mint)
+        if previous is not None and now_mono - previous < interval:
+            return
+        # Reserve before I/O to prevent overlapping request bursts.
+        samples[mint] = now_mono
+        try:
+            from stinky_core.depth import JupiterDepthClient
+            client = JupiterDepthClient()
+            try:
+                obs = await client.quote_buy(mint, amount)
+            finally:
+                await client.close()
+            await self._persist_depth_observation(obs)
+        except Exception as exc:
+            logger.warning("depth_observation.followup_failed", mint=mint, error=f"{type(exc).__name__}: {exc}"[:200])
+
     async def _record_followup_tick(self, migration: DetectedMigration, snap: VolumeSnapshot) -> None:
         """Post-Gate-1 market tick. Missing fields stay None. Never interpolates."""
         mint = migration.mint
+        # Read-only executable-depth evidence is research-only and independent of admission.
+        await self._sample_depth_observation(mint)
         # Persist fresh prospective fee evidence independently of admission.
         # UNKNOWN and lower-bound observations are retained for research too.
         now_mono = _prospective_fee_clock()
