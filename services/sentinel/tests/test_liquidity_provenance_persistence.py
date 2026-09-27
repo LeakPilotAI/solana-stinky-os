@@ -38,3 +38,20 @@ def test_market_tick_snapshot_and_hydration_round_trip_pair_identity():
     assert tick.pair_address == "pair-a"
     assert tick.dex_id == "pumpswap"
     assert tick.liquidity_usd == 12345.0
+
+
+def test_resume_watch_prefers_persisted_market_identity_contract():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).parents[1] / "src" / "sentinel" / "volume.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("async def _resume_open_watches")
+    end = source.index("def _track_background_task", start)
+    block = source[start:end]
+
+    assert 'getattr(mem, "market_ticks", [])' in block
+    assert 'getattr(latest_tick, "pair_address", None)' in block
+    assert 'getattr(latest_tick, "dex_id", None)' in block
+    assert "persisted_pair" in block
+    assert "persisted_dex" in block
