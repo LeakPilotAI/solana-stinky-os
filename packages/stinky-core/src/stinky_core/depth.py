@@ -16,6 +16,9 @@ import httpx
 WSOL_MINT = "So11111111111111111111111111111111111111112"
 JUPITER_QUOTE_URL = "https://lite-api.jup.ag/swap/v1/quote"
 SOURCE = "jupiter-swap-v1-keyless"
+# Observation-quality bound only. This is not a trading threshold.
+MAX_DEPTH_AGE_SEC = 120.0
+
 
 
 @dataclass(frozen=True)
@@ -41,6 +44,43 @@ class DepthQuoteObservation:
             and self.out_amount_atomic > 0
             and self.price_impact_pct is not None
         )
+
+
+def depth_observation_is_fresh(
+    obs: DepthQuoteObservation,
+    *,
+    as_of: datetime,
+    max_age_sec: float = MAX_DEPTH_AGE_SEC,
+) -> bool:
+    """True only for VERIFIED evidence whose local receipt time is recent.
+
+    Restart/hydration never refreshes observed_at. Future-dated, naive, invalid,
+    UNKNOWN, or over-age evidence fails closed.
+    """
+    if not isinstance(obs, DepthQuoteObservation) or not obs.usable:
+        return False
+    if obs.observed_at.tzinfo is None or as_of.tzinfo is None:
+        return False
+    try:
+        age = (as_of.astimezone(timezone.utc) - obs.observed_at.astimezone(timezone.utc)).total_seconds()
+        bound = float(max_age_sec)
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return False
+    return math.isfinite(age) and math.isfinite(bound) and bound >= 0 and 0 <= age <= bound
+
+
+def depth_observation_matches_order(
+    obs: DepthQuoteObservation, *, mint: str, input_lamports: int
+) -> bool:
+    """Prevent a quote for one mint/order size from satisfying another."""
+    return (
+        isinstance(obs, DepthQuoteObservation)
+        and obs.usable
+        and bool(mint)
+        and obs.mint == mint
+        and input_lamports > 0
+        and obs.input_lamports == input_lamports
+    )
 
 
 def parse_quote(mint: str, input_lamports: int, payload: Any, *, observed_at: datetime | None = None) -> DepthQuoteObservation:
