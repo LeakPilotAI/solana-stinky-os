@@ -108,6 +108,15 @@ class MigrationWatcher:
         if not self._remember(mig):
             return
 
+        try:
+            await self._publisher.publish_migration(mig)
+        except BaseException:
+            # Failed/cancelled persistence must remain eligible for source replay.
+            self._seen_mints.discard(mig.mint)
+            if mig.signature:
+                self._seen_sigs.discard(mig.signature)
+            raise
+
         self._cnt_published += 1
         logger.info(
             "migration.detected",
@@ -120,8 +129,6 @@ class MigrationWatcher:
             source=mig.source,
             published=self._cnt_published,
         )
-        await self._publisher.publish_migration(mig)
-
         if self._volume is not None:
             self._volume.watch(mig)
 

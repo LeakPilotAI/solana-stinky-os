@@ -86,11 +86,11 @@ class LaunchPublisher:
         except Exception as exc:
             logger.error(
                 f"{kind}.durable_failed",
-                error=str(exc),
+                error=type(exc).__name__,
                 mint=mint,
                 event_id=str(event.event_id),
             )
-            appended = True  # still try live paths
+            raise RuntimeError("durable event persistence failed") from None
 
         if appended is False:
             return True  # duplicate signature — treat as success
