@@ -12,12 +12,18 @@ CREATE TABLE IF NOT EXISTS depth_quote_observations (
     source TEXT NOT NULL,
     error TEXT,
     quote_context_slot BIGINT,
-    quote_time_taken_sec DOUBLE PRECISION
+    quote_time_taken_sec DOUBLE PRECISION,
+    expected_pair_address TEXT,
+    expected_dex_id TEXT,
+    route_amm_keys TEXT
 );
 
 -- Converge databases created while the depth schema was still runtime-created.
 ALTER TABLE depth_quote_observations ADD COLUMN IF NOT EXISTS quote_context_slot BIGINT;
 ALTER TABLE depth_quote_observations ADD COLUMN IF NOT EXISTS quote_time_taken_sec DOUBLE PRECISION;
+ALTER TABLE depth_quote_observations ADD COLUMN IF NOT EXISTS expected_pair_address TEXT;
+ALTER TABLE depth_quote_observations ADD COLUMN IF NOT EXISTS expected_dex_id TEXT;
+ALTER TABLE depth_quote_observations ADD COLUMN IF NOT EXISTS route_amm_keys TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_depth_quote_mint_time
     ON depth_quote_observations (mint, observed_at DESC);
