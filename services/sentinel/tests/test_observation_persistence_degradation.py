@@ -309,3 +309,56 @@ async def test_investigation_memory_persists_canonical_market_identity():
     )
     assert market_params["pair_address"] == "pair-canonical"
     assert market_params["dex_id"] == "pumpswap"
+
+
+@pytest.mark.asyncio
+async def test_failed_memory_hydration_stays_retryable_and_degraded():
+    from stinky_core.memory import IntelligenceMemory
+
+    monitor = _monitor()
+    monitor._memory = IntelligenceMemory()
+    monitor._memory_hydrated = False
+
+    await monitor._hydrate_memory()
+
+    assert monitor._memory_hydrated is False
+    assert "memory_hydration" in monitor.observation_persistence_degraded
+
+
+@pytest.mark.asyncio
+async def test_successful_memory_hydration_clears_only_hydration_degradation():
+    from stinky_core.memory import IntelligenceMemory
+
+    class EmptyMappings:
+        def all(self):
+            return []
+
+    class EmptyResult:
+        def mappings(self):
+            return EmptyMappings()
+
+    class HydrationSession:
+        async def execute(self, *_args, **_kwargs):
+            return EmptyResult()
+
+    def sessions():
+        class Context:
+            async def __aenter__(self):
+                return HydrationSession()
+            async def __aexit__(self, *_args):
+                return False
+        return Context()
+
+    monitor = _monitor()
+    monitor._memory = IntelligenceMemory()
+    monitor._memory_hydrated = False
+    monitor._mark_observation_persistence_degraded("memory_hydration", "read failed")
+    monitor._mark_observation_persistence_degraded("market_observation", "write failed")
+    monitor._sessions = sessions
+
+    await monitor._hydrate_memory()
+
+    assert monitor._memory_hydrated is True
+    assert monitor.observation_persistence_degraded == {
+        "market_observation": "write failed"
+    }
