@@ -99,3 +99,46 @@ class JupiterDepthClient:
                 mint, at, input_lamports, None, None, False, "UNKNOWN",
                 error=type(exc).__name__,
             )
+
+
+DEPTH_OBSERVATIONS_DDL = """
+CREATE TABLE IF NOT EXISTS depth_quote_observations (
+    id BIGSERIAL PRIMARY KEY,
+    mint TEXT NOT NULL,
+    observed_at TIMESTAMPTZ NOT NULL,
+    input_lamports BIGINT NOT NULL,
+    out_amount_atomic NUMERIC,
+    price_impact_pct DOUBLE PRECISION,
+    route_found BOOLEAN NOT NULL,
+    status TEXT NOT NULL,
+    source TEXT NOT NULL,
+    error TEXT
+);
+"""
+DEPTH_OBSERVATIONS_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_depth_quote_mint_time ON depth_quote_observations (mint, observed_at DESC)",
+)
+DEPTH_OBSERVATIONS_INSERT = """
+INSERT INTO depth_quote_observations (
+    mint, observed_at, input_lamports, out_amount_atomic, price_impact_pct,
+    route_found, status, source, error
+) VALUES (
+    :mint, :observed_at, :input_lamports, :out_amount_atomic, :price_impact_pct,
+    :route_found, :status, :source, :error
+)
+"""
+
+
+def depth_persist_params(obs: DepthQuoteObservation) -> dict[str, Any]:
+    """Append-only SQL parameters; UNKNOWN observations are evidence too."""
+    return {
+        "mint": obs.mint,
+        "observed_at": obs.observed_at,
+        "input_lamports": obs.input_lamports,
+        "out_amount_atomic": obs.out_amount_atomic,
+        "price_impact_pct": obs.price_impact_pct,
+        "route_found": obs.route_found,
+        "status": obs.status,
+        "source": obs.source,
+        "error": obs.error,
+    }
