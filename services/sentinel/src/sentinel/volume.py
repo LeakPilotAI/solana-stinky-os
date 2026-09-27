@@ -1078,10 +1078,13 @@ class VolumeMonitor:
                 "investigations": [dict(r) for r in invs],
                 "quality_states": [dict(r) for r in qstates],
             })
+            self._memory_hydrated = True
+            self._clear_observation_persistence_degraded("memory_hydration")
             logger.info("memory.hydrated", **self._memory.to_stats())
         except Exception as exc:
+            self._memory_hydrated = False
+            self._mark_observation_persistence_degraded("memory_hydration", exc)
             logger.warning("memory.hydrate_failed", error=str(exc)[:200])
-        self._memory_hydrated = True
 
     async def _persist_memory_decision(
         self,
