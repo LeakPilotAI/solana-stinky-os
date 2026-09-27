@@ -133,14 +133,21 @@ async def resolve_global_fees(
     *,
     protocol: str | None = None,
     pool: str | None = None,
+    use_cache: bool = True,
 ) -> FeeObservation:
-    """Authoritative fees only. Never fabricates. Unknown stays unknown."""
+    """Authoritative fees only. Never fabricates. Unknown stays unknown.
+
+    use_cache=False is reserved for prospective observation checkpoints so each
+    checkpoint performs a fresh measurement instead of replaying cached evidence.
+    """
     mint_s = (mint or "").strip()
     if not mint_s:
         return unknown_observation("", error="INVALID_MINT")
 
     def _sync() -> FeeObservation:
-        return _new_fee_resolver().resolve(mint_s, protocol=protocol, pool=pool)
+        return _new_fee_resolver().resolve(
+            mint_s, protocol=protocol, pool=pool, use_cache=use_cache
+        )
 
     return await asyncio.to_thread(_sync)
 
@@ -516,6 +523,8 @@ class VolumeMonitor:
         except Exception:
             self._memory = None
         self._memory_hydrated = False
+        # Rate-limit fresh public fee samples; persisted rows remain truth.
+        self._last_fee_sample_monotonic: dict[str, float] = {}
 
     async def start(self) -> None:
         """Hydrate memory and resume open T+1800 watches. Fail-soft."""
@@ -1106,6 +1115,27 @@ class VolumeMonitor:
     async def _record_followup_tick(self, migration: DetectedMigration, snap: VolumeSnapshot) -> None:
         """Post-Gate-1 market tick. Missing fields stay None. Never interpolates."""
         mint = migration.mint
+        # Persist fresh prospective fee evidence independently of admission.
+        # UNKNOWN and lower-bound observations are retained for research too.
+        now_mono = time.monotonic()
+        try:
+            interval = max(15.0, float(getattr(settings, "fee_observation_interval_sec", 60.0) or 60.0))
+        except (TypeError, ValueError):
+            interval = 60.0
+        previous_fee_sample = self._last_fee_sample_monotonic.get(mint)
+        if previous_fee_sample is None or now_mono - previous_fee_sample >= interval:
+            # Reserve before I/O so overlapping ticks cannot create a request burst.
+            self._last_fee_sample_monotonic[mint] = now_mono
+            try:
+                fee_obs = await resolve_global_fees(
+                    mint, protocol=snap.dex_id, pool=snap.pair_address, use_cache=False
+                )
+                await self._persist_fee_observation(fee_obs)
+            except Exception as exc:
+                logger.warning(
+                    "fee_observation.followup_failed", mint=mint,
+                    error=f"{type(exc).__name__}: {exc}"[:200],
+                )
         at = snap.fetched_at.isoformat() if snap.fetched_at else datetime.now(timezone.utc).isoformat()
         buys = snap.txns_m5_buys
         sells = snap.txns_m5_sells
