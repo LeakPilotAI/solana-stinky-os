@@ -434,7 +434,9 @@ class VolumeMonitor:
                     },
                 )
                 await session.commit()
+            self._clear_observation_persistence_degraded("filter_evaluation")
         except Exception as exc:
+            self._mark_observation_persistence_degraded("filter_evaluation", exc)
             logger.warning(
                 "filter_eval.persist_failed",
                 mint=mint,
