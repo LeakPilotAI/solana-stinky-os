@@ -1163,7 +1163,7 @@ class VolumeMonitor:
         except Exception as exc:
             logger.warning("depth_observation.persist_failed", mint=getattr(obs, "mint", None), error=str(exc)[:200])
 
-    async def _sample_depth_observation(self, mint: str) -> None:
+    async def _sample_depth_observation(self, mint: str, *, pair_address: str | None = None, dex_id: str | None = None) -> None:
         """Rate-limited read-only quote sampling; never affects admission."""
         now_mono = _prospective_depth_clock()
         try:
@@ -1186,7 +1186,7 @@ class VolumeMonitor:
             from stinky_core.depth import JupiterDepthClient
             client = JupiterDepthClient()
             try:
-                obs = await client.quote_buy(mint, amount)
+                obs = await client.quote_buy(mint, amount, expected_pair_address=pair_address, expected_dex_id=dex_id)
             finally:
                 await client.close()
             await self._persist_depth_observation(obs)
@@ -1212,7 +1212,7 @@ class VolumeMonitor:
         # Read-only executable-depth evidence is research-only. Do not let its
         # provider latency delay the canonical market/fee observation path.
         depth_task = self._track_background_task(
-            asyncio.create_task(self._sample_depth_observation(mint))
+            asyncio.create_task(self._sample_depth_observation(mint, pair_address=snap.pair_address, dex_id=snap.dex_id))
         )
         depth_task.add_done_callback(self._depth_sample_done)
         # Preserve the already-fetched canonical market snapshot before any
