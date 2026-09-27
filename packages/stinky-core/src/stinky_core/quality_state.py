@@ -55,6 +55,8 @@ SELL_WATCH = 0.35
 SELL_DETERIORATING = 0.20
 MIN_TXNS_PRESSURE = 10
 IMPROVE_LIFT = 0.25
+# Observation-quality freshness only; not a trading threshold.
+MAX_LIQUIDITY_AGE_SEC = 120.0
 
 
 def ui_severity(state: str) -> str | None:
@@ -136,6 +138,7 @@ def evaluate_quality_state(
         return empty
 
     latest = later[-1]
+    latest_age_sec = max(0.0, (cutoff - latest.observed_at).total_seconds())
     why: list[dict[str, Any]] = []
     unknown: list[str] = []
     known: list[str] = []
@@ -156,10 +159,18 @@ def evaluate_quality_state(
         gate_pair and latest_pair and gate_pair == latest_pair
         and gate_dex and latest_dex and gate_dex == latest_dex
     )
-    liq_drop = _drop(g_liq, l_liq) if liquidity_continuous else None
-    liq_ch = _change(g_liq, l_liq) if liquidity_continuous else None
+    liquidity_fresh = latest_age_sec <= MAX_LIQUIDITY_AGE_SEC
+    liq_comparable = liquidity_continuous and liquidity_fresh
+    liq_drop = _drop(g_liq, l_liq) if liq_comparable else None
+    liq_ch = _change(g_liq, l_liq) if liq_comparable else None
     if g_liq is None or l_liq is None:
         unknown.append("liquidity")
+    elif not liquidity_fresh:
+        unknown.append("liquidity_stale")
+        why.append(_why(
+            "liquidity_usd", g_liq, l_liq, None, latest.observed_at,
+            f"latest liquidity evidence is stale ({latest_age_sec:.1f}s > {MAX_LIQUIDITY_AGE_SEC:.0f}s); values are not compared",
+        ))
     elif not liquidity_continuous:
         unknown.append("liquidity_continuity")
         why.append(_why(
@@ -276,6 +287,8 @@ def evaluate_quality_state(
             "buy_sell_ratio": ratio,
             "observed_at": latest.observed_at.isoformat() if latest.observed_at else None,
             "source": latest.source,
+            "age_sec": round(latest_age_sec, 3),
+            "liquidity_fresh": liquidity_fresh,
         },
         "later_tick_count": len(later),
         "evidence_quality": eq,
