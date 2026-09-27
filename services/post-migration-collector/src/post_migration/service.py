@@ -224,16 +224,23 @@ class CollectorService:
             payload=payload or {},
         )
 
-        async def _run() -> None:
-            self._active_tracks.add(mint)
-            try:
-                await tracker.run()
-            finally:
-                self._active_tracks.discard(mint)
-
-        task = asyncio.create_task(_run(), name=f"track-{mint[:8]}")
+        pending = tracker.run()
+        # Reserve before yielding: a batch can enqueue many tracks in one turn.
+        self._active_tracks.add(mint)
+        try:
+            task = asyncio.create_task(pending, name=f"track-{mint[:8]}")
+        except BaseException:
+            pending.close()
+            self._active_tracks.discard(mint)
+            raise
         self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+
+        def release_slot(done: asyncio.Task[None]) -> None:
+            # A coroutine's finally block does not run if cancelled before start.
+            self._tasks.discard(done)
+            self._active_tracks.discard(mint)
+
+        task.add_done_callback(release_slot)
         logger.info("collector.track_spawned", mint=mint, pool=pool)
         return True
 
