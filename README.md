@@ -45,6 +45,10 @@ Start from VS Code without the desktop icon:
 .\.venv\Scripts\python.exe .\start_genesis.py --skip-sync
 ```
 
+The Python launcher also runs the strict schema gate after checkout and environment
+preparation. A failed migration or schema check blocks application service startup,
+including when this command is run directly instead of through the desktop shortcut.
+
 To pull **and start**:
 
 ```powershell

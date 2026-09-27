@@ -1,18 +1,69 @@
 """Launcher reliability contracts. Does not start Windows services.
 
-Gate 1 must remain $33,000 / $200,000 clamp. This file only reads source.
+Gate 1 must remain $33,000 / $200,000 clamp. Behavioral checks mock all processes.
 """
 
 from __future__ import annotations
 
 import re
+import importlib.util
+import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def read(rel: str) -> str:
     return (ROOT / rel).read_text(encoding="utf-8", errors="replace")
+
+
+@pytest.mark.parametrize("gate_result", [0, 1, 2, OSError("synthetic launch failure")])
+def test_python_startup_requires_strict_schema_success_before_services(monkeypatch, tmp_path, gate_result):
+    spec = importlib.util.spec_from_file_location("launcher_schema_test", ROOT / "start_genesis.py")
+    launcher = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(launcher)
+    calls = []
+    monkeypatch.setattr(launcher, "ROOT", tmp_path)
+    monkeypatch.setattr(launcher, "LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(sys, "argv", ["start_genesis.py", "--sync", "--skip-install"])
+    monkeypatch.setattr(launcher.os, "chdir", lambda *args: None)
+    for name in ("configure_stdio", "restore_search_path", "say", "step", "ok", "show_health"):
+        monkeypatch.setattr(launcher, name, lambda *args, **kwargs: None)
+    for name in ("find_docker", "find_npm", "which_exe"):
+        monkeypatch.setattr(launcher, name, lambda *args: None)
+    for name in ("stop_owned_instance", "sync_from_github", "ensure_dotenv", "ensure_venv", "ensure_web", "ensure_docker", "persistence_smoke"):
+        monkeypatch.setattr(launcher, name, lambda *args, _name=name, **kwargs: calls.append(_name))
+    monkeypatch.setattr(launcher, "log_line", lambda *args, **kwargs: calls.append(args))
+    monkeypatch.setattr(launcher, "fail", lambda *args, **kwargs: calls.append("startup_failed"))
+
+    def run(args, **kwargs):
+        assert args == [sys.executable, str(tmp_path / "scripts" / "strict_startup_schema_gate.py")]
+        assert kwargs["cwd"] == str(tmp_path)
+        calls.append("strict_gate")
+        if isinstance(gate_result, Exception):
+            raise gate_result
+        return subprocess.CompletedProcess(args, gate_result)
+
+    def start(*args, **kwargs):
+        calls.append("application_start")
+        raise RuntimeError("test stops before any real service starts")
+
+    monkeypatch.setattr(launcher.subprocess, "run", run)
+    monkeypatch.setattr(launcher, "start_detached", start)
+    assert launcher.main() == 1
+    assert calls.index("sync_from_github") < calls.index("strict_gate")
+    assert calls.index("ensure_docker") < calls.index("strict_gate")
+    if gate_result == 0:
+        assert calls.index("strict_gate") < calls.index("persistence_smoke") < calls.index("application_start")
+        assert ("schema", "ok") in calls
+    else:
+        assert "persistence_smoke" not in calls
+        assert "application_start" not in calls
+        assert ("schema", "ok") not in calls
+    assert "startup_failed" in calls
 
 
 def test_start_cmd_uses_script_dir_not_cd():
@@ -166,7 +217,7 @@ def test_default_start_stops_then_starts():
     assert '"stinky-"' not in t[t.find("def genesis_owned") : t.find("def kill_pid")]
     assert "8001" not in t[t.find("def stop_owned_instance") : t.find("def clean_broken_dists")]
     assert "foreach ($port in 8002, 8010, 3000, 8001)" not in t
-    assert "utf-8-sig" in t
+    assert "utf-8-sig" in read("scripts/strict_startup_schema_gate.py")
     assert "configure_stdio" in t
     assert "clean_broken_dists" in t
     assert "stop_genesis_containers" in t

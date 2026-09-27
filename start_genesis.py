@@ -838,25 +838,14 @@ def ensure_docker() -> None:
 
 
 def apply_schema() -> None:
-    step("[schema] apply SQL migrations (fail-soft)")
-    if not DOCKER:
-        return
-    files = sorted(
-        p for p in (ROOT / "services").rglob("*.sql") if "migrations" in p.parts
+    step("[schema] verify strict startup schema gate")
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "strict_startup_schema_gate.py")],
+        cwd=str(ROOT),
     )
-    for f in files:
-        say("  " + f.name)
-        try:
-            raw = f.read_text(encoding="utf-8-sig", errors="replace")
-            subprocess.run(
-                [DOCKER, "exec", "-i", "stinky-postgres", "psql", "-U", "stinky", "-d", "stinky", "-v", "ON_ERROR_STOP=0"],
-                input=raw.encode("utf-8"),
-                capture_output=True,
-                timeout=60,
-            )
-        except Exception as exc:
-            warn("%s skipped: %s" % (f.name, exc))
-    ok("schema applied")
+    if result.returncode != 0:
+        raise RuntimeError("strict startup schema gate failed; application startup blocked")
+    ok("strict schema gate passed")
     log_line("schema", "ok")
 
 
