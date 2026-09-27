@@ -965,6 +965,14 @@ class VolumeMonitor:
             await self._trace(mint=mint, kind="watch_complete", message="T+1800 window complete")
         except Exception as exc:
             logger.error("volume.watch_failed", mint=mint, error=str(exc))
+            await self._upsert_watch(
+                mint=mint,
+                started_at=started.isoformat(),
+                status="FAILED",
+                resumed=resumed,
+                stop_reason=f"RUNTIME_ERROR:{type(exc).__name__}",
+                pool=migration.pool,
+            )
             await self._trace(mint=mint, kind="watch_error", message=f"Watch failed: {str(exc)[:160]}")
         finally:
             self._active.discard(mint)
