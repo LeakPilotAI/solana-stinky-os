@@ -108,7 +108,14 @@ class PumpFunWatcher:
             explanation=result.explanation,
         )
 
-        await self._publisher.publish(launch)
+        try:
+            await self._publisher.publish(launch)
+        except BaseException:
+            # Allow source replay after failed/cancelled durable persistence.
+            self._seen_mints.discard(launch.mint)
+            if launch.signature:
+                self._seen_sigs.discard(launch.signature)
+            raise
 
     async def _process_message(self, raw: str | bytes) -> None:
         try:
