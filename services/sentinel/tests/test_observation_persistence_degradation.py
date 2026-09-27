@@ -225,3 +225,44 @@ async def test_successful_market_observation_clears_only_its_degradation():
     assert monitor.observation_persistence_degraded == {
         "depth_observation": "depth failed"
     }
+
+
+@pytest.mark.asyncio
+async def test_investigation_memory_failure_marks_observation_degraded():
+    from datetime import datetime, timezone
+    monitor = _monitor()
+
+    await monitor._persist_memory_decision(
+        mint="mint-a",
+        observed_at=datetime.now(timezone.utc),
+        buyers=[],
+        creator=None,
+        fingerprint=None,
+        investigation={"mint": "mint-a", "gate1_at": datetime.now(timezone.utc).isoformat()},
+    )
+
+    state = monitor.observation_persistence_degraded
+    assert "investigation_memory" in state
+    assert "database unavailable" in state["investigation_memory"]
+
+
+@pytest.mark.asyncio
+async def test_successful_investigation_memory_write_clears_only_its_degradation():
+    from datetime import datetime, timezone
+    monitor = _monitor()
+    monitor._mark_observation_persistence_degraded("investigation_memory", "memory failed")
+    monitor._mark_observation_persistence_degraded("market_observation", "market failed")
+    monitor._sessions = _healthy_sessions
+
+    await monitor._persist_memory_decision(
+        mint="mint-a",
+        observed_at=datetime.now(timezone.utc),
+        buyers=[],
+        creator=None,
+        fingerprint=None,
+        investigation=None,
+    )
+
+    assert monitor.observation_persistence_degraded == {
+        "market_observation": "market failed"
+    }
