@@ -132,6 +132,8 @@ def tick_dict(tick: MarketTick) -> dict[str, Any]:
         "price": tick.price_usd,
         "market_cap": getattr(tick, "market_cap_usd", None),
         "liquidity": tick.liquidity_usd,
+        "pair_address": getattr(tick, "pair_address", None),
+        "dex_id": getattr(tick, "dex_id", None),
         "volume_5m": tick.volume_m5_usd,
         "volume_since_gate": getattr(tick, "volume_since_gate", None),
         "buys": buys,
@@ -199,7 +201,7 @@ def observation_slices(
             chosen = t
         payload = tick_dict(chosen) if chosen else {
             "timestamp": None, "price": None, "market_cap": None, "liquidity": None,
-            "volume_5m": None, "volume_since_gate": None, "buys": None, "sells": None,
+            "pair_address": None, "dex_id": None, "volume_5m": None, "volume_since_gate": None, "buys": None, "sells": None,
             "transaction_count": None, "unique_buyers": None, "unique_sellers": None,
             "buy_sell_ratio": None, "source": None, "missing": ["market_tick"],
         }

@@ -491,6 +491,8 @@ class MarketTick:
     price_usd: float | None = None
     liquidity_usd: float | None = None
     source: str = "observed"
+    pair_address: str | None = None
+    dex_id: str | None = None
     market_cap_usd: float | None = None
     buys: int | None = None
     sells: int | None = None
@@ -1185,6 +1187,8 @@ class IntelligenceMemory:
         price_usd: float | None = None,
         liquidity_usd: float | None = None,
         source: str = "observed",
+        pair_address: str | None = None,
+        dex_id: str | None = None,
         market_cap_usd: float | None = None,
         buys: int | None = None,
         sells: int | None = None,
@@ -1212,6 +1216,8 @@ class IntelligenceMemory:
                 price_usd=_maybe_float(price_usd),
                 liquidity_usd=_maybe_float(liquidity_usd),
                 source=source or "observed",
+                pair_address=(str(pair_address).strip() if pair_address else None),
+                dex_id=(str(dex_id).strip() if dex_id else None),
                 market_cap_usd=_maybe_float(market_cap_usd),
                 buys=buys_i,
                 sells=sells_i,

@@ -1152,6 +1152,8 @@ class VolumeMonitor:
                 volume_m5_usd=snap.volume_m5_usd,
                 price_usd=snap.price_usd,
                 liquidity_usd=snap.liquidity_usd,
+                pair_address=snap.pair_address,
+                dex_id=snap.dex_id,
                 market_cap_usd=getattr(snap, "market_cap_usd", None),
                 buys=buys,
                 sells=sells,
