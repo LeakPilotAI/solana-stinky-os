@@ -158,19 +158,6 @@ def parse_quote(mint: str, input_lamports: int, payload: Any, *, observed_at: da
     route = payload.get("routePlan")
     if not isinstance(route, list) or not route:
         return unknown("NO_ROUTE")
-    route_amm_keys = tuple(
-        str(step.get("swapInfo", {}).get("ammKey") or "").strip()
-        for step in route if isinstance(step, dict)
-    )
-    route_amm_keys = tuple(key for key in route_amm_keys if key)
-    if not route_amm_keys:
-        return unknown("MISSING_ROUTE_PROVENANCE")
-    if expected_pair_address and expected_pair_address not in route_amm_keys:
-        return DepthQuoteObservation(
-            mint, at, input_lamports, None, None, False, "UNKNOWN",
-            error="EXPECTED_PAIR_NOT_IN_ROUTE", expected_pair_address=expected_pair_address,
-            expected_dex_id=expected_dex_id, route_amm_keys=route_amm_keys,
-        )
     try:
         context_slot = int(payload["contextSlot"])
         time_taken = float(payload["timeTaken"])
@@ -178,6 +165,27 @@ def parse_quote(mint: str, input_lamports: int, payload: Any, *, observed_at: da
         return unknown("MISSING_QUOTE_PROVENANCE")
     if context_slot <= 0 or not math.isfinite(time_taken) or time_taken < 0:
         return unknown("MALFORMED_QUOTE_PROVENANCE")
+    route_amm_keys = tuple(
+        str(step.get("swapInfo", {}).get("ammKey") or "").strip()
+        for step in route if isinstance(step, dict)
+    )
+    route_amm_keys = tuple(key for key in route_amm_keys if key)
+    # Route AMM identity is required only when binding a quote to a canonical
+    # watched market. Generic quote parsing remains backwards-compatible.
+    if expected_pair_address and not route_amm_keys:
+        return DepthQuoteObservation(
+            mint, at, input_lamports, None, None, False, "UNKNOWN",
+            error="MISSING_ROUTE_PROVENANCE", quote_context_slot=context_slot,
+            quote_time_taken_sec=time_taken, expected_pair_address=expected_pair_address,
+            expected_dex_id=expected_dex_id,
+        )
+    if expected_pair_address and expected_pair_address not in route_amm_keys:
+        return DepthQuoteObservation(
+            mint, at, input_lamports, None, None, False, "UNKNOWN",
+            error="EXPECTED_PAIR_NOT_IN_ROUTE", quote_context_slot=context_slot,
+            quote_time_taken_sec=time_taken, expected_pair_address=expected_pair_address,
+            expected_dex_id=expected_dex_id, route_amm_keys=route_amm_keys,
+        )
     return DepthQuoteObservation(
         mint, at, input_lamports, out, impact, True, "VERIFIED",
         quote_context_slot=context_slot, quote_time_taken_sec=time_taken,
