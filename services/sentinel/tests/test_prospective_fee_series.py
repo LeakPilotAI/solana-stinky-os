@@ -44,8 +44,10 @@ def test_followup_fee_sampling_is_fresh_rate_limited_and_persists_unknown(monkey
     monkeypatch.setattr(volume, "resolve_global_fees", resolve)
     monkeypatch.setattr(volume.settings, "fee_observation_interval_sec", 60.0, raising=False)
 
+    # Patch the module helper, not time.monotonic globally: asyncio itself uses
+    # the process monotonic clock during runner shutdown.
     times = iter([100.0, 120.0, 161.0])
-    monkeypatch.setattr(volume.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(volume, "_prospective_fee_clock", lambda: next(times))
 
     async def run():
         await monitor._record_followup_tick(_migration(), _snapshot())
@@ -72,7 +74,7 @@ def test_followup_fee_sampling_reserves_slot_before_lookup_failure(monkeypatch):
     monkeypatch.setattr(volume.settings, "fee_observation_interval_sec", 60.0, raising=False)
 
     times = iter([100.0, 101.0])
-    monkeypatch.setattr(volume.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(volume, "_prospective_fee_clock", lambda: next(times))
 
     async def run():
         await monitor._record_followup_tick(_migration(), _snapshot())
