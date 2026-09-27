@@ -125,3 +125,42 @@ def test_recovery_of_one_stream_does_not_clear_other_failures():
     assert monitor.observation_persistence_degraded == {
         "market_snapshot": "market failed"
     }
+
+
+@pytest.mark.asyncio
+async def test_filter_evaluation_failure_marks_observation_degraded():
+    monitor = _monitor()
+    monitor._threshold = 33_000.0
+
+    await monitor._record_filter_eval(
+        mint="mint-a",
+        accepted=False,
+        reason="LOW_VOLUME",
+        fees_sol=None,
+        fees_verified=False,
+    )
+
+    state = monitor.observation_persistence_degraded
+    assert "filter_evaluation" in state
+    assert "database unavailable" in state["filter_evaluation"]
+
+
+@pytest.mark.asyncio
+async def test_successful_filter_evaluation_clears_only_its_degradation():
+    monitor = _monitor()
+    monitor._threshold = 33_000.0
+    monitor._mark_observation_persistence_degraded("filter_evaluation", "audit failed")
+    monitor._mark_observation_persistence_degraded("depth_observation", "depth failed")
+    monitor._sessions = _healthy_sessions
+
+    await monitor._record_filter_eval(
+        mint="mint-a",
+        accepted=True,
+        reason=None,
+        fees_sol=None,
+        fees_verified=False,
+    )
+
+    assert monitor.observation_persistence_degraded == {
+        "depth_observation": "depth failed"
+    }
