@@ -1180,7 +1180,9 @@ class VolumeMonitor:
                         },
                     )
                 await session.commit()
+            self._clear_observation_persistence_degraded("investigation_memory")
         except Exception as exc:
+            self._mark_observation_persistence_degraded("investigation_memory", exc)
             logger.warning("memory.persist_failed", mint=mint, error=str(exc)[:200])
 
     async def _persist_depth_observation(self, obs: Any) -> None:
