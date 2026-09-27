@@ -266,3 +266,46 @@ async def test_successful_investigation_memory_write_clears_only_its_degradation
     assert monitor.observation_persistence_degraded == {
         "market_observation": "market failed"
     }
+
+
+@pytest.mark.asyncio
+async def test_investigation_memory_persists_canonical_market_identity():
+    from datetime import datetime, timezone
+
+    class CapturingSession(_HealthySession):
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, statement, params=None, **_kwargs):
+            self.calls.append((str(statement), params))
+            return None
+
+    session = CapturingSession()
+
+    def sessions():
+        class Context:
+            async def __aenter__(self):
+                return session
+            async def __aexit__(self, *_args):
+                return False
+        return Context()
+
+    monitor = _monitor()
+    monitor._sessions = sessions
+    await monitor._persist_memory_decision(
+        mint="mint-a",
+        observed_at=datetime.now(timezone.utc),
+        buyers=[],
+        creator=None,
+        fingerprint=None,
+        pair_address="pair-canonical",
+        dex_id="pumpswap",
+        investigation=None,
+    )
+
+    market_params = next(
+        params for sql, params in session.calls
+        if params and "pair_address" in params and "dex_id" in params
+    )
+    assert market_params["pair_address"] == "pair-canonical"
+    assert market_params["dex_id"] == "pumpswap"
