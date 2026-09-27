@@ -92,6 +92,8 @@ def latest_depth_observation(
     mint: str,
     input_lamports: int,
     as_of: datetime,
+    expected_pair_address: str | None = None,
+    expected_dex_id: str | None = None,
 ) -> DepthQuoteObservation | None:
     """Return the latest applicable evidence, including negative/UNKNOWN evidence.
 
@@ -106,6 +108,10 @@ def latest_depth_observation(
         if not isinstance(obs, DepthQuoteObservation):
             continue
         if obs.mint != mint or obs.input_lamports != input_lamports:
+            continue
+        if expected_pair_address is not None and obs.expected_pair_address != expected_pair_address:
+            continue
+        if expected_dex_id is not None and obs.expected_dex_id != expected_dex_id:
             continue
         if obs.observed_at.tzinfo is None:
             continue
@@ -126,10 +132,17 @@ def latest_usable_depth_observation(
     input_lamports: int,
     as_of: datetime,
     max_age_sec: float = MAX_DEPTH_AGE_SEC,
+    expected_pair_address: str | None = None,
+    expected_dex_id: str | None = None,
 ) -> DepthQuoteObservation | None:
-    """Usable only when the *latest* applicable evidence is itself fresh/verified."""
+    """Usable only when the latest evidence for the requested market is fresh/verified."""
     latest = latest_depth_observation(
-        observations, mint=mint, input_lamports=input_lamports, as_of=as_of
+        observations,
+        mint=mint,
+        input_lamports=input_lamports,
+        as_of=as_of,
+        expected_pair_address=expected_pair_address,
+        expected_dex_id=expected_dex_id,
     )
     if latest is None:
         return None
