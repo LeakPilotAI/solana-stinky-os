@@ -393,6 +393,8 @@ class EntityStore:
                             FROM migration_buyers a
                             JOIN migration_buyers b
                               ON a.mint = b.mint AND a.wallet < b.wallet
+                            JOIN migration_tracks mt ON mt.mint = a.mint
+                            WHERE COALESCE((mt.meta->>'buyer_capture_complete')::boolean, false)
                             GROUP BY a.wallet, b.wallet
                             HAVING COUNT(*) >= :min_overlap
                             ORDER BY shared_mints DESC
