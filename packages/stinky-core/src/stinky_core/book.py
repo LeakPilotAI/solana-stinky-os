@@ -264,15 +264,18 @@ def life_slices(
     for offset in LIFE_SLICES_SEC:
         horizon = start + timedelta(seconds=int(offset))
         chosen = None
-        for t in sorted(
-            (x for x in getattr(memory, "market_ticks", []) if x.mint == mint),
-            key=lambda x: x.observed_at,
-        ):
-            if not visible(t.observed_at):
-                continue
-            if t.observed_at > horizon:
-                continue
-            chosen = t
+        # Do not represent an unelapsed T+ horizon as observed merely by
+        # carrying an older visible tick forward into the future slice.
+        if cutoff is None or horizon <= cutoff:
+            for t in sorted(
+                (x for x in getattr(memory, "market_ticks", []) if x.mint == mint),
+                key=lambda x: x.observed_at,
+            ):
+                if not visible(t.observed_at):
+                    continue
+                if t.observed_at > horizon:
+                    continue
+                chosen = t
         vol = chosen.volume_m5_usd if chosen else None
         accel = None
         if offset and base_vol is not None and vol is not None:
