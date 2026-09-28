@@ -985,7 +985,9 @@ class VolumeMonitor:
                     await session.execute(text(idx))
                 await session.execute(text(MARKET_INSPECTIONS_INSERT), params)
                 await session.commit()
+            self._clear_observation_persistence_degraded("market_inspection")
         except Exception as exc:
+            self._mark_observation_persistence_degraded("market_inspection", exc)
             logger.warning(
                 "inspection.persist_failed",
                 mint=params.get("mint"),

@@ -498,3 +498,28 @@ async def test_successful_intelligence_decision_clears_only_its_degradation():
     assert monitor.observation_persistence_degraded == {
         "provider_probe": "probe failed"
     }
+
+
+@pytest.mark.asyncio
+async def test_market_inspection_failure_marks_observation_degraded():
+    monitor = _monitor()
+
+    await monitor._persist_inspection({"mint": "mint-a"})
+
+    state = monitor.observation_persistence_degraded
+    assert "market_inspection" in state
+    assert "database unavailable" in state["market_inspection"]
+
+
+@pytest.mark.asyncio
+async def test_successful_market_inspection_clears_only_its_degradation():
+    monitor = _monitor()
+    monitor._mark_observation_persistence_degraded("market_inspection", "inspection failed")
+    monitor._mark_observation_persistence_degraded("intelligence_decision", "decision failed")
+    monitor._sessions = _healthy_sessions
+
+    await monitor._persist_inspection({"mint": "mint-a"})
+
+    assert monitor.observation_persistence_degraded == {
+        "intelligence_decision": "decision failed"
+    }
