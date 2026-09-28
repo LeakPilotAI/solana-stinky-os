@@ -960,19 +960,24 @@ class VolumeMonitor:
                 watched_sec=round((datetime.now(timezone.utc) - started).total_seconds(), 1),
             )
             degraded = self.observation_persistence_degraded
-            if "market_observation" in degraded:
+            completion_blockers = (
+                "market_observation",
+                "investigation_memory",
+            )
+            blocker = next((name for name in completion_blockers if name in degraded), None)
+            if blocker is not None:
                 await self._upsert_watch(
                     mint=mint,
                     started_at=started.isoformat(),
                     status="FAILED",
                     resumed=resumed,
-                    stop_reason="PERSISTENCE_ERROR:market_observation",
+                    stop_reason=f"PERSISTENCE_ERROR:{blocker}",
                     pool=migration.pool,
                 )
                 await self._trace(
                     mint=mint,
                     kind="watch_error",
-                    message="T+1800 elapsed with degraded market-observation persistence",
+                    message=f"T+1800 elapsed with degraded {blocker} persistence",
                 )
             else:
                 await self._upsert_watch(
