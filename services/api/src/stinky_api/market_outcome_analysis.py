@@ -63,6 +63,13 @@ def analyze_market_lifecycle(records: list[dict[str, Any]], *, limit: int = 100)
             "evidence_basis": "market_snapshot_observation", "evidence_only": True}
 
 
+def _canonical_percent_change(value: Any) -> float | None:
+    """Stabilize structural signatures against insignificant float/provider noise."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return round(float(value), 4)
+
+
 def market_path_signature(analysis: dict[str, Any]) -> dict[str, Any]:
     """Return an outcome-agnostic descriptor for cross-market comparison."""
     if not isinstance(analysis, dict) or analysis.get("status") != "OBSERVED":
@@ -84,6 +91,8 @@ def market_path_signature(analysis: dict[str, Any]) -> dict[str, Any]:
                 "observations": item.get("observations"),
                 "first_horizon": first.get("horizon"),
                 "last_horizon": last.get("horizon"),
-                "percent_change_first_to_last": item.get("percent_change_first_to_last"),
+                "percent_change_first_to_last": _canonical_percent_change(
+                    item.get("percent_change_first_to_last")
+                ),
             }
     return {"status": "OBSERVED", "signature": signature, "evidence_only": True}
