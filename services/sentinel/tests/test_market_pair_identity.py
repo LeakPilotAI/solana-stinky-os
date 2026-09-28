@@ -59,3 +59,31 @@ def test_existing_selection_among_matching_pairs_remains_unchanged():
     result = fetch([pair(), pair(pairAddress="second-pool", liquidity={"usd": 20})])
     assert result.pair_address == "second-pool"
     assert result.liquidity_usd == 20
+
+
+def test_materially_conflicting_liquid_pump_pairs_fail_closed():
+    client = object.__new__(DexScreenerClient)
+    client._cooldown_until = 0
+    client.last_probe = None
+    client._http = Mock(get=AsyncMock(return_value=Mock(
+        status_code=200,
+        json=lambda: {"pairs": [
+            pair(pairAddress="pool-a", priceUsd="1.00", liquidity={"usd": 20_000}),
+            pair(pairAddress="pool-b", priceUsd="1.40", liquidity={"usd": 15_000}),
+        ]},
+    )))
+
+    result = asyncio.run(client.fetch_volume(MINT))
+
+    assert result is None
+    assert client.last_probe["status"] == "DEGRADED"
+    assert client.last_probe["error"] == "market_pair_disagreement"
+
+
+def test_small_price_difference_between_liquid_pump_pairs_keeps_selection():
+    result = fetch([
+        pair(pairAddress="pool-a", priceUsd="1.00", liquidity={"usd": 20_000}),
+        pair(pairAddress="pool-b", priceUsd="1.05", liquidity={"usd": 15_000}),
+    ])
+    assert result is not None
+    assert result.pair_address == "pool-a"
