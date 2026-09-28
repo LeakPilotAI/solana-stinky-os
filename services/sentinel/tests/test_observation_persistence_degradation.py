@@ -457,3 +457,44 @@ async def test_successful_provider_probe_write_clears_only_its_degradation():
     assert monitor.observation_persistence_degraded == {
         "market_observation": "market failed"
     }
+
+
+@pytest.mark.asyncio
+async def test_intelligence_decision_failure_marks_observation_degraded():
+    monitor = _monitor()
+    monitor._memory = None
+    inv = type("Investigation", (), {
+        "mint": "mint-a", "pipeline_status": "WATCH", "has_intelligence": True,
+        "promote": False, "score": None, "synthetic": None, "rug": None,
+        "model_version": "test",
+    })()
+
+    await monitor._persist_intelligence_decision(
+        inv, _market_tick_snap(), alert_ok=False, alert_reason="TEST"
+    )
+
+    state = monitor.observation_persistence_degraded
+    assert "intelligence_decision" in state
+    assert "database unavailable" in state["intelligence_decision"]
+
+
+@pytest.mark.asyncio
+async def test_successful_intelligence_decision_clears_only_its_degradation():
+    monitor = _monitor()
+    monitor._memory = None
+    monitor._mark_observation_persistence_degraded("intelligence_decision", "decision failed")
+    monitor._mark_observation_persistence_degraded("provider_probe", "probe failed")
+    monitor._sessions = _healthy_sessions
+    inv = type("Investigation", (), {
+        "mint": "mint-a", "pipeline_status": "WATCH", "has_intelligence": True,
+        "promote": False, "score": None, "synthetic": None, "rug": None,
+        "model_version": "test",
+    })()
+
+    await monitor._persist_intelligence_decision(
+        inv, _market_tick_snap(), alert_ok=False, alert_reason="TEST"
+    )
+
+    assert monitor.observation_persistence_degraded == {
+        "provider_probe": "probe failed"
+    }

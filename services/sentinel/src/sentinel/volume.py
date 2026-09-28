@@ -1027,7 +1027,9 @@ class VolumeMonitor:
             async with self._sessions() as session:
                 await session.execute(text(MEMORY_INSERT_DECISION), params)
                 await session.commit()
+            self._clear_observation_persistence_degraded("intelligence_decision")
         except Exception as exc:
+            self._mark_observation_persistence_degraded("intelligence_decision", exc)
             logger.warning(
                 "intelligence_decision.persist_failed",
                 mint=getattr(inv, "mint", None),
