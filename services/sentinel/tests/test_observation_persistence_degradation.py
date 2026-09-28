@@ -731,3 +731,34 @@ def test_restart_fails_nonterminal_watch_when_investigation_evidence_is_missing(
     assert 'status="FAILED"' in block
     assert 'stop_reason="PERSISTENCE_ERROR:restart_investigation_missing"' in block
     assert "mint in investigation_mints" in block
+
+
+def test_watch_state_is_published_only_after_durable_commit():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).parents[1] / "src" / "sentinel" / "volume.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("    async def _upsert_watch(")
+    end = source.index("    async def _record_probe(", start)
+    block = source[start:end]
+
+    session_start = block.index("async with self._sessions() as session:")
+    commit = block.index("await session.commit()", session_start)
+    success_publish = block.index("mem.record_watch_state(rec)", commit)
+    assert commit < success_publish
+
+
+def test_watch_state_no_session_is_explicitly_degraded():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).parents[1] / "src" / "sentinel" / "volume.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("    async def _upsert_watch(")
+    end = source.index("    async def _record_probe(", start)
+    block = source[start:end]
+
+    no_session = block.index("if not self._sessions:")
+    degraded = block.index('_mark_observation_persistence_degraded("watch_state", "NO_SESSION")', no_session)
+    assert no_session < degraded
