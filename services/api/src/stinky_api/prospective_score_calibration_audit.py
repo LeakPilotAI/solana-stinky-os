@@ -86,13 +86,22 @@ async def audit_prospective_score_calibration(
     runners = [r for r in records if r["label"] == "RUNNER"]
     predicted_runners = [r for r in predicted if r["label"] == "RUNNER"]
     false_positives = [r for r in predicted if r["label"] != "RUNNER"]
+    negatives = [r for r in scored if r["label"] != "RUNNER"]
     missed_runners = [r for r in scored if float(r["stinky_score"]) < float(score_threshold) and r["label"] == "RUNNER"]
 
     sufficient = labeled >= required
     precision = len(predicted_runners) / len(predicted) if predicted else None
-    false_positive_rate = len(false_positives) / len(predicted) if predicted else None
+    false_discovery_rate = len(false_positives) / len(predicted) if predicted else None
+    false_positive_rate = len(false_positives) / len(negatives) if negatives else None
     runner_recall = len(predicted_runners) / len(runners) if runners else None
+
     alert_rows = [r for r in records if r.get("alert_ok") is True]
+    alert_runners = [r for r in alert_rows if r["label"] == "RUNNER"]
+    alert_false_positives = [r for r in alert_rows if r["label"] != "RUNNER"]
+    alert_precision = len(alert_runners) / len(alert_rows) if alert_rows else None
+    alert_false_discovery_rate = len(alert_false_positives) / len(alert_rows) if alert_rows else None
+    alert_false_positive_rate = len(alert_false_positives) / len([r for r in records if r["label"] != "RUNNER"]) if any(r["label"] != "RUNNER" for r in records) else None
+    alert_runner_recall = len(alert_runners) / len(runners) if runners else None
 
     return {
         "status": "OBSERVED",
@@ -109,11 +118,16 @@ async def audit_prospective_score_calibration(
         "threshold_positive_count": len(predicted),
         "runner_count": len(runners),
         "runner_precision": precision,
-        "false_positive_rate_among_threshold_positives": false_positive_rate,
+        "false_discovery_rate_among_threshold_positives": false_discovery_rate,
+        "false_positive_rate": false_positive_rate,
         "runner_recall": runner_recall,
         "missed_runner_count": len(missed_runners),
         "alert_emitted_count": len(alert_rows),
         "alert_frequency": len(alert_rows) / labeled if labeled else None,
+        "alert_runner_precision": alert_precision,
+        "alert_false_discovery_rate": alert_false_discovery_rate,
+        "alert_false_positive_rate": alert_false_positive_rate,
+        "alert_runner_recall": alert_runner_recall,
         "threshold_change_authorized": False,
         "missing": [] if sufficient else ["sufficient_labeled_prospective_sample"],
         **AUTHORITY,
