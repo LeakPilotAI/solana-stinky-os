@@ -116,3 +116,18 @@ def test_existing_trade_after_restart_still_marks_wallet_for_performance_refresh
     duplicate_exit = block.index("if not inserted:")
     assert touched < duplicate_exit
     assert block.index("new_count += 1") > duplicate_exit
+
+
+def test_tracking_and_early_buyer_windows_are_anchored_to_migration_time():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).parents[1] / "src" / "post_migration" / "tracker.py"
+    ).read_text(encoding="utf-8")
+    run = source[source.index("    async def run("):source.index("    async def _ingest_trades(")]
+
+    assert "tracking_anchor = self.migration_at" in run
+    assert "datetime.now(timezone.utc) - tracking_anchor" in run
+    assert "started = datetime.now(timezone.utc)" not in run
+    assert "elapsed >= settings.track_max_duration_sec" in run
+    assert "elapsed > settings.early_buyer_window_sec" in run
