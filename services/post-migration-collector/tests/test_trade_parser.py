@@ -182,3 +182,16 @@ def test_pool_and_program_wallets_excluded():
     assert pool is None
     assert prog is None
 
+
+
+def test_chain_does_not_claim_full_coverage_for_any_nonempty_trade_sample():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).parents[1] / "src" / "post_migration" / "chain.py"
+    ).read_text(encoding="utf-8")
+    assert "coverage = 1.0\n        _last_source_status" not in source
+    assert "trade_source_coverage=1.0 if exhausted else None" in source
+    assert 'trade_source_error=None if exhausted else "pagination_capped_or_interrupted"' in source
+    assert "pages=pages_fetched" in source
+    assert "raw_rows=raw_rows" in source

@@ -128,6 +128,7 @@ class ChainClient:
         t0 = time.monotonic()
         error: str | None = None
         trades = await self._fetch_pump_v2(mint)
+        pump_status = _last_source_status
         source = "pump.v2"
         status = "ok" if trades else "empty"
         if not trades:
@@ -147,14 +148,20 @@ class ChainClient:
         n_buy = sum(1 for t in unique if t.side.value == "buy")
         n_sell = sum(1 for t in unique if t.side.value == "sell")
         coverage = None
-        if unique:
-            coverage = 1.0
+        pages = 0
+        raw_rows = 0
+        if source == "pump.v2":
+            coverage = pump_status.trade_source_coverage
+            pages = pump_status.pages
+            raw_rows = pump_status.raw_rows
         _last_source_status = TradeSourceStatus(
             trade_source=source,
             trade_source_status=status,
             trade_source_latency_ms=round(latency, 1),
             trade_source_error=error,
             trade_source_coverage=coverage,
+            pages=pages,
+            raw_rows=raw_rows,
             parsed=len(unique),
         )
         logger.info(
@@ -189,7 +196,11 @@ class ChainClient:
             _rpc_next_ok = time.monotonic() + _RPC_MIN_INTERVAL_SEC
 
     async def _fetch_pump_v2(self, mint: str) -> list[ObservedTrade]:
+        global _last_source_status
         trades: list[ObservedTrade] = []
+        raw_rows = 0
+        pages_fetched = 0
+        exhausted = False
         cursor: str | None = None
         pages = max(1, int(settings.pump_trade_pages))
         limit = max(20, int(settings.pump_trade_limit))
@@ -222,7 +233,10 @@ class ChainClient:
                 break
             rows = data.get("trades") if isinstance(data, dict) else None
             if not isinstance(rows, list) or not rows:
+                exhausted = True
                 break
+            pages_fetched += 1
+            raw_rows += len(rows)
             for raw in rows:
                 if isinstance(raw, dict):
                     t = parse_pump_v2_trade(raw, mint=mint)
@@ -240,7 +254,17 @@ class ChainClient:
                 has_more=has_more,
             )
             if not has_more or not cursor:
+                exhausted = True
                 break
+        _last_source_status = TradeSourceStatus(
+            trade_source="pump.v2",
+            trade_source_status="ok" if trades else "empty",
+            trade_source_coverage=1.0 if exhausted else None,
+            pages=pages_fetched,
+            raw_rows=raw_rows,
+            parsed=len(trades),
+            trade_source_error=None if exhausted else "pagination_capped_or_interrupted",
+        )
         return trades
 
     async def _rpc(self, method: str, params: list[Any]) -> Any:
