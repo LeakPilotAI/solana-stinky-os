@@ -115,10 +115,16 @@ async def audit_prospective_phase10_corpus(
                    l.observed_at AS launch_observed_at,
                    l.created_at AS launch_ingested_at
             FROM canonical_migrations m
-            LEFT JOIN entity_launches l
-              ON l.mint = m.mint
-             AND m.creator IS NOT NULL
-             AND l.deployer_wallet = m.creator
+            LEFT JOIN LATERAL (
+                SELECT el.id, el.entity_id, el.deployer_wallet, el.event_id,
+                       el.observed_at, el.created_at
+                FROM entity_launches el
+                WHERE el.mint = m.mint
+                  AND el.observed_at <= :dataset_as_of
+                  AND el.created_at <= :dataset_as_of
+                ORDER BY el.observed_at ASC, el.created_at ASC, el.id ASC
+                LIMIT 1
+            ) l ON TRUE
             ORDER BY m.migration_observed_at DESC, m.mint
             LIMIT :limit
         """), params)).mappings().all()
@@ -141,6 +147,8 @@ async def audit_prospective_phase10_corpus(
                 "migration_events_deduplicated_by": "mint",
                 "migration_anchor": "earliest dual-time-visible token.migrated event per mint",
                 "entity_launch_event_id_required": False,
+                "canonical_launch_identity": "earliest dual-time-visible entity_launches row by mint",
+                "migration_creator_may_disagree_with_launch_identity": True,
                 "dual_time_required": True,
                 "missing_evidence_remains_unknown": True,
             },
@@ -258,6 +266,8 @@ async def audit_prospective_phase10_corpus(
             "migration_events_deduplicated_by": "mint",
             "migration_anchor": "earliest dual-time-visible token.migrated event per mint",
             "entity_launch_event_id_required": False,
+            "canonical_launch_identity": "earliest dual-time-visible entity_launches row by mint",
+            "migration_creator_may_disagree_with_launch_identity": True,
             "dual_time_required": True,
             "missing_evidence_remains_unknown": True,
         },
