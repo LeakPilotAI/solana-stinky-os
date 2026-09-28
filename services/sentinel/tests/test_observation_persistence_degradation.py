@@ -625,3 +625,34 @@ async def test_successful_intelligence_decision_is_published_after_commit():
 
     assert len(monitor._memory.decisions) == 1
     assert monitor._memory.decisions[0]["mint"] == "mint-a"
+
+
+def test_watch_completion_is_blocked_by_investigation_memory_degradation():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).parents[1] / "src" / "sentinel" / "volume.py"
+    ).read_text(encoding="utf-8")
+    start = source.index('logger.info(\n                "volume.watch_timeout"')
+    end = source.index("        except Exception as exc:", start)
+    block = source[start:end]
+
+    assert '"investigation_memory"' in block
+    assert 'completion_blockers' in block
+    assert 'status="FAILED"' in block
+    assert 'stop_reason=f"PERSISTENCE_ERROR:{blocker}"' in block
+    assert block.index('completion_blockers') < block.index('status="COMPLETED"')
+
+
+def test_watch_completion_blockers_cover_both_restart_critical_market_paths():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).parents[1] / "src" / "sentinel" / "volume.py"
+    ).read_text(encoding="utf-8")
+    start = source.index('logger.info(\n                "volume.watch_timeout"')
+    end = source.index("        except Exception as exc:", start)
+    block = source[start:end]
+
+    assert '"market_observation"' in block
+    assert '"investigation_memory"' in block
