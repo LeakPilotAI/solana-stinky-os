@@ -299,11 +299,10 @@ class MintTracker:
             if key in self._seen_trade_keys:
                 continue
             inserted = await self._store.upsert_trade(t)
-            if not inserted:
-                self._seen_trade_keys.add(key)
-                continue
             self._seen_trade_keys.add(key)
             self._wallets_touched.add(t.wallet)
+            if not inserted:
+                continue
             new_count += 1
             metrics.inc("trades_observed")
             if t.side == TradeSide.BUY:
