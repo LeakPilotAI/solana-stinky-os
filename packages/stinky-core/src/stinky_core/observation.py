@@ -296,7 +296,9 @@ def what_happened_next(
             ttp = (peak_tick.observed_at - start).total_seconds()
     end = cutoff or datetime.now(timezone.utc)
     horizon = start + timedelta(seconds=float(observation_window or 3600.0))
-    complete = end >= horizon or len(later) >= 3
+    # Observation completeness is time-based. A few early ticks do not prove
+    # the requested future horizon was actually observed.
+    complete = end >= horizon
     oc = label_outcome(
         peak_multiple=multiple,
         peak_volume=peak_vol,

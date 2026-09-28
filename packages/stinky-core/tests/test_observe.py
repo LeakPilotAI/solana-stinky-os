@@ -10,7 +10,7 @@ from stinky_core.book import LIFE_SLICES_SEC, dataset_health, life_slices, what_
 from stinky_core.intelligence import can_alert_investigation, investigate
 from stinky_core.insights import candidate_insights
 from stinky_core.memory import IntelligenceMemory
-from stinky_core.observation import investigation_record, observation_slices
+from stinky_core.observation import investigation_record, observation_slices, what_happened_next as prospective_what_happened_next
 from stinky_core.recipes import runner_recipe
 from stinky_core.sqlstore import SqliteMemoryStore
 
@@ -206,3 +206,20 @@ def test_life_slices_t15_carry_forward_not_future():
     assert by[15]["volume_m5_usd"] == 150_000
     assert by[30]["volume_m5_usd"] == 150_000
     assert by[300]["volume_m5_usd"] != 400_000
+
+
+def test_three_early_ticks_do_not_complete_future_outcome_horizon():
+    mem = IntelligenceMemory()
+    mem.record_market_tick(mint=MINT_A, observed_at=T0, volume_m5_usd=100_000, price_usd=1.0)
+    mem.record_market_tick(mint=MINT_A, observed_at=T0 + timedelta(seconds=15), volume_m5_usd=150_000, price_usd=1.2)
+    mem.record_market_tick(mint=MINT_A, observed_at=T0 + timedelta(seconds=30), volume_m5_usd=220_000, price_usd=1.5)
+    mem.record_market_tick(mint=MINT_A, observed_at=T0 + timedelta(seconds=45), volume_m5_usd=300_000, price_usd=2.1)
+
+    early = prospective_what_happened_next(
+        mem, mint=MINT_A, t0=T0, as_of=T0 + timedelta(seconds=45),
+        observation_window=1800.0,
+    )
+
+    assert early["outcome"]["label"] == "UNKNOWN"
+    assert early["outcome"]["reason"] == "insufficient_observation"
+    assert early["outcome"]["evidence"]["observation_complete"] is False
