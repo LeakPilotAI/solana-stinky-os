@@ -195,3 +195,29 @@ def test_chain_does_not_claim_full_coverage_for_any_nonempty_trade_sample():
     assert 'trade_source_error=None if exhausted else "pagination_capped_or_interrupted"' in source
     assert "pages=pages_fetched" in source
     assert "raw_rows=raw_rows" in source
+
+
+def test_helius_small_native_transfer_is_still_lamports():
+    buyer = "BuyerSmall11111111111111111111111111111111"
+    pool = "PoolSmall111111111111111111111111111111111"
+    tx = {
+        "signature": "HeliusSmallLamports",
+        "timestamp": 1690000000,
+        "feePayer": buyer,
+        "tokenTransfers": [{
+            "mint": MINT,
+            "fromUserAccount": pool,
+            "toUserAccount": buyer,
+            "tokenAmount": 1,
+        }],
+        "nativeTransfers": [{
+            "fromUserAccount": buyer,
+            "toUserAccount": pool,
+            "amount": 5000,
+        }],
+    }
+
+    trades = parse_helius_swap(tx, mint=MINT)
+
+    assert len(trades) == 1
+    assert trades[0].sol_amount == 0.000005
