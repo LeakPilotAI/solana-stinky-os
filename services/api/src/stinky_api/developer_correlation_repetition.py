@@ -101,7 +101,7 @@ def analyze_correlation_repetition(correlation: dict[str, Any]) -> dict[str, Any
          ("first_seen_at",), ("last_seen_at",)),
         ("deployer_buyer_recurrence", "DEPLOYER_BUYER_RECURRENCE", ("wallet", "buyer_entity_id"), "launch_count", "launch_count",
          ("first_observed_at",), ("last_observed_at",)),
-        ("shared_relationship_structures", "RELATIONSHIP_STRUCTURE", ("relationship_kind", "other_entity_id"), "observation_count", None,
+        ("shared_relationship_structures", "RELATIONSHIP_STRUCTURE", ("relationship_kind", "other_entity_id"), "independent_observation_count", None,
          ("first_observed_at", "first_seen_at"), ("last_observed_at", "last_seen_at")),
     )
     for field, kind, identity_fields, observation_field, launch_field, first_fields, last_fields in specs:
