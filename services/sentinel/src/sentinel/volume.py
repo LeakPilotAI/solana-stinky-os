@@ -1002,6 +1002,7 @@ class VolumeMonitor:
             completion_blockers = (
                 "market_observation",
                 "investigation_memory",
+                "watch_state",
             )
             blocker = next((name for name in completion_blockers if name in degraded), None)
             if blocker is not None:
