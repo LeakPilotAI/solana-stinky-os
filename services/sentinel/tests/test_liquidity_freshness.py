@@ -51,3 +51,30 @@ def test_freshness_boundary_is_inclusive():
     )
     assert row["latest"]["liquidity_fresh"] is True
     assert "liquidity" in row["known"]
+
+
+def test_stale_tick_cannot_drive_volume_or_buy_sell_pressure():
+    mem = IntelligenceMemory()
+    t0 = datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc)
+    latest = t0 + timedelta(seconds=60)
+    assert mem.record_market_tick(
+        mint="mint", observed_at=t0, liquidity_usd=10000.0,
+        volume_m5_usd=100000.0, price_usd=0.01,
+        pair_address="pair-a", dex_id="pumpswap", buys=20, sells=1,
+    )
+    assert mem.record_market_tick(
+        mint="mint", observed_at=latest, liquidity_usd=9000.0,
+        volume_m5_usd=1000.0, price_usd=0.01,
+        pair_address="pair-a", dex_id="pumpswap", buys=1, sells=20,
+    )
+
+    row = evaluate_quality_state(
+        mem, mint="mint", t0=t0,
+        as_of=latest + timedelta(seconds=MAX_LIQUIDITY_AGE_SEC + 1),
+    )
+
+    assert "volume_5m_stale" in row["unknown"]
+    assert "buy_sell_pressure_stale" in row["unknown"]
+    assert "volume_5m" not in row["known"]
+    assert "buy_sell_pressure" not in row["known"]
+    assert not any(w["metric"] in {"volume_m5_usd", "buy_sell_ratio"} for w in row["why"])
