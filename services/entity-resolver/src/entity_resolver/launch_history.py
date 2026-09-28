@@ -42,6 +42,38 @@ class LaunchHistoryStore:
                     await session.execute(text(statement))
             await session.commit()
 
+    async def ensure_reputation_projection_schema(self) -> None:
+        """Fail closed unless #327's shared reputation read-model schema exists."""
+        required = {
+            "wallet_observations",
+            "wallet_outcome_labels",
+            "creator_observations",
+            "creator_outcome_labels",
+            "pattern_fingerprints",
+            "pattern_outcomes",
+        }
+        async with self._sessions() as session:
+            rows = (
+                await session.execute(
+                    text(
+                        """
+                        SELECT table_name
+                        FROM information_schema.tables
+                        WHERE table_schema = current_schema()
+                          AND table_name = ANY(:required)
+                        """
+                    ),
+                    {"required": sorted(required)},
+                )
+            ).scalars().all()
+        missing = sorted(required.difference(str(row) for row in rows))
+        if missing:
+            raise RuntimeError(
+                "shared reputation projection schema is not ready; "
+                "apply Sentinel intelligence-memory migration 006 before "
+                "starting entity resolver; missing tables: " + ", ".join(missing)
+            )
+
     async def record_launch(
         self,
         *,
