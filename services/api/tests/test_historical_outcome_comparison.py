@@ -22,9 +22,11 @@ class Session:
         self.rows = rows or []
         self.error = error
         self.params = []
+        self.statements = []
 
     async def execute(self, statement, params):
         self.params.append(params)
+        self.statements.append(str(statement))
         if self.error:
             raise RuntimeError("query failed")
         cutoff = params.get("as_of")
@@ -144,3 +146,18 @@ async def test_query_failure_stays_unknown():
     assert result["status"] == "UNKNOWN"
     assert result["missing"] == ["entity_launches"]
     assert result["evidence_only"] is True
+
+
+@pytest.mark.asyncio
+async def test_as_of_query_requires_launch_to_have_been_ingested_by_cutoff():
+    analogue_id = uuid4()
+    cutoff = datetime(2026, 9, 4, 12, tzinfo=timezone.utc)
+    session = Session([])
+
+    await historical_outcomes_for_analogues(
+        session,
+        [{"entity_id": str(analogue_id)}],
+        as_of=cutoff,
+    )
+
+    assert "observed_at <= :as_of AND created_at <= :as_of" in session.statements[0]
