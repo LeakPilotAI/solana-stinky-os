@@ -150,6 +150,9 @@ class MintTracker:
                 meta=self.payload,
             )
             metrics.inc("tracks_started")
+            self._early_buyer_events_published.update(
+                await self._store.load_early_buyer_event_keys(self.mint)
+            )
             await self._publisher.tracking_started(
                 {
                     "mint": self.mint,
