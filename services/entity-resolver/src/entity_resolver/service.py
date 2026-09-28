@@ -39,6 +39,7 @@ class EntityService:
     async def start(self) -> None:
         await self._store.ensure_schema()
         await self._launch_history.ensure_schema()
+        await self._launch_history.ensure_reputation_projection_schema()
         await self._market_outcomes.ensure_schema()
         await self._behavior.ensure_schema()
         await self._relationships.ensure_schema()
