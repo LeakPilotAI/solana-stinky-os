@@ -294,6 +294,37 @@ class DexScreenerClient:
         def liq(p: dict[str, Any]) -> float:
             return float((p.get("liquidity") or {}).get("usd") or 0)
 
+        # Multiple allowed Pump pairs for one mint are not interchangeable.
+        # If liquid candidates materially disagree on price, do not silently
+        # bless the highest-liquidity row as canonical market truth.
+        liquid_pairs = [p for p in pump_pairs if liq(p) >= 1_000]
+        prices = [
+            _f(p.get("priceUsd"))
+            for p in liquid_pairs
+            if _f(p.get("priceUsd")) is not None and _f(p.get("priceUsd")) > 0
+        ]
+        if len(prices) >= 2:
+            lo, hi = min(prices), max(prices)
+            if lo > 0 and (hi / lo) > 1.25:
+                self.last_probe = {
+                    "provider": "dexscreener",
+                    "ok": False,
+                    "status": "DEGRADED",
+                    "http_status": 200,
+                    "error": "market_pair_disagreement",
+                    "source": "dexscreener",
+                    "at": datetime.now(timezone.utc).isoformat(),
+                    "candidate_pairs": len(liquid_pairs),
+                    "price_ratio": round(hi / lo, 4),
+                }
+                logger.warning(
+                    "dexscreener.market_pair_disagreement",
+                    mint=mint,
+                    candidate_pairs=len(liquid_pairs),
+                    price_ratio=round(hi / lo, 4),
+                )
+                return None
+
         best = max(pump_pairs, key=liq)
         vol = best.get("volume") or {}
         txns = best.get("txns") or {}
