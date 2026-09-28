@@ -192,13 +192,20 @@ def observation_slices(
     slices: list[dict[str, Any]] = []
     for offset in OBSERVATION_SLICES_SEC:
         horizon = start + timedelta(seconds=int(offset))
-        chosen = None
-        for t in ticks:
-            if not visible(t.observed_at):
-                continue
-            if t.observed_at > horizon:
-                continue
-            chosen = t
+        # A future slice is not observed merely because an older tick can be
+        # carried forward into it. Until as_of reaches the slice horizon, keep
+        # that offset UNKNOWN.
+        if cutoff is not None and horizon > cutoff:
+            chosen = None
+        else:
+            chosen = None
+        if cutoff is None or horizon <= cutoff:
+            for t in ticks:
+                if not visible(t.observed_at):
+                    continue
+                if t.observed_at > horizon:
+                    continue
+                chosen = t
         payload = tick_dict(chosen) if chosen else {
             "timestamp": None, "price": None, "market_cap": None, "liquidity": None,
             "pair_address": None, "dex_id": None, "volume_5m": None, "volume_since_gate": None, "buys": None, "sells": None,
