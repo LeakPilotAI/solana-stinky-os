@@ -223,3 +223,29 @@ def test_three_early_ticks_do_not_complete_future_outcome_horizon():
     assert early["outcome"]["label"] == "UNKNOWN"
     assert early["outcome"]["reason"] == "insufficient_observation"
     assert early["outcome"]["evidence"]["observation_complete"] is False
+
+
+def test_book_outcome_three_early_ticks_do_not_complete_future_horizon():
+    from stinky_core.book import outcome_from_ticks
+
+    mem = IntelligenceMemory()
+    mem.record_market_tick(mint=MINT_A, observed_at=T0, volume_m5_usd=100_000, price_usd=1.0)
+    for sec, vol, price in ((15, 150_000, 1.2), (30, 220_000, 1.5), (45, 300_000, 2.1)):
+        mem.record_market_tick(
+            mint=MINT_A,
+            observed_at=T0 + timedelta(seconds=sec),
+            volume_m5_usd=vol,
+            price_usd=price,
+        )
+
+    early = outcome_from_ticks(
+        mem,
+        mint=MINT_A,
+        decision_at=T0,
+        observation_window=1800.0,
+        now=T0 + timedelta(seconds=45),
+    )
+
+    assert early["label"] == "UNKNOWN"
+    assert early["reason"] == "insufficient_observation"
+    assert early["evidence"]["observation_complete"] is False
