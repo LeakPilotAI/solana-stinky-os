@@ -110,3 +110,14 @@ def test_prospective_corpus_pins_one_outcome_label_version():
     assert "outcome_label_version: str = CANONICAL_OUTCOME_LABEL_VERSION" in source
     assert "AND label_version = :outcome_label_version" in source
     assert '"outcome_label_version_required": requested_label_version' in source
+
+
+def test_calibration_usable_requires_complete_features_and_label():
+    source = (API_ROOT / "src" / "stinky_api" / "prospective_phase10_corpus.py").read_text(encoding="utf-8")
+    assert "calibration_usable = complete and label_complete" in source
+    assert '"calibration_usable": calibration_usable' in source
+    assert '"outcome_label_complete_count": label_complete_count' in source
+    assert '"outcome_label_complete_coverage": label_complete_count / total' in source
+    assert '"calibration_usable_count": calibration_usable_count' in source
+    assert '"calibration_usable_coverage": calibration_usable_count / total' in source
+    assert '"calibration_usable_requires": ["feature_complete", "outcome_label_complete"]' in source
