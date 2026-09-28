@@ -1340,53 +1340,6 @@ class VolumeMonitor:
         sells = snap.txns_m5_sells
         txns = (buys or 0) + (sells or 0) if (buys is not None or sells is not None) else None
         mem = getattr(self, "_memory", None)
-        if mem is not None:
-            try:
-                from stinky_core.quality_state import evaluate_quality_state
-
-                rec = next((r for r in mem.investigations if r.get("mint") == mint), None)
-                t0 = (rec or {}).get("gate1_at") or (rec or {}).get("decision_timestamp")
-                if t0:
-                    prev = next((q.get("state") for q in reversed(mem.quality_states) if q.get("mint") == mint), None)
-                    st = evaluate_quality_state(mem, mint=mint, t0=t0, as_of=at, previous_state=prev)
-                    if mem.record_quality_state(st):
-                        if self._sessions:
-                            await self._persist_quality_state(st)
-                        await self._trace(
-                            mint=mint,
-                            kind="quality",
-                            message=f"{st.get('previous_state')} â†’ {st.get('state')}",
-                            extra={
-                                "state": st.get("state"),
-                                "previous_state": st.get("previous_state"),
-                                "why": st.get("why"),
-                                "evidence_quality": st.get("evidence_quality"),
-                            },
-                        )
-                        try:
-                            if st.get("state") != st.get("previous_state"):
-                                evt = Event(
-                                    event_type=EventType.QUALITY_STATE_CHANGED,
-                                    payload={
-                                        "mint": mint,
-                                        "previous_state": st.get("previous_state"),
-                                        "current_state": st.get("state"),
-                                        "state": st.get("state"),
-                                        "severity": st.get("severity"),
-                                        "why": st.get("why"),
-                                        "evidence_quality": st.get("evidence_quality"),
-                                        "unknown": st.get("unknown"),
-                                        "as_of": st.get("as_of"),
-                                        "not_a_buy": True,
-                                        "calibrated_probability": False,
-                                    },
-                                    producer="sentinel-volume",
-                                )
-                                await self._publisher.publish_raw_event(evt, kind="quality")
-                        except Exception as exc:
-                            logger.debug("quality.publish_failed", mint=mint, error=str(exc)[:200])
-            except Exception as exc:
-                logger.debug("quality.eval_failed", mint=mint, error=str(exc)[:200])
         if not self._sessions:
             return
         try:
@@ -1429,6 +1382,52 @@ class VolumeMonitor:
                     txns=txns,
                     source="observed",
                 )
+        try:
+            from stinky_core.quality_state import evaluate_quality_state
+
+            rec = next((r for r in mem.investigations if r.get("mint") == mint), None)
+            t0 = (rec or {}).get("gate1_at") or (rec or {}).get("decision_timestamp")
+            if t0:
+                prev = next((q.get("state") for q in reversed(mem.quality_states) if q.get("mint") == mint), None)
+                st = evaluate_quality_state(mem, mint=mint, t0=t0, as_of=at, previous_state=prev)
+                if mem.record_quality_state(st):
+                    if self._sessions:
+                        await self._persist_quality_state(st)
+                    await self._trace(
+                        mint=mint,
+                        kind="quality",
+                        message=f"{st.get('previous_state')} â†’ {st.get('state')}",
+                        extra={
+                            "state": st.get("state"),
+                            "previous_state": st.get("previous_state"),
+                            "why": st.get("why"),
+                            "evidence_quality": st.get("evidence_quality"),
+                        },
+                    )
+                    try:
+                        if st.get("state") != st.get("previous_state"):
+                            evt = Event(
+                                event_type=EventType.QUALITY_STATE_CHANGED,
+                                payload={
+                                    "mint": mint,
+                                    "previous_state": st.get("previous_state"),
+                                    "current_state": st.get("state"),
+                                    "state": st.get("state"),
+                                    "severity": st.get("severity"),
+                                    "why": st.get("why"),
+                                    "evidence_quality": st.get("evidence_quality"),
+                                    "unknown": st.get("unknown"),
+                                    "as_of": st.get("as_of"),
+                                    "not_a_buy": True,
+                                    "calibrated_probability": False,
+                                },
+                                producer="sentinel-volume",
+                            )
+                            await self._publisher.publish_raw_event(evt, kind="quality")
+                    except Exception as exc:
+                        logger.debug("quality.publish_failed", mint=mint, error=str(exc)[:200])
+        except Exception as exc:
+            logger.debug("quality.eval_failed", mint=mint, error=str(exc)[:200])
             self._clear_observation_persistence_degraded("market_observation")
         except Exception as exc:
             self._mark_observation_persistence_degraded("market_observation", exc)
