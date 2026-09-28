@@ -588,10 +588,21 @@ class VolumeMonitor:
         except Exception:
             return
         now = datetime.now(timezone.utc)
+        durable_watch_states = {
+            str(rec.get("mint") or "").strip(): rec
+            for rec in list(getattr(mem, "watch_states", []) or [])
+            if str(rec.get("mint") or "").strip()
+        }
+        terminal_statuses = {"COMPLETED", "FAILED"}
         n = 0
         for rec in list(getattr(mem, "investigations", []) or []):
             mint = str(rec.get("mint") or "").strip()
             if not mint or mint in self._active:
+                continue
+            watch_state = durable_watch_states.get(mint)
+            if watch_state is None:
+                continue
+            if str(watch_state.get("status") or "").upper() in terminal_statuses:
                 continue
             t0 = _parse_ts(rec.get("gate1_at") or rec.get("decision_timestamp"))
             if t0 is None:
@@ -1075,6 +1086,7 @@ class VolumeMonitor:
                 MEMORY_SELECT_QUALITY,
                 MEMORY_SELECT_WALLET_OBS,
                 MEMORY_SELECT_WALLET_OUTCOME,
+                MEMORY_SELECT_WATCH_STATE,
             )
             async with self._sessions() as session:
                 wobs = (await session.execute(text(MEMORY_SELECT_WALLET_OBS))).mappings().all()
@@ -1086,6 +1098,7 @@ class VolumeMonitor:
                 decs = (await session.execute(text(MEMORY_SELECT_DECISION))).mappings().all()
                 ticks = (await session.execute(text(MEMORY_SELECT_MARKET_OBS))).mappings().all()
                 invs = (await session.execute(text(MEMORY_SELECT_INVESTIGATION))).mappings().all()
+                watches = (await session.execute(text(MEMORY_SELECT_WATCH_STATE))).mappings().all()
                 try:
                     qstates = (await session.execute(text(MEMORY_SELECT_QUALITY))).mappings().all()
                 except Exception:
@@ -1100,6 +1113,7 @@ class VolumeMonitor:
                 "decisions": [dict(r) for r in decs],
                 "market_ticks": [dict(r) for r in ticks],
                 "investigations": [dict(r) for r in invs],
+                "watch_states": [dict(r) for r in watches],
                 "quality_states": [dict(r) for r in qstates],
             })
             self._memory_hydrated = True
