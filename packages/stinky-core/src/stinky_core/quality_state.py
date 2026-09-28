@@ -194,9 +194,11 @@ def evaluate_quality_state(
 
     g_vol = gate.volume_m5_usd if gate else None
     l_vol = latest.volume_m5_usd
-    vol_drop = _drop(g_vol, l_vol)
-    vol_ch = _change(g_vol, l_vol)
-    if g_vol is None or l_vol is None:
+    vol_drop = _drop(g_vol, l_vol) if liquidity_fresh else None
+    vol_ch = _change(g_vol, l_vol) if liquidity_fresh else None
+    if not liquidity_fresh:
+        unknown.append("volume_5m_stale")
+    elif g_vol is None or l_vol is None:
         unknown.append("volume_5m")
     else:
         known.append("volume_5m")
@@ -212,7 +214,9 @@ def evaluate_quality_state(
 
     ratio = latest.buy_sell_ratio
     txns = latest.txns
-    if ratio is None or txns is None or txns < MIN_TXNS_PRESSURE:
+    if not liquidity_fresh:
+        unknown.append("buy_sell_pressure_stale")
+    elif ratio is None or txns is None or txns < MIN_TXNS_PRESSURE:
         unknown.append("buy_sell_pressure")
     else:
         known.append("buy_sell_pressure")
