@@ -80,3 +80,13 @@ def test_no_historical_backfill_or_gate_change_in_activation_files():
     assert "historical_feature_reconstruction_authorized" not in combined
     assert "min_feature_source_coverage" not in combined
     assert "min_label_coverage" not in combined
+
+
+def test_feature_complete_requires_matching_phase10_pre_cutoff_snapshot():
+    source = (API_ROOT / "src" / "stinky_api" / "prospective_phase10_corpus.py").read_text(encoding="utf-8")
+    assert '300: "5m"' in source
+    assert '900: "15m"' in source
+    assert '1800: "30m"' in source
+    assert 'r.get("evidence_basis") == "phase10_pre_cutoff_market_snapshot"' in source
+    assert 'r.get("horizon") == feature_horizon_name' in source
+    assert '"feature_evidence_basis_required": "phase10_pre_cutoff_market_snapshot"' in source
