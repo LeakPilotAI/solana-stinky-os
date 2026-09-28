@@ -1040,11 +1040,11 @@ class VolumeMonitor:
             params = dict(compact)
             params["row"] = json.dumps(compact, default=str)
             mem = getattr(self, "_memory", None)
-            if mem is not None:
-                mem.record_decision(compact)
             async with self._sessions() as session:
                 await session.execute(text(MEMORY_INSERT_DECISION), params)
                 await session.commit()
+            if mem is not None:
+                mem.record_decision(compact)
             self._clear_observation_persistence_degraded("intelligence_decision")
         except Exception as exc:
             self._mark_observation_persistence_degraded("intelligence_decision", exc)
@@ -1341,20 +1341,6 @@ class VolumeMonitor:
         txns = (buys or 0) + (sells or 0) if (buys is not None or sells is not None) else None
         mem = getattr(self, "_memory", None)
         if mem is not None:
-            mem.record_market_tick(
-                mint=mint,
-                observed_at=at,
-                volume_m5_usd=snap.volume_m5_usd,
-                price_usd=snap.price_usd,
-                liquidity_usd=snap.liquidity_usd,
-                pair_address=snap.pair_address,
-                dex_id=snap.dex_id,
-                market_cap_usd=getattr(snap, "market_cap_usd", None),
-                buys=buys,
-                sells=sells,
-                txns=txns,
-                source="observed",
-            )
             try:
                 from stinky_core.quality_state import evaluate_quality_state
 
@@ -1428,6 +1414,21 @@ class VolumeMonitor:
                     },
                 )
                 await session.commit()
+            if mem is not None:
+                mem.record_market_tick(
+                    mint=mint,
+                    observed_at=at,
+                    volume_m5_usd=snap.volume_m5_usd,
+                    price_usd=snap.price_usd,
+                    liquidity_usd=snap.liquidity_usd,
+                    pair_address=snap.pair_address,
+                    dex_id=snap.dex_id,
+                    market_cap_usd=getattr(snap, "market_cap_usd", None),
+                    buys=buys,
+                    sells=sells,
+                    txns=txns,
+                    source="observed",
+                )
             self._clear_observation_persistence_degraded("market_observation")
         except Exception as exc:
             self._mark_observation_persistence_degraded("market_observation", exc)
