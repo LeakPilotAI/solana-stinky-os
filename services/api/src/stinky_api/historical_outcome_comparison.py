@@ -68,7 +68,7 @@ async def historical_outcomes_for_analogues(
         }
 
     try:
-        cutoff_clause = "AND observed_at <= :as_of" if cutoff is not None else ""
+        cutoff_clause = "AND observed_at <= :as_of AND created_at <= :as_of" if cutoff is not None else ""
         params: dict[str, Any] = {"entity_ids": analogue_ids}
         if cutoff is not None:
             params["as_of"] = cutoff
