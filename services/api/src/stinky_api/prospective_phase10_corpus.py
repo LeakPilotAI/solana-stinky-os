@@ -81,6 +81,11 @@ async def audit_prospective_phase10_corpus(
     if missing:
         return {"status": "BLOCKED", "tables": tables, "missing": missing, **AUTHORITY}
 
+    feature_horizon_name = {
+        300: "5m",
+        900: "15m",
+        1800: "30m",
+    }.get(feature_horizon_seconds)
     params = {
         "limit": limit,
         "dataset_as_of": cutoff,
@@ -150,7 +155,9 @@ async def audit_prospective_phase10_corpus(
                 "canonical_launch_identity": "earliest dual-time-visible entity_launches row by mint",
                 "migration_creator_may_disagree_with_launch_identity": True,
                 "dual_time_required": True,
-                "missing_evidence_remains_unknown": True,
+                "feature_evidence_basis_required": "phase10_pre_cutoff_market_snapshot",
+            "feature_horizon_must_match_requested_cutoff": True,
+            "missing_evidence_remains_unknown": True,
             },
             **AUTHORITY,
         }
@@ -213,7 +220,14 @@ async def audit_prospective_phase10_corpus(
 
         dev = next((r for r in developer_by_entity.get(entity_id, []) if r.get("observed_at") <= feature_as_of and r.get("ingested_at") <= feature_as_of), None)
         corr = next((r for r in correlation_by_entity.get(entity_id, []) if r.get("observed_at") <= feature_as_of and r.get("ingested_at") <= feature_as_of), None)
-        life = next((r for r in lifecycle_by_mint.get(mint, []) if r.get("observed_at") <= feature_as_of and r.get("ingested_at") <= feature_as_of), None)
+        life = next((
+            r for r in lifecycle_by_mint.get(mint, [])
+            if r.get("observed_at") <= feature_as_of
+            and r.get("ingested_at") <= feature_as_of
+            and r.get("evidence_basis") == "phase10_pre_cutoff_market_snapshot"
+            and feature_horizon_name is not None
+            and r.get("horizon") == feature_horizon_name
+        ), None)
 
         entity_resolved = bool(entity_id)
         has_dev = dev is not None
