@@ -523,3 +523,34 @@ async def test_successful_market_inspection_clears_only_its_degradation():
     assert monitor.observation_persistence_degraded == {
         "intelligence_decision": "decision failed"
     }
+
+
+def test_watch_completion_is_blocked_by_market_observation_degradation():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).parents[1] / "src" / "sentinel" / "volume.py"
+    ).read_text(encoding="utf-8")
+    start = source.index('logger.info(\n                "volume.watch_timeout"')
+    end = source.index("        except Exception as exc:", start)
+    block = source[start:end]
+
+    assert 'if "market_observation" in degraded:' in block
+    assert 'status="FAILED"' in block
+    assert 'stop_reason="PERSISTENCE_ERROR:market_observation"' in block
+    assert block.index('if "market_observation" in degraded:') < block.index('status="COMPLETED"')
+
+
+def test_watch_completion_keeps_completed_path_when_market_observation_is_healthy():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).parents[1] / "src" / "sentinel" / "volume.py"
+    ).read_text(encoding="utf-8")
+    start = source.index('logger.info(\n                "volume.watch_timeout"')
+    end = source.index("        except Exception as exc:", start)
+    block = source[start:end]
+
+    assert "else:" in block
+    assert 'status="COMPLETED"' in block
+    assert 'kind="watch_complete"' in block
