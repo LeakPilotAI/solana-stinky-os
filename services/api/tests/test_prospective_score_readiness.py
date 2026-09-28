@@ -19,3 +19,14 @@ def test_score_readiness_is_evidence_only_and_requires_held_out_metrics():
     assert '"policy_provisioning_authority": False' in source
     assert '"automatic_activation": False' in source
     assert '"trading_authority": False' in source
+
+
+def test_readiness_does_not_coerce_missing_counts_to_zero():
+    source=(API_ROOT/"src"/"stinky_api"/"prospective_score_readiness.py").read_text(encoding="utf-8")
+    assert "def _nonnegative_int" in source
+    assert "holdout_sample = _nonnegative_int" in source
+    assert "holdout_runners = _nonnegative_int" in source
+    assert "holdout_negatives = _nonnegative_int" in source
+    assert "missed_runners = _nonnegative_int" in source
+    assert "missed_runners is not None and missed_runners <=" in source
+    assert 'int(metrics.get("missed_runner_count") or 0)' not in source
