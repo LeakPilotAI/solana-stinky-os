@@ -108,3 +108,37 @@ async def test_invalid_cutoff_fails_closed():
     result = await market_pattern_history(object(), "abc123", as_of="not-a-time")
     assert result["status"] == "UNKNOWN"
     assert result["missing"] == ["invalid_as_of"]
+
+
+def test_market_pattern_signature_stabilizes_insignificant_float_noise():
+    from stinky_api.market_outcome_analysis import market_path_signature
+    from stinky_api.market_path_patterns import canonical_pattern_hash
+
+    base = {
+        "status": "OBSERVED",
+        "observed_horizons": ["5m", "15m"],
+        "observed_record_count": 2,
+        "metrics": {
+            "price_usd": {
+                "observations": 2,
+                "first": {"horizon": "5m"},
+                "last": {"horizon": "15m"},
+                "percent_change_first_to_last": 12.3456781,
+            }
+        },
+    }
+    noisy = {
+        **base,
+        "metrics": {
+            "price_usd": {
+                **base["metrics"]["price_usd"],
+                "percent_change_first_to_last": 12.3456782,
+            }
+        },
+    }
+
+    a = market_path_signature(base)["signature"]
+    b = market_path_signature(noisy)["signature"]
+    assert a == b
+    assert canonical_pattern_hash(a) == canonical_pattern_hash(b)
+    assert a["metrics"]["price_usd"]["percent_change_first_to_last"] == 12.3457
