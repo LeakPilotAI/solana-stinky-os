@@ -67,6 +67,7 @@ async def test_as_of_masks_outcome_until_both_observed_and_ingested():
     assert out["mutable_outcome_status"] == "FADE"
     assert out["mutable_outcome_status_is_historical_authority"] is False
     launch_sql = session.calls[0][0]
+    assert "l.observed_at <= :as_of" in launch_sql and "l.created_at <= :as_of" in launch_sql
     assert "e.occurred_at <= :as_of" in launch_sql and "e.ingested_at <= :as_of" in launch_sql
     observation_sql = session.calls[1][0]
     assert "o.observed_at <= :as_of" in observation_sql
