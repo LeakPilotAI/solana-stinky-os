@@ -169,7 +169,9 @@ def outcome_from_ticks(
         multiple = peak_px / entry_px
     elif entry_vol and peak_vol and entry_vol > 0:
         multiple = peak_vol / entry_vol
-    complete = end >= horizon or len(ticks) >= 3
+    # Prospective outcome completeness is time-based. Early sampling density
+    # cannot substitute for observing the requested future horizon.
+    complete = end >= horizon
     oc = label_outcome(
         peak_multiple=multiple,
         peak_volume=peak_vol,
