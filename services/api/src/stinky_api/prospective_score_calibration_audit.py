@@ -31,23 +31,34 @@ def _dt(value: Any) -> datetime:
 async def audit_prospective_score_calibration(
     session,
     *,
-    model_version: str,
+    intelligence_model_version: str,
+    score_model_version: str,
     outcome_label_version: str = "outcome-v1.1.0",
     score_threshold: float = 55.0,
     as_of: datetime | str | None = None,
     min_labeled_sample: int = 20,
 ) -> dict[str, Any]:
-    model = str(model_version or "").strip()
+    intelligence_model = str(intelligence_model_version or "").strip()
+    score_model = str(score_model_version or "").strip()
     label_version = str(outcome_label_version or "").strip()
     cutoff = _dt(as_of)
     required = max(1, int(min_labeled_sample))
-    if not model or not label_version:
-        return {"status": "UNKNOWN", "missing": ["model_version" if not model else "outcome_label_version"], **AUTHORITY}
+    missing_versions = [
+        name for name, value in (
+            ("intelligence_model_version", intelligence_model),
+            ("score_model_version", score_model),
+            ("outcome_label_version", label_version),
+        ) if not value
+    ]
+    if missing_versions:
+        return {"status": "UNKNOWN", "missing": missing_versions, **AUTHORITY}
 
     rows = (await session.execute(text("""
         SELECT DISTINCT ON (mi.mint)
-          mi.mint, mi.inspected_at, mi.model_version, mi.stinky_score,
-          mi.score_confidence, mi.alert_ok, mi.alert_reason,
+          mi.mint, mi.inspected_at,
+          mi.model_version AS intelligence_model_version,
+          mi.evidence->'score'->>'model_version' AS score_model_version,
+          mi.stinky_score, mi.score_confidence, mi.alert_ok, mi.alert_reason,
           ol.label, ol.label_version, ol.observed_at AS outcome_observed_at,
           ol.ingested_at AS outcome_ingested_at
         FROM market_inspections mi
@@ -56,10 +67,16 @@ async def audit_prospective_score_calibration(
          AND ol.label_version = :label_version
          AND ol.observed_at >= mi.inspected_at
          AND ol.ingested_at <= :as_of
-        WHERE mi.model_version = :model_version
+        WHERE mi.model_version = :intelligence_model_version
+          AND mi.evidence->'score'->>'model_version' = :score_model_version
           AND mi.inspected_at <= :as_of
         ORDER BY mi.mint, mi.inspected_at ASC, ol.observed_at ASC, ol.ingested_at ASC
-    """), {"model_version": model, "label_version": label_version, "as_of": cutoff})).mappings().all()
+    """), {
+        "intelligence_model_version": intelligence_model,
+        "score_model_version": score_model,
+        "label_version": label_version,
+        "as_of": cutoff,
+    })).mappings().all()
 
     records = [dict(r) for r in rows if str(r.get("label") or "") in {"RUNNER", "HELD", "FADE"}]
     labeled = len(records)
@@ -80,7 +97,8 @@ async def audit_prospective_score_calibration(
     return {
         "status": "OBSERVED",
         "readiness_status": "CALIBRATION_SAMPLE_SUFFICIENT" if sufficient else "INSUFFICIENT_EVIDENCE",
-        "model_version": model,
+        "intelligence_model_version": intelligence_model,
+        "score_model_version": score_model,
         "outcome_label_version": label_version,
         "as_of": cutoff.isoformat(),
         "score_threshold_audited": float(score_threshold),
