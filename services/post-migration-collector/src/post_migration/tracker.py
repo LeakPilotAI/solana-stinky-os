@@ -225,6 +225,7 @@ class MintTracker:
                             coverage_complete=coverage_complete,
                         )
                         if n > 0 and coverage_complete:
+                            await self._store.set_buyer_capture_complete(self.mint, True)
                             early_done = True
                         elif n > 0:
                             logger.warning(
@@ -236,6 +237,7 @@ class MintTracker:
                             )
                     else:
                         if elapsed > settings.early_buyer_window_sec:
+                            await self._store.set_buyer_capture_complete(self.mint, False)
                             early_done = True
                             logger.warning(
                                 "track.early_buyers_timeout",
