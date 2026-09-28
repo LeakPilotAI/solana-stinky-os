@@ -38,7 +38,10 @@ async def test_token_migrated_records_launch_then_requests_snapshot_capture():
     service._redis = SimpleNamespace(xack=AsyncMock())
     entity_id = UUID("00000000-0000-0000-0000-000000000123")
     service._resolver = SimpleNamespace(ensure_deployer_observed=AsyncMock(return_value=entity_id))
-    service._launch_history = SimpleNamespace(record_launch=AsyncMock(return_value=False))
+    service._launch_history = SimpleNamespace(
+        get_launch_identity_for_mint=AsyncMock(return_value=None),
+        record_launch=AsyncMock(return_value=False),
+    )
     service._behavior = SimpleNamespace(refresh_entity=AsyncMock(return_value={"cadence_bucket": "UNKNOWN"}))
     service._capture_phase10_evidence = AsyncMock()
 
