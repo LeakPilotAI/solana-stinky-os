@@ -238,6 +238,7 @@ async def audit_prospective_phase10_corpus(
 
     output_rows: list[dict[str, Any]] = []
     developer_count = correlation_count = lifecycle_count = complete_count = 0
+    label_complete_count = calibration_usable_count = 0
     entity_resolved_count = 0
     for migration in rows:
         feature_as_of = migration["feature_as_of"]
@@ -263,11 +264,14 @@ async def audit_prospective_phase10_corpus(
         label_row = next(iter(labels_by_mint.get(mint, [])), None)
         outcome_label = str(label_row.get("label")) if label_row and label_row.get("label") in {"RUNNER", "HELD", "FADE"} else "UNKNOWN"
         label_complete = outcome_label != "UNKNOWN"
+        calibration_usable = complete and label_complete
         entity_resolved_count += int(entity_resolved)
         developer_count += int(has_dev)
         correlation_count += int(has_corr)
         lifecycle_count += int(has_life)
         complete_count += int(complete)
+        label_complete_count += int(label_complete)
+        calibration_usable_count += int(calibration_usable)
 
         output_rows.append({
             "mint": mint,
@@ -286,6 +290,7 @@ async def audit_prospective_phase10_corpus(
             "lifecycle_evidence_basis": life.get("evidence_basis") if life else None,
             "outcome_label": outcome_label,
             "outcome_label_complete": label_complete,
+            "calibration_usable": calibration_usable,
             "outcome_label_version": label_row.get("label_version") if label_complete else None,
             "outcome_observed_at": _iso(label_row.get("observed_at")) if label_complete else None,
             "outcome_ingested_at": _iso(label_row.get("ingested_at")) if label_complete else None,
@@ -306,6 +311,10 @@ async def audit_prospective_phase10_corpus(
         "lifecycle_dual_time_coverage": lifecycle_count / total,
         "feature_complete_count": complete_count,
         "feature_complete_coverage": complete_count / total,
+        "outcome_label_complete_count": label_complete_count,
+        "outcome_label_complete_coverage": label_complete_count / total,
+        "calibration_usable_count": calibration_usable_count,
+        "calibration_usable_coverage": calibration_usable_count / total,
         "rows": output_rows,
         "bounded": {"limit": limit, "feature_horizon_seconds": feature_horizon_seconds, "query_count_max": 5},
         "prospective_policy": {
@@ -321,6 +330,7 @@ async def audit_prospective_phase10_corpus(
             "outcome_label_version_required": requested_label_version,
             "outcome_label_dual_time_required": True,
             "missing_or_late_outcome_label": "UNKNOWN",
+            "calibration_usable_requires": ["feature_complete", "outcome_label_complete"],
             "missing_evidence_remains_unknown": True,
         },
         **AUTHORITY,
