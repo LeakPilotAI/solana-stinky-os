@@ -26,3 +26,11 @@ def test_candidate_requires_readiness_to_match_frozen_evaluation():
     assert '"readiness_holdout_evidence_match"' in source
     assert 'readiness.get(key)!=evaluation.get(key)' in source
     assert 'all(v is True for v in checks.values())' in source
+
+
+def test_candidate_rejects_out_of_domain_or_noncanonical_evidence():
+    source=(API_ROOT/"src"/"stinky_api"/"prospective_score_paper_candidate.py").read_text(encoding="utf-8")
+    assert "not 0.0 <= threshold <= 100.0" in source
+    assert '"selected_threshold_score_domain"' in source
+    assert "allow_nan=False" in source
+    assert '"canonical_json_safe_finite_evidence"' in source
