@@ -715,3 +715,19 @@ def test_restart_hydrates_watch_states_and_skips_terminal_watches():
     assert 'terminal_statuses = {"COMPLETED", "FAILED"}' in resume
     assert "if watch_state is None:" in resume
     assert 'if str(watch_state.get("status") or "").upper() in terminal_statuses:' in resume
+
+
+def test_restart_fails_nonterminal_watch_when_investigation_evidence_is_missing():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).parents[1] / "src" / "sentinel" / "volume.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("    async def _resume_open_watches(")
+    end = source.index("    def _track_background_task(", start)
+    block = source[start:end]
+
+    assert 'status not in {"DETECTED", "WATCHING"}' in block
+    assert 'status="FAILED"' in block
+    assert 'stop_reason="PERSISTENCE_ERROR:restart_investigation_missing"' in block
+    assert "mint in investigation_mints" in block
