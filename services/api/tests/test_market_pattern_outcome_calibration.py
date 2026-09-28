@@ -111,6 +111,8 @@ async def test_pattern_followup_query_enforces_strict_after_boundary_and_as_of()
     assert "b.observed_at <= o.observed_at" in session.statement
     assert "observed_at <= :as_of" in session.statement
     assert "mo.observed_at <= :as_of" in session.statement
+    assert "mo.ingested_at <= :as_of" in session.statement
+    assert "b.ingested_at <= :as_of" in session.statement
     assert session.params["as_of"].isoformat() == "2026-09-03T00:00:00+00:00"
     assert result["status"] == "UNKNOWN"
     assert result["temporal_cutoff_enforced"] is True
@@ -131,3 +133,16 @@ async def test_invalid_as_of_fails_closed_without_query():
     assert result["status"] == "UNKNOWN"
     assert result["missing"] == ["invalid_as_of"]
     assert result["followup_coverage"] is None
+
+
+@pytest.mark.asyncio
+async def test_backdated_but_late_ingested_evidence_is_excluded_by_query_contract():
+    session = Session([])
+    await calibrate_market_pattern_outcomes(
+        session,
+        "hash-late-ingest",
+        as_of="2026-09-03T00:00:00Z",
+    )
+
+    assert "mo.observed_at <= :as_of AND mo.ingested_at <= :as_of" in session.statement
+    assert "(:as_of IS NULL OR b.ingested_at <= :as_of)" in session.statement

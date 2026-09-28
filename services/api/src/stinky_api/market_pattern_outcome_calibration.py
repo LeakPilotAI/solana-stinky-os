@@ -69,10 +69,10 @@ async def calibrate_market_pattern_outcomes(
 
     occurrence_cutoff = ""
     followup_cutoff = ""
-    params: dict[str, Any] = {"pattern_hash": pattern_hash, "limit": bounded_limit}
+    params: dict[str, Any] = {"pattern_hash": pattern_hash, "limit": bounded_limit, "as_of": cutoff}
     if cutoff is not None:
         occurrence_cutoff = "AND observed_at <= :as_of"
-        followup_cutoff = "AND mo.observed_at <= :as_of"
+        followup_cutoff = "AND mo.observed_at <= :as_of AND mo.ingested_at <= :as_of"
         params["as_of"] = cutoff
 
     try:
@@ -106,6 +106,7 @@ async def calibrate_market_pattern_outcomes(
                         FROM market_outcome_observations b
                         WHERE b.mint = o.mint
                           AND b.observed_at <= o.observed_at
+                          AND (:as_of IS NULL OR b.ingested_at <= :as_of)
                         ORDER BY b.observed_at DESC, b.horizon_seconds DESC, b.id DESC
                         LIMIT 1
                     ) baseline ON TRUE
