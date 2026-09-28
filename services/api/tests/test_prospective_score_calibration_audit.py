@@ -9,7 +9,10 @@ def test_score_calibration_audit_is_temporal_versioned_and_read_only():
     assert "ol.label_version = :label_version" in source
     assert "ol.observed_at >= mi.inspected_at" in source
     assert "ol.ingested_at <= :as_of" in source
-    assert "mi.model_version = :model_version" in source
+    assert "mi.model_version = :intelligence_model_version" in source
+    assert "mi.evidence->'score'->>'model_version' = :score_model_version" in source
+    assert '"intelligence_model_version": intelligence_model' in source
+    assert '"score_model_version": score_model' in source
     assert '"runner_precision": precision' in source
     assert '"false_positive_rate_among_threshold_positives": false_positive_rate' in source
     assert '"runner_recall": runner_recall' in source
