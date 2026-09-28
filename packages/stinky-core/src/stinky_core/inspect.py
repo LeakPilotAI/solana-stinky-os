@@ -574,10 +574,12 @@ def assess_rug(
 
     if synthetic is not None and synthetic.level not in (None, "UNKNOWN"):
         coverage["synthetic"] = True
-        if synthetic.level == "CRITICAL":
-            add(24, "synthetic_overlap", "critical", synthetic.score, "Synthetic activity already CRITICAL")
-        elif synthetic.level == "HIGH":
-            add(12, "synthetic_overlap", "high", synthetic.score, "Synthetic activity HIGH")
+        synthetic_families = set(synthetic.independent_families or [])
+        independent_synthetic_overlap = bool(synthetic_families - {"concentration"})
+        if synthetic.level == "CRITICAL" and independent_synthetic_overlap:
+            add(24, "synthetic_overlap", "critical", synthetic.score, "Synthetic activity already CRITICAL with non-concentration evidence")
+        elif synthetic.level == "HIGH" and independent_synthetic_overlap:
+            add(12, "synthetic_overlap", "high", synthetic.score, "Synthetic activity HIGH with non-concentration evidence")
     else:
         missing.append("synthetic")
 
