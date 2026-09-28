@@ -71,3 +71,22 @@ def test_followup_market_persistence_includes_canonical_pair_identity():
     assert '"dex_id": snap.dex_id' in block
     assert block.count('"pair_address": snap.pair_address') >= 1
     assert block.count('"dex_id": snap.dex_id') >= 1
+
+
+def test_dexscreener_market_rows_keep_provider_identity():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).parents[1] / "src" / "sentinel" / "volume.py"
+    ).read_text(encoding="utf-8")
+
+    decision_start = source.index("async def _persist_memory_decision")
+    decision_end = source.index("async def _record_market_snapshot", decision_start)
+    decision_block = source[decision_start:decision_end]
+    followup_start = decision_end
+    followup_end = source.index("async def _persist_quality_state", followup_start)
+    followup_block = source[followup_start:followup_end]
+
+    assert '"source": "dexscreener"' in decision_block
+    assert '"source": "dexscreener"' in followup_block
+    assert 'source="dexscreener"' in followup_block

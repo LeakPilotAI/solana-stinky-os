@@ -1274,7 +1274,7 @@ class VolumeMonitor:
                         "liquidity_usd": liquidity_usd,
                         "pair_address": pair_address,
                         "dex_id": dex_id,
-                        "source": "observed",
+                        "source": "dexscreener",
                         "market_cap_usd": market_cap_usd,
                         "buys": buys,
                         "sells": sells,
@@ -1462,7 +1462,7 @@ class VolumeMonitor:
                         "liquidity_usd": snap.liquidity_usd,
                         "pair_address": snap.pair_address,
                         "dex_id": snap.dex_id,
-                        "source": "observed",
+                        "source": "dexscreener",
                         "market_cap_usd": getattr(snap, "market_cap_usd", None),
                         "buys": buys,
                         "sells": sells,
@@ -1486,7 +1486,7 @@ class VolumeMonitor:
                     buys=buys,
                     sells=sells,
                     txns=txns,
-                    source="observed",
+                    source="dexscreener",
                 )
                 try:
                     from stinky_core.quality_state import evaluate_quality_state
