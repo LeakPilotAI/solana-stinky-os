@@ -9,7 +9,7 @@ from uuid import UUID
 
 import structlog
 
-from post_migration.chain import ChainClient
+from post_migration.chain import ChainClient, last_trade_source_status
 from post_migration.config import settings
 from post_migration.metrics import metrics
 from post_migration.models import ObservedTrade, TradeSide, TrackStatus
@@ -205,7 +205,7 @@ class MintTracker:
                             self.track_id, self.mint, ranked
                         )
                         metrics.inc("early_buyers_captured", n)
-                        source_status = self._chain.last_trade_source_status()
+                        source_status = last_trade_source_status()
                         coverage_complete = source_status.trade_source_coverage == 1.0
                         logger.info(
                             "track.early_buyers",
