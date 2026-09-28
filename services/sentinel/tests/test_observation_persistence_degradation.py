@@ -658,3 +658,39 @@ def test_watch_completion_blockers_cover_both_restart_critical_market_paths():
 
     assert '"market_observation"' in block
     assert '"investigation_memory"' in block
+
+
+def test_investigation_memory_is_published_only_after_durable_commit():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).parents[1] / "src" / "sentinel" / "volume.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("    async def _persist_memory_decision(")
+    end = source.index("    async def _persist_depth_observation(", start)
+    block = source[start:end]
+
+    commit = block.index("await session.commit()")
+    publish_decision = block.index("mem.ingest_decision(")
+    publish_investigation = block.index("mem.record_investigation(")
+    publish_market = block.index("mem.record_market_tick(")
+
+    assert commit < publish_decision
+    assert commit < publish_investigation
+    assert commit < publish_market
+
+
+def test_investigation_path_does_not_publish_memory_before_persist_helper():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).parents[1] / "src" / "sentinel" / "volume.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("    async def _investigate_and_maybe_alert(")
+    block = source[start:]
+
+    persist = block.index("await self._persist_memory_decision(")
+    before_persist = block[:persist]
+    assert "mem.ingest_decision(" not in before_persist
+    assert "mem.record_investigation(" not in before_persist
+    assert "mem.record_market_tick(" not in before_persist
