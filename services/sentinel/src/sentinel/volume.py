@@ -1551,8 +1551,10 @@ class VolumeMonitor:
                     },
                 )
                 await session.commit()
+            self._clear_observation_persistence_degraded("provider_probe")
         except Exception as exc:
-            logger.debug("probe.persist_failed", error=str(exc)[:160])
+            self._mark_observation_persistence_degraded("provider_probe", exc)
+            logger.warning("probe.persist_failed", error=str(exc)[:160])
 
     async def _investigate_and_maybe_alert(
         self, migration: DetectedMigration, snap: VolumeSnapshot
