@@ -258,5 +258,75 @@ class LaunchHistoryStore:
             if not row:
                 await session.rollback()
                 return False
+
+            # Project only canonical measured performance outcomes into the
+            # intelligence-memory reputation read model.  The memberships
+            # already existed at decision time; this attaches the later,
+            # measured result without creating a second classifier.
+            measured_status = str(status).upper()
+            if measured_status in {"RUNNER", "HELD", "FADE"}:
+                label_version = str(
+                    ((metadata or {}).get("classification") or {}).get("label_version")
+                    or "outcome-v1.1.0"
+                )
+                await session.execute(
+                    text(
+                        """
+                        INSERT INTO wallet_outcome_labels (
+                            wallet, mint, labeled_at, label, label_version, source
+                        )
+                        SELECT wallet, mint, :labeled_at, :label, :label_version, :source
+                        FROM wallet_observations
+                        WHERE mint = :mint
+                        ON CONFLICT (wallet, mint) DO NOTHING
+                        """
+                    ),
+                    {
+                        "mint": mint,
+                        "labeled_at": observed,
+                        "label": measured_status,
+                        "label_version": label_version,
+                        "source": label_version,
+                    },
+                )
+                await session.execute(
+                    text(
+                        """
+                        INSERT INTO creator_outcome_labels (
+                            creator, mint, labeled_at, label, label_version
+                        )
+                        SELECT creator, mint, :labeled_at, :label, :label_version
+                        FROM creator_observations
+                        WHERE mint = :mint
+                        ON CONFLICT (creator, mint) DO NOTHING
+                        """
+                    ),
+                    {
+                        "mint": mint,
+                        "labeled_at": observed,
+                        "label": measured_status,
+                        "label_version": label_version,
+                    },
+                )
+                await session.execute(
+                    text(
+                        """
+                        INSERT INTO pattern_outcomes (
+                            fingerprint, mint, labeled_at, label, label_version
+                        )
+                        SELECT fingerprint, mint, :labeled_at, :label, :label_version
+                        FROM pattern_fingerprints
+                        WHERE mint = :mint
+                        ON CONFLICT (fingerprint, mint) DO NOTHING
+                        """
+                    ),
+                    {
+                        "mint": mint,
+                        "labeled_at": observed,
+                        "label": measured_status,
+                        "label_version": label_version,
+                    },
+                )
+
             await session.commit()
             return True

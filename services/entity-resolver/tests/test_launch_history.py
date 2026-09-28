@@ -26,6 +26,7 @@ class _Session:
         self.committed = False
         self.rolled_back = False
         self.params = None
+        self.calls = []
 
     async def __aenter__(self):
         return self
@@ -35,6 +36,7 @@ class _Session:
 
     async def execute(self, statement, params=None):
         self.params = params
+        self.calls.append((str(statement), params))
         return _Result(self.row)
 
     async def commit(self):
@@ -142,3 +144,53 @@ async def test_deployer_history_summary_returns_evidence_counts() -> None:
 
     assert result == {"deployer_wallet": "DEPLOYER", **row}
     assert session.params == {"wallet": "DEPLOYER"}
+
+
+@pytest.mark.asyncio
+async def test_measured_outcome_projects_existing_reputation_memberships_atomically() -> None:
+    session = _Session((123,))
+    store = LaunchHistoryStore.__new__(LaunchHistoryStore)
+    store._sessions = _Sessions(session)
+    observed = datetime(2026, 9, 7, 13, 30, tzinfo=timezone.utc)
+
+    result = await store.record_outcome(
+        mint="MINT",
+        status="RUNNER",
+        metadata={"classification": {"label_version": "outcome-v1.1.0"}},
+        observed_at=observed,
+    )
+
+    assert result is True
+    sql = "\n".join(statement for statement, _ in session.calls)
+    assert "INSERT INTO wallet_outcome_labels" in sql
+    assert "FROM wallet_observations" in sql
+    assert "INSERT INTO creator_outcome_labels" in sql
+    assert "FROM creator_observations" in sql
+    assert "INSERT INTO pattern_outcomes" in sql
+    assert "FROM pattern_fingerprints" in sql
+    projected = [params for statement, params in session.calls if "outcome_labels" in statement or "pattern_outcomes" in statement]
+    assert len(projected) == 3
+    assert all(params["label"] == "RUNNER" for params in projected)
+    assert all(params["labeled_at"] == observed for params in projected)
+    assert all(params["label_version"] == "outcome-v1.1.0" for params in projected)
+    assert session.committed is True
+
+
+@pytest.mark.asyncio
+async def test_generic_completion_does_not_project_performance_labels() -> None:
+    session = _Session((123,))
+    store = LaunchHistoryStore.__new__(LaunchHistoryStore)
+    store._sessions = _Sessions(session)
+
+    result = await store.record_outcome(
+        mint="MINT",
+        status="completed",
+        metadata={"performance_outcome": "UNKNOWN"},
+    )
+
+    assert result is True
+    sql = "\n".join(statement for statement, _ in session.calls)
+    assert "wallet_outcome_labels" not in sql
+    assert "creator_outcome_labels" not in sql
+    assert "pattern_outcomes" not in sql
+    assert session.committed is True
