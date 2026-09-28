@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -172,9 +173,13 @@ async def test_measured_outcome_projects_existing_reputation_memberships_atomica
     assert "INSERT INTO pattern_outcomes" in sql
     assert "FROM pattern_fingerprints" in sql
     projected = [params for statement, params in session.calls if "outcome_labels" in statement or "pattern_outcomes" in statement]
-    assert len(projected) == 3
+    assert len(projected) == 4
+    assert any("INSERT INTO entity_launch_outcome_labels" in statement for statement, _ in session.calls)
     assert all(params["label"] == "RUNNER" for params in projected)
-    assert all(params["labeled_at"] == observed for params in projected)
+    projection_params = [params for statement, params in session.calls if "wallet_outcome_labels" in statement or "creator_outcome_labels" in statement or "pattern_outcomes" in statement]
+    ledger_params = [params for statement, params in session.calls if "entity_launch_outcome_labels" in statement]
+    assert all(params["labeled_at"] == observed for params in projection_params)
+    assert all(params["observed_at"] == observed for params in ledger_params)
     assert all(params["label_version"] == "outcome-v1.1.0" for params in projected)
     assert session.committed is True
 
