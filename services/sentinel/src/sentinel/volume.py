@@ -959,10 +959,26 @@ class VolumeMonitor:
                 threshold_usd=self._threshold,
                 watched_sec=round((datetime.now(timezone.utc) - started).total_seconds(), 1),
             )
-            await self._upsert_watch(
-                mint=mint, started_at=started.isoformat(), status="COMPLETED", resumed=resumed, pool=migration.pool,
-            )
-            await self._trace(mint=mint, kind="watch_complete", message="T+1800 window complete")
+            degraded = self.observation_persistence_degraded
+            if "market_observation" in degraded:
+                await self._upsert_watch(
+                    mint=mint,
+                    started_at=started.isoformat(),
+                    status="FAILED",
+                    resumed=resumed,
+                    stop_reason="PERSISTENCE_ERROR:market_observation",
+                    pool=migration.pool,
+                )
+                await self._trace(
+                    mint=mint,
+                    kind="watch_error",
+                    message="T+1800 elapsed with degraded market-observation persistence",
+                )
+            else:
+                await self._upsert_watch(
+                    mint=mint, started_at=started.isoformat(), status="COMPLETED", resumed=resumed, pool=migration.pool,
+                )
+                await self._trace(mint=mint, kind="watch_complete", message="T+1800 window complete")
         except Exception as exc:
             logger.error("volume.watch_failed", mint=mint, error=str(exc))
             await self._upsert_watch(
