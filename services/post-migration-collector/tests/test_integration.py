@@ -105,3 +105,15 @@ def test_position_accumulator():
     )
     assert state2["tokens_remaining"] == 0
     assert state2["is_open"] is False
+
+
+def test_market_snapshot_requires_solana_and_rejects_pair_disagreement():
+    source = (
+        Path(__file__).parents[1] / "src" / "post_migration" / "chain.py"
+    ).read_text(encoding="utf-8")
+
+    assert 'sol = [p for p in pairs if p.get("chainId") == "solana"]' in source
+    assert 'if not sol:' in source
+    assert 'return None' in source[source.index('if not sol:'):source.index('def liq', source.index('if not sol:'))]
+    assert 'if lo > 0 and (hi / lo) > 1.25:' in source
+    assert '"chain.dex_market_pair_disagreement"' in source
