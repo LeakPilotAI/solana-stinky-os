@@ -84,3 +84,19 @@ def test_restart_hydrates_durable_early_buyer_event_dedupe_keys():
     assert "self._early_buyer_events_published.update(" in tracker
     assert "SELECT signature, wallet" in store
     assert "FROM migration_buyers" in store
+
+
+def test_backfill_includes_interrupted_active_tracks_with_partial_buyers():
+    from pathlib import Path
+
+    store = (
+        Path(__file__).parents[1] / "src" / "post_migration" / "store.py"
+    ).read_text(encoding="utf-8")
+
+    start = store.index("    async def migrations_needing_buyers(")
+    block = store[start:]
+    assert "NOT EXISTS (" in block
+    assert "FROM migration_buyers mb" in block
+    assert "OR EXISTS (" in block
+    assert "FROM migration_tracks mt" in block
+    assert "mt.status = 'active'" in block
