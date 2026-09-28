@@ -26,3 +26,16 @@ def test_holdout_reports_correct_discrimination_metrics_and_versions():
     assert '"runner_recall"' in source
     assert '"unknown_score_rate"' in source
     assert '"trading_authority": False' in source
+
+
+def test_holdout_requires_runner_and_negative_support_in_both_windows():
+    source = (API_ROOT / "src" / "stinky_api" / "prospective_score_holdout_evaluation.py").read_text(encoding="utf-8")
+    assert '"sufficient_training_runners"' in source
+    assert '"sufficient_training_negatives"' in source
+    assert '"sufficient_holdout_runners"' in source
+    assert '"sufficient_holdout_negatives"' in source
+    assert '"training_runner_count": training_runner_count' in source
+    assert '"training_negative_count": training_negative_count' in source
+    assert '"holdout_runner_count": holdout_runner_count' in source
+    assert '"holdout_negative_count": holdout_negative_count' in source
+    assert '"evaluation_status": "NOT_EVALUATION_READY"' in source

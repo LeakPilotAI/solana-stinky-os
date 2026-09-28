@@ -59,6 +59,10 @@ async def evaluate_score_threshold_out_of_sample(
     evaluation_fraction: float = 0.25,
     min_training_sample: int = 20,
     min_holdout_sample: int = 8,
+    min_training_runners: int = 2,
+    min_training_negatives: int = 2,
+    min_holdout_runners: int = 2,
+    min_holdout_negatives: int = 2,
     min_training_runner_precision: float = 0.50,
     as_of: datetime | str | None = None,
 ) -> dict[str, Any]:
@@ -70,6 +74,10 @@ async def evaluate_score_threshold_out_of_sample(
     fraction = min(max(float(evaluation_fraction), 0.10), 0.50)
     min_train = max(1, int(min_training_sample))
     min_holdout = max(1, int(min_holdout_sample))
+    min_train_runners = max(1, int(min_training_runners))
+    min_train_negatives = max(1, int(min_training_negatives))
+    min_test_runners = max(1, int(min_holdout_runners))
+    min_test_negatives = max(1, int(min_holdout_negatives))
     precision_floor = min(max(float(min_training_runner_precision), 0.0), 1.0)
     if not intel or not score_model or not label_version or not thresholds:
         return {"status": "UNKNOWN", "evaluation_status": "NOT_EVALUATION_READY", "missing": ["version_or_threshold_configuration"], **AUTHORITY}
@@ -104,6 +112,10 @@ async def evaluate_score_threshold_out_of_sample(
         "evaluation_fraction": fraction,
         "min_training_sample": min_train,
         "min_holdout_sample": min_holdout,
+        "min_training_runners": min_train_runners,
+        "min_training_negatives": min_train_negatives,
+        "min_holdout_runners": min_test_runners,
+        "min_holdout_negatives": min_test_negatives,
         "min_training_runner_precision": precision_floor,
         "candidate_thresholds": thresholds,
     }
@@ -120,6 +132,34 @@ async def evaluate_score_threshold_out_of_sample(
 
     training = records[:train_count]
     holdout = records[train_count:]
+    training_runner_count = sum(1 for r in training if r["label"] == "RUNNER")
+    training_negative_count = sum(1 for r in training if r["label"] != "RUNNER")
+    holdout_runner_count = sum(1 for r in holdout if r["label"] == "RUNNER")
+    holdout_negative_count = sum(1 for r in holdout if r["label"] != "RUNNER")
+    class_missing = []
+    if training_runner_count < min_train_runners:
+        class_missing.append("sufficient_training_runners")
+    if training_negative_count < min_train_negatives:
+        class_missing.append("sufficient_training_negatives")
+    if holdout_runner_count < min_test_runners:
+        class_missing.append("sufficient_holdout_runners")
+    if holdout_negative_count < min_test_negatives:
+        class_missing.append("sufficient_holdout_negatives")
+    if class_missing:
+        return {
+            "status": "OBSERVED",
+            "evaluation_status": "NOT_EVALUATION_READY",
+            "training_sample_count": len(training),
+            "holdout_sample_count": len(holdout),
+            "training_runner_count": training_runner_count,
+            "training_negative_count": training_negative_count,
+            "holdout_runner_count": holdout_runner_count,
+            "holdout_negative_count": holdout_negative_count,
+            "criteria": criteria,
+            "missing": class_missing,
+            **AUTHORITY,
+        }
+
     training_candidates = []
     for threshold in thresholds:
         metrics = _metrics(training, threshold)
@@ -164,11 +204,15 @@ async def evaluate_score_threshold_out_of_sample(
         "as_of": cutoff.isoformat(),
         "training_window": {
             "sample_count": len(training),
+            "runner_count": training_runner_count,
+            "negative_count": training_negative_count,
             "first_inspected_at": _dt(training[0]["inspected_at"]).isoformat(),
             "last_inspected_at": _dt(training[-1]["inspected_at"]).isoformat(),
         },
         "holdout_window": {
             "sample_count": len(holdout),
+            "runner_count": holdout_runner_count,
+            "negative_count": holdout_negative_count,
             "first_inspected_at": _dt(holdout[0]["inspected_at"]).isoformat(),
             "last_inspected_at": _dt(holdout[-1]["inspected_at"]).isoformat(),
         },
