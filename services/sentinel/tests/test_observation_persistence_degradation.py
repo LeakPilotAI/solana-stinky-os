@@ -694,3 +694,24 @@ def test_investigation_path_does_not_publish_memory_before_persist_helper():
     assert "mem.ingest_decision(" not in before_persist
     assert "mem.record_investigation(" not in before_persist
     assert "mem.record_market_tick(" not in before_persist
+
+
+def test_restart_hydrates_watch_states_and_skips_terminal_watches():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).parents[1] / "src" / "sentinel" / "volume.py"
+    ).read_text(encoding="utf-8")
+
+    hydrate_start = source.index("    async def _hydrate_memory(")
+    hydrate_end = source.index("    async def _persist_memory_decision(", hydrate_start)
+    hydrate = source[hydrate_start:hydrate_end]
+    assert "MEMORY_SELECT_WATCH_STATE" in hydrate
+    assert '"watch_states": [dict(r) for r in watches]' in hydrate
+
+    resume_start = source.index("    async def _resume_open_watches(")
+    resume_end = source.index("    def _track_background_task(", resume_start)
+    resume = source[resume_start:resume_end]
+    assert 'terminal_statuses = {"COMPLETED", "FAILED"}' in resume
+    assert "if watch_state is None:" in resume
+    assert 'if str(watch_state.get("status") or "").upper() in terminal_statuses:' in resume
