@@ -56,8 +56,8 @@ def build_score_paper_candidate(evaluation: dict[str,Any], readiness: dict[str,A
     criteria=readiness.get("criteria")
     checks=readiness.get("checks")
     missing=[k for k,v in versions.items() if v is None]
-    if threshold is None:
-        missing.append("selected_threshold")
+    if threshold is None or not 0.0 <= threshold <= 100.0:
+        missing.append("selected_threshold_score_domain")
     if not isinstance(training,dict): missing.append("training_window")
     if not isinstance(holdout,dict): missing.append("holdout_window")
     if not isinstance(metrics,dict): missing.append("holdout_metrics")
@@ -89,7 +89,10 @@ def build_score_paper_candidate(evaluation: dict[str,Any], readiness: dict[str,A
         "readiness_criteria":criteria,
         "readiness_checks":checks,
     }
-    canonical=json.dumps(payload,sort_keys=True,separators=(",",":"),ensure_ascii=False)
+    try:
+        canonical=json.dumps(payload,sort_keys=True,separators=(",",":"),ensure_ascii=False,allow_nan=False)
+    except (TypeError, ValueError):
+        return {"status":"UNKNOWN","missing":["canonical_json_safe_finite_evidence"],**AUTHORITY}
     evidence_sha256=hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     candidate_version=f"{CANDIDATE_SCHEMA_VERSION}:{evidence_sha256[:16]}"
     return {
