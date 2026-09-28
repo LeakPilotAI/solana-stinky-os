@@ -205,15 +205,28 @@ class MintTracker:
                             self.track_id, self.mint, ranked
                         )
                         metrics.inc("early_buyers_captured", n)
+                        source_status = self._chain.last_trade_source_status()
+                        coverage_complete = source_status.trade_source_coverage == 1.0
                         logger.info(
                             "track.early_buyers",
                             mint=self.mint,
                             captured=n,
                             candidates=len(ranked),
                             buys_seen=len(buys),
+                            trade_source=source_status.trade_source,
+                            trade_source_coverage=source_status.trade_source_coverage,
+                            coverage_complete=coverage_complete,
                         )
-                        if n > 0:
+                        if n > 0 and coverage_complete:
                             early_done = True
+                        elif n > 0:
+                            logger.warning(
+                                "track.early_buyers_partial",
+                                mint=self.mint,
+                                captured=n,
+                                trade_source=source_status.trade_source,
+                                trade_source_coverage=source_status.trade_source_coverage,
+                            )
                     else:
                         if elapsed > settings.early_buyer_window_sec:
                             early_done = True
