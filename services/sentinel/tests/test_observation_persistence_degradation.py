@@ -762,3 +762,18 @@ def test_watch_state_no_session_is_explicitly_degraded():
     no_session = block.index("if not self._sessions:")
     degraded = block.index('_mark_observation_persistence_degraded("watch_state", "NO_SESSION")', no_session)
     assert no_session < degraded
+
+
+def test_watch_completion_is_blocked_by_watch_state_degradation():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).parents[1] / "src" / "sentinel" / "volume.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("            completion_blockers = (")
+    end = source.index("        except Exception as exc:", start)
+    block = source[start:end]
+
+    assert '"watch_state"' in block
+    assert 'stop_reason=f"PERSISTENCE_ERROR:{blocker}"' in block
+    assert block.index('"watch_state"') < block.index('status="COMPLETED"')
