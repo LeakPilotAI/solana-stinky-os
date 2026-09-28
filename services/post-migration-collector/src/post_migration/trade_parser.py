@@ -50,17 +50,16 @@ def _int(v: Any) -> int | None:
         return None
 
 
-def _sol_from_amount(amt: float | None) -> float | None:
-    """Normalize Helius native amounts (lamports or SOL) to SOL.
+def _sol_from_lamports(amt: float | None) -> float | None:
+    """Convert Helius native amount fields from lamports to SOL.
 
-    nativeTransfers are almost always lamports. Values >= 10_000
-    (~0.00001 SOL) are treated as lamports; smaller values left as SOL.
+    Helius nativeTransfers and swap nativeInput/nativeOutput amounts are
+    lamport-denominated by schema. Unit conversion must follow field
+    provenance, never a magnitude heuristic.
     """
     if amt is None:
         return None
-    if abs(amt) >= 10_000:
-        return amt / 1e9
-    return amt
+    return amt / 1e9
 
 
 def classify_side(raw: Any) -> TradeSide | None:
@@ -238,7 +237,7 @@ def parse_helius_swap(tx: dict[str, Any], *, mint: str) -> list[ObservedTrade]:
                 else _f(tin.get("tokenAmount"))
             )
             # User spent the mint → SELL; they receive SOL (nativeOutput)
-            sol = _sol_from_amount(_f(native_out.get("amount")))
+            sol = _sol_from_lamports(_f(native_out.get("amount")))
             if fee_payer and wallet != fee_payer and _is_user_wallet(fee_payer):
                 # Prefer fee payer as the trader when swap is aggregated
                 _add(fee_payer, TradeSide.SELL, tok_amt, sol, "helius.swap.sell")
@@ -258,7 +257,7 @@ def parse_helius_swap(tx: dict[str, Any], *, mint: str) -> list[ObservedTrade]:
                 else _f(tout.get("tokenAmount"))
             )
             # User received the mint → BUY; they spent SOL (nativeInput)
-            sol = _sol_from_amount(_f(native_in.get("amount")))
+            sol = _sol_from_lamports(_f(native_in.get("amount")))
             if fee_payer and wallet != fee_payer and _is_user_wallet(fee_payer):
                 _add(fee_payer, TradeSide.BUY, tok_amt, sol, "helius.swap.buy")
             else:
@@ -283,7 +282,7 @@ def _sol_for_wallet(tx: dict[str, Any], wallet: str, side: TradeSide) -> float |
         amt = _f(nt.get("amount"))
         if amt is None:
             continue
-        sol = _sol_from_amount(amt)
+        sol = _sol_from_lamports(amt)
         if sol is None:
             continue
         if side == TradeSide.BUY and nt.get("fromUserAccount") == wallet:
