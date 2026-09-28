@@ -432,10 +432,30 @@ class ChainClient:
         pairs: list[dict[str, Any]] = data.get("pairs") or []
         if not pairs:
             return None
-        sol = [p for p in pairs if p.get("chainId") == "solana"] or pairs
+        sol = [p for p in pairs if p.get("chainId") == "solana"]
+        if not sol:
+            logger.warning("chain.dex_no_solana_pair", mint=mint[:12])
+            return None
 
         def liq(p: dict[str, Any]) -> float:
             return float((p.get("liquidity") or {}).get("usd") or 0)
+
+        liquid = [p for p in sol if liq(p) >= 1_000]
+        prices = [
+            _f(p.get("priceUsd"))
+            for p in liquid
+            if _f(p.get("priceUsd")) is not None and _f(p.get("priceUsd")) > 0
+        ]
+        if len(prices) >= 2:
+            lo, hi = min(prices), max(prices)
+            if lo > 0 and (hi / lo) > 1.25:
+                logger.warning(
+                    "chain.dex_market_pair_disagreement",
+                    mint=mint[:12],
+                    candidate_pairs=len(liquid),
+                    price_ratio=round(hi / lo, 4),
+                )
+                return None
 
         best = max(sol, key=liq)
         vol = best.get("volume") or {}
