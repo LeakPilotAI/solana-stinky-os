@@ -102,3 +102,11 @@ def test_prospective_labels_require_dual_time_immutable_ledger():
     assert 'else "UNKNOWN"' in source
     assert '"outcome_label_source": "entity_launch_outcome_labels"' in source
     assert '"missing_or_late_outcome_label": "UNKNOWN"' in source
+
+
+def test_prospective_corpus_pins_one_outcome_label_version():
+    source = (API_ROOT / "src" / "stinky_api" / "prospective_phase10_corpus.py").read_text(encoding="utf-8")
+    assert 'CANONICAL_OUTCOME_LABEL_VERSION = "outcome-v1.1.0"' in source
+    assert "outcome_label_version: str = CANONICAL_OUTCOME_LABEL_VERSION" in source
+    assert "AND label_version = :outcome_label_version" in source
+    assert '"outcome_label_version_required": requested_label_version' in source
