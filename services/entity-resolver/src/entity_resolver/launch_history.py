@@ -177,6 +177,28 @@ class LaunchHistoryStore:
             ).mappings().all()
             return [dict(row) for row in rows]
 
+    async def get_launch_identity_for_mint(self, mint: str) -> dict[str, Any] | None:
+        """Return the durable launch identity already assigned to a mint."""
+        mint = str(mint or "").strip()
+        if not mint:
+            return None
+        async with self._sessions() as session:
+            row = (
+                await session.execute(
+                    text(
+                        """
+                        SELECT entity_id, deployer_wallet, event_id, observed_at
+                        FROM entity_launches
+                        WHERE mint = :mint
+                        ORDER BY observed_at ASC, id ASC
+                        LIMIT 1
+                        """
+                    ),
+                    {"mint": mint},
+                )
+            ).mappings().first()
+            return dict(row) if row else None
+
     async def get_entity_id_for_mint(self, mint: str) -> UUID | None:
         """Resolve the persistent developer entity for a known launch mint."""
         mint = str(mint or "").strip()

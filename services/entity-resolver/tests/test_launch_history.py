@@ -231,3 +231,18 @@ async def test_reputation_projection_schema_contract_fails_closed_when_missing()
     assert "Sentinel intelligence-memory migration 006" in message
     assert "creator_observations" in message
     assert "pattern_outcomes" in message
+
+
+def test_migration_reuses_existing_launch_identity_instead_of_second_launch():
+    from pathlib import Path
+
+    src = Path(__file__).parents[1] / "src" / "entity_resolver"
+    service = (src / "service.py").read_text(encoding="utf-8")
+    history = (src / "launch_history.py").read_text(encoding="utf-8")
+
+    assert "get_launch_identity_for_mint" in history
+    assert "existing_launch = (" in service
+    assert 'entity_id = existing_launch["entity_id"]' in service
+    assert "migration_creator_disagrees_with_launch" in service
+    migration = service[service.index('elif et == "token.migrated"'):service.index('elif et == "post_migration.buy"')]
+    assert migration.index("if existing_launch:") < migration.index("record_launch(")
