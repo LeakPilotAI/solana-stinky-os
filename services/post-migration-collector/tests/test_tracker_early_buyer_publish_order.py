@@ -68,3 +68,19 @@ def test_partial_buyer_capture_cannot_finalize_early_cohort():
     assert "coverage_complete = source_status.trade_source_coverage == 1.0" in source
     assert "if n > 0 and coverage_complete:" in source
     assert '"track.early_buyers_partial"' in source
+
+
+def test_restart_hydrates_durable_early_buyer_event_dedupe_keys():
+    from pathlib import Path
+
+    tracker = (
+        Path(__file__).parents[1] / "src" / "post_migration" / "tracker.py"
+    ).read_text(encoding="utf-8")
+    store = (
+        Path(__file__).parents[1] / "src" / "post_migration" / "store.py"
+    ).read_text(encoding="utf-8")
+
+    assert "load_early_buyer_event_keys(self.mint)" in tracker
+    assert "self._early_buyer_events_published.update(" in tracker
+    assert "SELECT signature, wallet" in store
+    assert "FROM migration_buyers" in store
