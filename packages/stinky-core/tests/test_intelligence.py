@@ -237,3 +237,23 @@ def test_rug_does_not_double_count_concentration_via_synthetic_overlap():
     assert not any(e.signal == "synthetic_overlap" for e in rug.evidence)
     assert rug.level == "MEDIUM"
     assert rug.independent_families == ["concentration"]
+
+
+def test_buy_sell_round_trip_does_not_fabricate_circular_flow():
+    from stinky_core.inspect import activity_from_trades
+
+    wallet = "RoundTripWallet1111111111111111111111111111"
+    activity = activity_from_trades(
+        mint="RoundTripMint111111111111111111111111111pump",
+        trades=[
+            {"signature": "sig-buy", "userAddress": wallet, "type": "buy", "amountSol": 1.0, "timestamp": 1},
+            {"signature": "sig-sell", "userAddress": wallet, "type": "sell", "amountSol": 1.0, "timestamp": 2},
+        ],
+        volume_m5_usd=180_000,
+    )
+
+    assert activity.circular_pairs is None
+    synthetic = assess_synthetic(activity)
+    assert synthetic.coverage["circular_activity"] is False
+    assert "circular_activity" in synthetic.missing
+    assert "circular" not in synthetic.independent_families
