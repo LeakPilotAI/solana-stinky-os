@@ -29,7 +29,7 @@ async def historical_launch_outcome_provenance(session: AsyncSession, mint: str,
     if not mint or (as_of is not None and cutoff is None):
         return {"status": "UNKNOWN", "mint": mint or None, "outcome": "UNKNOWN", "observations": [], "missing": ["mint" if not mint else "valid_as_of"], **AUTHORITY}
     params: dict[str, Any] = {"mint": mint, "limit": observation_limit}
-    launch_cutoff = "AND l.observed_at <= :as_of" if cutoff else ""
+    launch_cutoff = "AND l.observed_at <= :as_of AND l.created_at <= :as_of" if cutoff else ""
     event_cutoff = "AND e.occurred_at <= :as_of AND e.ingested_at <= :as_of" if cutoff else ""
     observation_cutoff = "AND o.observed_at <= :as_of AND o.ingested_at <= :as_of" if cutoff else ""
     if cutoff: params["as_of"] = cutoff
