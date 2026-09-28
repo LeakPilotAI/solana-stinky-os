@@ -535,10 +535,12 @@ def test_watch_completion_is_blocked_by_market_observation_degradation():
     end = source.index("        except Exception as exc:", start)
     block = source[start:end]
 
-    assert 'if "market_observation" in degraded:' in block
+    assert 'completion_blockers' in block
+    assert '"market_observation"' in block
+    assert 'blocker = next(' in block
     assert 'status="FAILED"' in block
-    assert 'stop_reason="PERSISTENCE_ERROR:market_observation"' in block
-    assert block.index('if "market_observation" in degraded:') < block.index('status="COMPLETED"')
+    assert 'stop_reason=f"PERSISTENCE_ERROR:{blocker}"' in block
+    assert block.index('completion_blockers') < block.index('status="COMPLETED"')
 
 
 def test_watch_completion_keeps_completed_path_when_market_observation_is_healthy():
