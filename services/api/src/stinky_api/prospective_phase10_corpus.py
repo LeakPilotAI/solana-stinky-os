@@ -64,7 +64,8 @@ async def audit_prospective_phase10_corpus(
               to_regclass('entity_launches')::text AS entity_launches,
               to_regclass('developer_longitudinal_snapshots')::text AS developer_longitudinal_snapshots,
               to_regclass('developer_correlation_snapshots')::text AS developer_correlation_snapshots,
-              to_regclass('market_outcome_observations')::text AS market_outcome_observations
+              to_regclass('market_outcome_observations')::text AS market_outcome_observations,
+              to_regclass('entity_launch_outcome_labels')::text AS entity_launch_outcome_labels
         """))).mappings().first()
     except Exception as exc:
         return {"status": "UNKNOWN", "failure_stage": "table_preflight", "error_type": type(exc).__name__, **AUTHORITY}
@@ -75,6 +76,7 @@ async def audit_prospective_phase10_corpus(
         "developer_longitudinal_snapshots",
         "developer_correlation_snapshots",
         "market_outcome_observations",
+        "entity_launch_outcome_labels",
     )
     tables = {name: bool(preflight and preflight.get(name)) for name in table_names}
     missing = [name for name, present in tables.items() if not present]
@@ -145,7 +147,7 @@ async def audit_prospective_phase10_corpus(
             "feature_complete_count": 0,
             "feature_complete_coverage": None,
             "rows": [],
-            "bounded": {"limit": limit, "query_count_max": 5},
+            "bounded": {"limit": limit, "query_count_max": 6},
             "prospective_policy": {
                 "historical_reconstruction": False,
                 "cohort_basis": "immutable token.migrated events",
@@ -168,6 +170,7 @@ async def audit_prospective_phase10_corpus(
     developer_by_entity: dict[str, list[dict[str, Any]]] = {}
     correlation_by_entity: dict[str, list[dict[str, Any]]] = {}
     lifecycle_by_mint: dict[str, list[dict[str, Any]]] = {}
+    labels_by_mint: dict[str, list[dict[str, Any]]] = {}
 
     if entity_ids:
         try:
@@ -210,6 +213,21 @@ async def audit_prospective_phase10_corpus(
         except Exception:
             lifecycle_by_mint = {}
 
+    if mints:
+        try:
+            labels = (await session.execute(text("""
+                SELECT mint, label, label_version, observed_at, ingested_at
+                FROM entity_launch_outcome_labels
+                WHERE mint = ANY(:mints)
+                  AND observed_at <= :dataset_as_of
+                  AND ingested_at <= :dataset_as_of
+                ORDER BY mint, observed_at DESC, ingested_at DESC, id DESC
+            """), {"mints": mints, "dataset_as_of": cutoff})).mappings().all()
+            for row in labels:
+                labels_by_mint.setdefault(str(row["mint"]), []).append(dict(row))
+        except Exception:
+            labels_by_mint = {}
+
     output_rows: list[dict[str, Any]] = []
     developer_count = correlation_count = lifecycle_count = complete_count = 0
     entity_resolved_count = 0
@@ -234,6 +252,9 @@ async def audit_prospective_phase10_corpus(
         has_corr = corr is not None
         has_life = life is not None
         complete = has_dev and has_corr and has_life
+        label_row = next(iter(labels_by_mint.get(mint, [])), None)
+        outcome_label = str(label_row.get("label")) if label_row and label_row.get("label") in {"RUNNER", "HELD", "FADE"} else "UNKNOWN"
+        label_complete = outcome_label != "UNKNOWN"
         entity_resolved_count += int(entity_resolved)
         developer_count += int(has_dev)
         correlation_count += int(has_corr)
@@ -255,6 +276,11 @@ async def audit_prospective_phase10_corpus(
             "lifecycle_dual_time_visible": has_life,
             "feature_complete": complete,
             "lifecycle_evidence_basis": life.get("evidence_basis") if life else None,
+            "outcome_label": outcome_label,
+            "outcome_label_complete": label_complete,
+            "outcome_label_version": label_row.get("label_version") if label_complete else None,
+            "outcome_observed_at": _iso(label_row.get("observed_at")) if label_complete else None,
+            "outcome_ingested_at": _iso(label_row.get("ingested_at")) if label_complete else None,
         })
 
     total = len(output_rows)
@@ -283,6 +309,9 @@ async def audit_prospective_phase10_corpus(
             "canonical_launch_identity": "earliest dual-time-visible entity_launches row by mint",
             "migration_creator_may_disagree_with_launch_identity": True,
             "dual_time_required": True,
+            "outcome_label_source": "entity_launch_outcome_labels",
+            "outcome_label_dual_time_required": True,
+            "missing_or_late_outcome_label": "UNKNOWN",
             "missing_evidence_remains_unknown": True,
         },
         **AUTHORITY,
