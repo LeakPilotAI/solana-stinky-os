@@ -133,3 +133,20 @@ def test_entity_merge_moves_launch_history_and_recomputes_launch_count():
     assert "SELECT COUNT(*)" in block
     assert "FROM entity_launches" in block
     assert "launch_count = GREATEST(launch_count, :lc)" not in block
+
+
+def test_entity_merge_invalidates_stale_behavior_fingerprints():
+    from pathlib import Path
+
+    store = (
+        Path(__file__).parents[1] / "src" / "entity_resolver" / "store.py"
+    ).read_text(encoding="utf-8")
+    start = store.index("    async def merge_entities(")
+    end = store.index("    async def multi_wallet_entities(", start)
+    block = store[start:end]
+
+    assert "DELETE FROM entity_behavior_fingerprints" in block
+    assert "WHERE entity_id IN (:surv, :abs)" in block
+    assert block.index("UPDATE entity_launches") < block.index(
+        "DELETE FROM entity_behavior_fingerprints"
+    )
