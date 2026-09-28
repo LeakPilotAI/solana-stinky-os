@@ -100,3 +100,19 @@ def test_backfill_includes_interrupted_active_tracks_with_partial_buyers():
     assert "OR EXISTS (" in block
     assert "FROM migration_tracks mt" in block
     assert "mt.status = 'active'" in block
+
+
+def test_existing_trade_after_restart_still_marks_wallet_for_performance_refresh():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).parents[1] / "src" / "post_migration" / "tracker.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("    async def _ingest_trades(")
+    end = source.index("    async def _refresh_performance(", start)
+    block = source[start:end]
+
+    touched = block.index("self._wallets_touched.add(t.wallet)")
+    duplicate_exit = block.index("if not inserted:")
+    assert touched < duplicate_exit
+    assert block.index("new_count += 1") > duplicate_exit
