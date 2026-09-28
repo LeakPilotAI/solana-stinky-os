@@ -57,3 +57,14 @@ async def test_ranked_early_buyer_revisits_already_seen_trade_and_publishes_once
     # A repeated ranking pass must not duplicate the sparse durable event.
     await tracker._publish_ranked_early_buyers([trade])
     assert publisher.buy.await_count == 1
+
+
+def test_partial_buyer_capture_cannot_finalize_early_cohort():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).parents[1] / "src" / "post_migration" / "tracker.py"
+    ).read_text(encoding="utf-8")
+    assert "coverage_complete = source_status.trade_source_coverage == 1.0" in source
+    assert "if n > 0 and coverage_complete:" in source
+    assert '"track.early_buyers_partial"' in source
