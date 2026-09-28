@@ -90,3 +90,15 @@ def test_feature_complete_requires_matching_phase10_pre_cutoff_snapshot():
     assert 'r.get("evidence_basis") == "phase10_pre_cutoff_market_snapshot"' in source
     assert 'r.get("horizon") == feature_horizon_name' in source
     assert '"feature_evidence_basis_required": "phase10_pre_cutoff_market_snapshot"' in source
+
+
+def test_prospective_labels_require_dual_time_immutable_ledger():
+    source = (API_ROOT / "src" / "stinky_api" / "prospective_phase10_corpus.py").read_text(encoding="utf-8")
+    assert "to_regclass('entity_launch_outcome_labels')" in source
+    assert "FROM entity_launch_outcome_labels" in source
+    assert "observed_at <= :dataset_as_of" in source
+    assert "ingested_at <= :dataset_as_of" in source
+    assert 'outcome_label = str(label_row.get("label"))' in source
+    assert 'else "UNKNOWN"' in source
+    assert '"outcome_label_source": "entity_launch_outcome_labels"' in source
+    assert '"missing_or_late_outcome_label": "UNKNOWN"' in source
