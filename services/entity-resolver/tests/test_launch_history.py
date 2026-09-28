@@ -246,3 +246,19 @@ def test_migration_reuses_existing_launch_identity_instead_of_second_launch():
     assert "migration_creator_disagrees_with_launch" in service
     migration = service[service.index('elif et == "token.migrated"'):service.index('elif et == "post_migration.buy"')]
     assert migration.index("if existing_launch:") < migration.index("record_launch(")
+
+
+def test_measured_outcomes_write_dual_time_immutable_ledger():
+    source = (
+        Path(__file__).parents[1] / "src" / "entity_resolver" / "launch_history.py"
+    ).read_text(encoding="utf-8")
+    migration = (
+        Path(__file__).parents[1] / "migrations" / "011_entity_launch_outcome_labels.sql"
+    ).read_text(encoding="utf-8")
+
+    assert "INSERT INTO entity_launch_outcome_labels" in source
+    assert 'if measured_status in {"RUNNER", "HELD", "FADE"}' in source
+    assert "ON CONFLICT (mint, label_version) DO NOTHING" in source
+    assert "observed_at TIMESTAMPTZ NOT NULL" in migration
+    assert "ingested_at TIMESTAMPTZ NOT NULL DEFAULT now()" in migration
+    assert "UNIQUE (mint, label_version)" in migration
