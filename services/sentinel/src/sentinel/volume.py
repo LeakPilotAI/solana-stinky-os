@@ -1518,11 +1518,13 @@ class VolumeMonitor:
             rec["persistence_status"] = "WRITTEN"
             if mem is not None:
                 mem.record_watch_state(rec)
+            self._clear_observation_persistence_degraded("watch_state")
         except Exception as exc:
             rec["persistence_status"] = "FAILED"
             if mem is not None:
                 mem.record_watch_state(rec)
-            logger.debug("watch.persist_failed", mint=mint, error=str(exc)[:160])
+            self._mark_observation_persistence_degraded("watch_state", exc)
+            logger.warning("watch.persist_failed", mint=mint, error=str(exc)[:160])
 
     async def _record_probe(self, probe: dict[str, Any]) -> None:
         mem = getattr(self, "_memory", None)

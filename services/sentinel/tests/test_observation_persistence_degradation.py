@@ -383,3 +383,39 @@ def test_restart_critical_hydration_reads_are_not_silently_downgraded():
         assert read in block
         prefix = block[: block.index(read)]
         assert "except Exception:\n                    " + selector.lower() not in prefix[-250:]
+
+
+@pytest.mark.asyncio
+async def test_watch_state_failure_marks_observation_degraded():
+    monitor = _monitor()
+    monitor._memory = None
+
+    await monitor._upsert_watch(
+        mint="mint-a",
+        started_at="2026-01-01T00:00:00+00:00",
+        status="FAILED",
+        stop_reason="RUNTIME_ERROR:RuntimeError",
+    )
+
+    state = monitor.observation_persistence_degraded
+    assert "watch_state" in state
+    assert "database unavailable" in state["watch_state"]
+
+
+@pytest.mark.asyncio
+async def test_successful_watch_state_write_clears_only_its_degradation():
+    monitor = _monitor()
+    monitor._memory = None
+    monitor._mark_observation_persistence_degraded("watch_state", "watch failed")
+    monitor._mark_observation_persistence_degraded("market_observation", "market failed")
+    monitor._sessions = _healthy_sessions
+
+    await monitor._upsert_watch(
+        mint="mint-a",
+        started_at="2026-01-01T00:00:00+00:00",
+        status="WATCHING",
+    )
+
+    assert monitor.observation_persistence_degraded == {
+        "market_observation": "market failed"
+    }
