@@ -518,6 +518,16 @@ class EntityStore:
             await session.execute(
                 text(
                     """
+                    DELETE FROM entity_behavior_fingerprints
+                    WHERE entity_id IN (:surv, :abs)
+                    """
+                ),
+                {"surv": survivor_id, "abs": absorbed_id},
+            )
+
+            await session.execute(
+                text(
+                    """
                     INSERT INTO entity_link_events (
                         event_kind, entity_id, wallet, other_entity_id,
                         reason, confidence, evidence
