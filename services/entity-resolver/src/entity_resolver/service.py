@@ -282,13 +282,28 @@ class EntityService:
             creator = payload.get("creator") or payload.get("deployer")
             mint = payload.get("mint") or payload.get("token") or payload.get("address")
             if creator:
-                entity_id = await self._resolver.ensure_deployer_observed(creator)
-                inserted = await self._launch_history.record_launch(entity_id=entity_id, deployer_wallet=creator, event_id=f"migrated:{msg_id}", mint=mint, observed_at=self._event_timestamp(event))
-                if inserted:
-                    fingerprint = await self._behavior.refresh_entity(entity_id)
-                    logger.info("entity.migration_launch_recorded", entity_id=entity_id, deployer=creator, mint=mint, cadence_bucket=fingerprint["cadence_bucket"])
+                existing_launch = (
+                    await self._launch_history.get_launch_identity_for_mint(str(mint))
+                    if mint
+                    else None
+                )
+                if existing_launch:
+                    entity_id = existing_launch["entity_id"]
+                    if str(existing_launch["deployer_wallet"]) != str(creator):
+                        logger.warning(
+                            "entity.migration_creator_disagrees_with_launch",
+                            mint=mint,
+                            launch_deployer=existing_launch["deployer_wallet"],
+                            migration_creator=creator,
+                        )
                 else:
-                    logger.debug("entity.migration_launch_duplicate", event_id=msg_id, deployer=creator, mint=mint)
+                    entity_id = await self._resolver.ensure_deployer_observed(creator)
+                    inserted = await self._launch_history.record_launch(entity_id=entity_id, deployer_wallet=creator, event_id=f"migrated:{msg_id}", mint=mint, observed_at=self._event_timestamp(event))
+                    if inserted:
+                        fingerprint = await self._behavior.refresh_entity(entity_id)
+                        logger.info("entity.migration_launch_recorded", entity_id=entity_id, deployer=creator, mint=mint, cadence_bucket=fingerprint["cadence_bucket"])
+                    else:
+                        logger.debug("entity.migration_launch_duplicate", event_id=msg_id, deployer=creator, mint=mint)
                 if mint:
                     await self._capture_phase10_evidence(str(mint), str(entity_id), trigger="migration")
 
