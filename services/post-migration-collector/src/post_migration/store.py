@@ -140,6 +140,22 @@ class Store:
             assert row is not None
             return row[0]
 
+    async def set_buyer_capture_complete(self, mint: str, complete: bool) -> None:
+        """Persist whether the ranked buyer cohort has complete source coverage."""
+        async with self._sessions() as session:
+            await session.execute(
+                text(
+                    """
+                    UPDATE migration_tracks
+                    SET meta = COALESCE(meta, '{}'::jsonb)
+                               || jsonb_build_object('buyer_capture_complete', :complete)
+                    WHERE mint = :mint
+                    """
+                ),
+                {"mint": mint, "complete": bool(complete)},
+            )
+            await session.commit()
+
     async def complete_track(self, mint: str, *, status: TrackStatus = TrackStatus.COMPLETED) -> None:
         async with self._sessions() as session:
             await session.execute(

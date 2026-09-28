@@ -145,3 +145,18 @@ def test_start_track_does_not_resurrect_terminal_durable_status():
 
     assert "status = migration_tracks.status" in block
     assert "status = 'active'" not in block.split("ON CONFLICT (mint) DO UPDATE SET", 1)[1]
+
+
+def test_tracker_persists_buyer_capture_completeness_for_downstream_evidence():
+    from pathlib import Path
+
+    tracker = (
+        Path(__file__).parents[1] / "src" / "post_migration" / "tracker.py"
+    ).read_text(encoding="utf-8")
+    store = (
+        Path(__file__).parents[1] / "src" / "post_migration" / "store.py"
+    ).read_text(encoding="utf-8")
+
+    assert "set_buyer_capture_complete(self.mint, True)" in tracker
+    assert "set_buyer_capture_complete(self.mint, False)" in tracker
+    assert "buyer_capture_complete" in store

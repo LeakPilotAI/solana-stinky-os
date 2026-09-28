@@ -101,3 +101,17 @@ def test_completion_event_type_is_itself_measured_status() -> None:
         "completed",
         {"wallets_touched": 4, "trades_seen": 12},
     )
+
+
+def test_entity_inference_requires_complete_buyer_capture():
+    from pathlib import Path
+
+    src = Path(__file__).parents[1] / "src" / "entity_resolver"
+    store = (src / "store.py").read_text(encoding="utf-8")
+    relationships = (src / "relationships.py").read_text(encoding="utf-8")
+
+    gate = "buyer_capture_complete"
+    assert gate in store
+    assert "JOIN migration_tracks mt ON mt.mint = a.mint" in store
+    assert gate in relationships
+    assert "JOIN migration_tracks mt ON mt.mint = el.mint" in relationships
