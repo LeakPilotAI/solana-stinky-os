@@ -317,8 +317,10 @@ def activity_from_trades(
     elif buyers or sellers:
         tot = len(buyers) + len(sellers)
         imb = (len(buyers) / tot) if tot else None
-    both = buyers & sellers
-    circ_n = len(both) if rows else None
+    # A wallet appearing on both sides of a market is a round trip, not
+    # evidence of circular wallet-to-wallet flow. Without direct transfer-cycle
+    # evidence, circular activity must remain UNKNOWN.
+    circ_n = None
     interval_share = None
     burst = None
     if len(times) >= 8:
