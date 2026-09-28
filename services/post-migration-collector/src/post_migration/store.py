@@ -118,7 +118,7 @@ class Store:
                             :slot, :mat, 'active', CAST(:meta AS jsonb)
                         )
                         ON CONFLICT (mint) DO UPDATE SET
-                            status = 'active',
+                            status = migration_tracks.status,
                             pool = COALESCE(EXCLUDED.pool, migration_tracks.pool),
                             creator = COALESCE(EXCLUDED.creator, migration_tracks.creator)
                         RETURNING track_id
