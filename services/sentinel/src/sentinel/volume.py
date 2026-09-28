@@ -594,8 +594,36 @@ class VolumeMonitor:
             if str(rec.get("mint") or "").strip()
         }
         terminal_statuses = {"COMPLETED", "FAILED"}
+        investigations = list(getattr(mem, "investigations", []) or [])
+        investigation_mints = {
+            str(rec.get("mint") or "").strip()
+            for rec in investigations
+            if str(rec.get("mint") or "").strip()
+        }
+        for mint, watch_state in durable_watch_states.items():
+            status = str(watch_state.get("status") or "").upper()
+            if status in terminal_statuses or mint in investigation_mints:
+                continue
+            if status not in {"DETECTED", "WATCHING"}:
+                continue
+            started_at = watch_state.get("started_at")
+            if not started_at:
+                continue
+            await self._upsert_watch(
+                mint=mint,
+                started_at=str(started_at),
+                status="FAILED",
+                resumed=True,
+                stop_reason="PERSISTENCE_ERROR:restart_investigation_missing",
+                pool=(watch_state.get("pool") or ""),
+            )
+            await self._trace(
+                mint=mint,
+                kind="watch_error",
+                message="Restart found non-terminal watch without durable investigation evidence",
+            )
         n = 0
-        for rec in list(getattr(mem, "investigations", []) or []):
+        for rec in investigations:
             mint = str(rec.get("mint") or "").strip()
             if not mint or mint in self._active:
                 continue
