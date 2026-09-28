@@ -1578,13 +1578,11 @@ class VolumeMonitor:
             "evidence_label": "LIVE",
         }
         mem = getattr(self, "_memory", None)
-        if mem is not None:
-            mem.record_watch_state(rec)
-            rec["persistence_status"] = extra.get("persistence_status") or rec["persistence_status"]
         if not self._sessions:
             rec["persistence_status"] = "NO_SESSION"
             if mem is not None:
                 mem.record_watch_state(rec)
+            self._mark_observation_persistence_degraded("watch_state", "NO_SESSION")
             return
         try:
             import json
