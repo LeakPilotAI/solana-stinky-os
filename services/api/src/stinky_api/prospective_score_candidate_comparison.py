@@ -28,15 +28,25 @@ def _dt(v:Any)->datetime|None:
         return None
     return x if x.tzinfo else x.replace(tzinfo=timezone.utc)
 
-def _metrics(rows:list[dict[str,Any]],positive_key:str)->dict[str,Any]:
-    scored=[r for r in rows if r.get("stinky_score") is not None]
-    runners=[r for r in scored if r["label"]=="RUNNER"]
-    negatives=[r for r in scored if r["label"]!="RUNNER"]
-    positive=[r for r in scored if bool(r[positive_key])]
+def _metrics(rows:list[dict[str,Any]],positive_key:str,*,universe:str)->dict[str,Any]:
+    if universe=="numeric_score":
+        eligible=[r for r in rows if r.get("stinky_score") is not None]
+    elif universe=="actionable_score":
+        eligible=[r for r in rows if r.get("stinky_score") is not None and r.get("score_actionable") is True]
+    elif universe=="all_labeled":
+        eligible=list(rows)
+    else:
+        raise ValueError("unknown metric universe")
+    runners=[r for r in eligible if r["label"]=="RUNNER"]
+    negatives=[r for r in eligible if r["label"]!="RUNNER"]
+    positive=[r for r in eligible if bool(r[positive_key])]
     tp=[r for r in positive if r["label"]=="RUNNER"]
     fp=[r for r in positive if r["label"]!="RUNNER"]
     return {
-        "scored_count":len(scored),
+        "universe":universe,
+        "eligible_count":len(eligible),
+        "runner_count":len(runners),
+        "negative_count":len(negatives),
         "positive_count":len(positive),
         "runner_precision":len(tp)/len(positive) if positive else None,
         "false_discovery_rate":len(fp)/len(positive) if positive else None,
@@ -152,9 +162,9 @@ async def compare_score_paper_candidate(
         "actionable_score_rate":actionable_count/len(records) if records else None,
         "non_actionable_numeric_score_count":non_actionable_count,
         "non_actionable_numeric_score_rate":non_actionable_count/len(records) if records else None,
-        "score_threshold_metrics":_metrics(records,"candidate_positive"),
-        "actionable_score_threshold_metrics":_metrics(records,"actionable_candidate_positive"),
-        "actual_alert_admission_metrics":_metrics(records,"actual_alert_positive"),
+        "score_threshold_metrics":_metrics(records,"candidate_positive",universe="numeric_score"),
+        "actionable_score_threshold_metrics":_metrics(records,"actionable_candidate_positive",universe="actionable_score"),
+        "actual_alert_admission_metrics":_metrics(records,"actual_alert_positive",universe="all_labeled"),
         "note":"Numeric-score discrimination, actionable-score discrimination, and actual full-pipeline alert admission are separate descriptive measurements.",
         "missing":[],**AUTHORITY,
     }
