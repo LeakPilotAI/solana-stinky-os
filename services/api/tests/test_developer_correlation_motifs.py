@@ -107,3 +107,25 @@ def test_motif_change_is_part_of_immutable_correlation_audit():
     assert "REPETITION_EVIDENCE_CHANGED" in kinds
     assert "NETWORK_MOTIF_EVIDENCE_CHANGED" in kinds
     _assert_descriptive(change)
+
+
+def test_accumulated_relationship_count_does_not_fake_independent_repetition():
+    from stinky_api.developer_correlation_repetition import analyze_correlation_repetition
+
+    result = analyze_correlation_repetition({
+        "status": "OBSERVED",
+        "shared_relationship_structures": [{
+            "relationship_kind": "co_buy",
+            "other_entity_id": "entity-b",
+            "edge_count": 1,
+            "independent_observation_count": 1,
+            "raw_observation_count": 9,
+            "first_observed_at": "2026-01-01T00:00:00+00:00",
+            "last_observed_at": "2026-01-01T00:10:00+00:00",
+        }],
+    })
+
+    row = result["records"][0]
+    assert row["independent_observation_count"] == 1
+    assert row["repetition_state"] == "SINGLE_OBSERVATION"
+    assert result["repeated_relationship_count"] == 0

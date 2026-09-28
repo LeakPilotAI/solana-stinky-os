@@ -150,7 +150,8 @@ async def correlate_developer_identity(
             SELECT wr.relationship_kind,
                    CASE WHEN wa.entity_id = :entity_id THEN wb.entity_id::text ELSE wa.entity_id::text END AS other_entity_id,
                    COUNT(*)::int AS edge_count,
-                   SUM(COALESCE(wr.observation_count,0))::int AS observation_count,
+                   COUNT(*)::int AS independent_observation_count,
+                   SUM(COALESCE(wr.observation_count,0))::int AS raw_observation_count,
                    MIN(wr.first_seen_at) AS first_observed_at,
                    MAX(wr.last_seen_at) AS last_observed_at
             FROM wallet_relationships wr
