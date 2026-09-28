@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from stinky_core.admission import GATE1_VOLUME_5M_USD, ReasonCode, can_alert, evaluate_gate1
-from stinky_core.inspect import assess_synthetic, market_activity_from_mapping
+from stinky_core.inspect import RiskResult, assess_rug, assess_synthetic, market_activity_from_mapping
 from stinky_core.intelligence import (
     STATUS_HIGH_RISK,
     analyze_wallets,
@@ -217,3 +217,23 @@ def test_volume_only_insufficient_intelligence():
 
 def test_gate1_33k_contract():
     assert GATE1_VOLUME_5M_USD == 33_000.0
+
+
+def test_rug_does_not_double_count_concentration_via_synthetic_overlap():
+    activity = market_activity_from_mapping({
+        "volume_m5_usd": 180_000,
+        "liquidity_usd": 20_000,
+        "top4_wallet_volume_share": 0.90,
+    })
+    synthetic = RiskResult(
+        score=85.0,
+        level="HIGH",
+        independent_families=["concentration"],
+    )
+
+    rug = assess_rug(activity, synthetic=synthetic)
+
+    assert any(e.signal == "holder_concentration" for e in rug.evidence)
+    assert not any(e.signal == "synthetic_overlap" for e in rug.evidence)
+    assert rug.level == "MEDIUM"
+    assert rug.independent_families == ["concentration"]
