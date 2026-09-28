@@ -612,7 +612,7 @@ class Store:
         return n
 
     async def migrations_needing_buyers(self, *, limit: int = 20) -> list[dict[str, Any]]:
-        """Recent token.migrated events with zero rows in migration_buyers."""
+        """Recent migrations needing buyer capture, including interrupted active tracks."""
         async with self._sessions() as session:
             try:
                 result = await session.execute(
@@ -628,9 +628,16 @@ class Store:
                         FROM events e
                         WHERE e.event_type = 'token.migrated'
                           AND e.payload->>'mint' IS NOT NULL
-                          AND NOT EXISTS (
-                              SELECT 1 FROM migration_buyers mb
-                              WHERE mb.mint = e.payload->>'mint'
+                          AND (
+                              NOT EXISTS (
+                                  SELECT 1 FROM migration_buyers mb
+                                  WHERE mb.mint = e.payload->>'mint'
+                              )
+                              OR EXISTS (
+                                  SELECT 1 FROM migration_tracks mt
+                                  WHERE mt.mint = e.payload->>'mint'
+                                    AND mt.status = 'active'
+                              )
                           )
                         ORDER BY e.occurred_at DESC
                         LIMIT :lim
