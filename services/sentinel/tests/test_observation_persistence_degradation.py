@@ -554,3 +554,74 @@ def test_watch_completion_keeps_completed_path_when_market_observation_is_health
     assert "else:" in block
     assert 'status="COMPLETED"' in block
     assert 'kind="watch_complete"' in block
+
+
+@pytest.mark.asyncio
+async def test_failed_market_observation_is_not_published_to_memory():
+    from stinky_core.memory import IntelligenceMemory
+
+    monitor = _monitor()
+    monitor._memory = IntelligenceMemory()
+    migration = type("Migration", (), {"mint": "mint-a"})()
+
+    await monitor._record_market_snapshot(migration, _market_tick_snap())
+
+    assert [tick for tick in monitor._memory.market_ticks if tick.mint == "mint-a"] == []
+    assert "market_observation" in monitor.observation_persistence_degraded
+
+
+@pytest.mark.asyncio
+async def test_successful_market_observation_is_published_after_commit():
+    from stinky_core.memory import IntelligenceMemory
+
+    monitor = _monitor()
+    monitor._memory = IntelligenceMemory()
+    monitor._sessions = _healthy_sessions
+    migration = type("Migration", (), {"mint": "mint-a"})()
+
+    await monitor._record_market_snapshot(migration, _market_tick_snap())
+
+    ticks = [tick for tick in monitor._memory.market_ticks if tick.mint == "mint-a"]
+    assert len(ticks) == 1
+    assert ticks[0].pair_address == "pair-a"
+
+
+@pytest.mark.asyncio
+async def test_failed_intelligence_decision_is_not_published_to_memory():
+    from stinky_core.memory import IntelligenceMemory
+
+    monitor = _monitor()
+    monitor._memory = IntelligenceMemory()
+    inv = type("Investigation", (), {
+        "mint": "mint-a", "pipeline_status": "WATCH", "has_intelligence": True,
+        "promote": False, "score": None, "synthetic": None, "rug": None,
+        "model_version": "test",
+    })()
+
+    await monitor._persist_intelligence_decision(
+        inv, _market_tick_snap(), alert_ok=False, alert_reason="TEST"
+    )
+
+    assert monitor._memory.decisions == []
+    assert "intelligence_decision" in monitor.observation_persistence_degraded
+
+
+@pytest.mark.asyncio
+async def test_successful_intelligence_decision_is_published_after_commit():
+    from stinky_core.memory import IntelligenceMemory
+
+    monitor = _monitor()
+    monitor._memory = IntelligenceMemory()
+    monitor._sessions = _healthy_sessions
+    inv = type("Investigation", (), {
+        "mint": "mint-a", "pipeline_status": "WATCH", "has_intelligence": True,
+        "promote": False, "score": None, "synthetic": None, "rug": None,
+        "model_version": "test",
+    })()
+
+    await monitor._persist_intelligence_decision(
+        inv, _market_tick_snap(), alert_ok=False, alert_reason="TEST"
+    )
+
+    assert len(monitor._memory.decisions) == 1
+    assert monitor._memory.decisions[0]["mint"] == "mint-a"
