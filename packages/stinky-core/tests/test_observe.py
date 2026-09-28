@@ -269,3 +269,22 @@ def test_observation_slices_do_not_mark_unelapsed_offsets_observed():
     assert by[30]["volume_5m"] is None
     assert by[1800]["observed"] is False
     assert path["observed_slice_count"] == 2
+
+
+def test_book_life_slices_keep_unelapsed_offsets_unknown():
+    mem = IntelligenceMemory()
+    mem.record_market_tick(mint=MINT_A, observed_at=T0, volume_m5_usd=160_000, price_usd=1.0)
+
+    path = life_slices(
+        mem,
+        mint=MINT_A,
+        t0=T0,
+        as_of=T0 + timedelta(seconds=20),
+    )
+    by = {s["offset_sec"]: s for s in path["slices"]}
+
+    assert by[15]["volume_m5_usd"] == 160_000
+    assert by[30]["volume_m5_usd"] is None
+    assert by[30]["observed_at"] is None
+    assert by[1800]["volume_m5_usd"] is None
+    assert by[1800]["observed_at"] is None
