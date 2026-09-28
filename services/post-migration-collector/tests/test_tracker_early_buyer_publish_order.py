@@ -131,3 +131,17 @@ def test_tracking_and_early_buyer_windows_are_anchored_to_migration_time():
     assert "started = datetime.now(timezone.utc)" not in run
     assert "elapsed >= settings.track_max_duration_sec" in run
     assert "elapsed > settings.early_buyer_window_sec" in run
+
+
+def test_start_track_does_not_resurrect_terminal_durable_status():
+    from pathlib import Path
+
+    store = (
+        Path(__file__).parents[1] / "src" / "post_migration" / "store.py"
+    ).read_text(encoding="utf-8")
+    start = store.index("    async def start_track(")
+    end = store.index("    async def complete_track(", start)
+    block = store[start:end]
+
+    assert "status = migration_tracks.status" in block
+    assert "status = 'active'" not in block.split("ON CONFLICT (mint) DO UPDATE SET", 1)[1]
