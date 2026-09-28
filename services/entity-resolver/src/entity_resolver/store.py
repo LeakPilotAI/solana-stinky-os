@@ -464,8 +464,23 @@ class EntityStore:
             await session.execute(
                 text(
                     """
+                    UPDATE entity_launches
+                    SET entity_id = :surv
+                    WHERE entity_id = :abs
+                    """
+                ),
+                {"surv": survivor_id, "abs": absorbed_id},
+            )
+
+            await session.execute(
+                text(
+                    """
                     UPDATE entities SET
-                        launch_count = GREATEST(launch_count, :lc),
+                        launch_count = (
+                            SELECT COUNT(*)
+                            FROM entity_launches
+                            WHERE entity_id = :surv
+                        ),
                         early_buy_count = early_buy_count + :eb,
                         confidence = GREATEST(confidence, :conf),
                         wallet_count = (
@@ -478,7 +493,6 @@ class EntityStore:
                 ),
                 {
                     "surv": survivor_id,
-                    "lc": int(ab.get("launch_count") or 0),
                     "eb": int(ab.get("early_buy_count") or 0),
                     "conf": confidence,
                     "meta": orjson.dumps(

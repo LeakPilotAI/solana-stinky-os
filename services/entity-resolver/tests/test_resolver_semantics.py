@@ -115,3 +115,21 @@ def test_entity_inference_requires_complete_buyer_capture():
     assert "JOIN migration_tracks mt ON mt.mint = a.mint" in store
     assert gate in relationships
     assert "JOIN migration_tracks mt ON mt.mint = el.mint" in relationships
+
+
+def test_entity_merge_moves_launch_history_and_recomputes_launch_count():
+    from pathlib import Path
+
+    store = (
+        Path(__file__).parents[1] / "src" / "entity_resolver" / "store.py"
+    ).read_text(encoding="utf-8")
+    start = store.index("    async def merge_entities(")
+    end = store.index("    async def multi_wallet_entities(", start)
+    block = store[start:end]
+
+    assert "UPDATE entity_launches" in block
+    assert "SET entity_id = :surv" in block
+    assert "WHERE entity_id = :abs" in block
+    assert "SELECT COUNT(*)" in block
+    assert "FROM entity_launches" in block
+    assert "launch_count = GREATEST(launch_count, :lc)" not in block
