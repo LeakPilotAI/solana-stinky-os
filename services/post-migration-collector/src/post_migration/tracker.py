@@ -171,12 +171,16 @@ class MintTracker:
                 track_id=str(self.track_id),
             )
 
-            started = datetime.now(timezone.utc)
+            tracking_anchor = self.migration_at
+            if tracking_anchor.tzinfo is None:
+                tracking_anchor = tracking_anchor.replace(tzinfo=timezone.utc)
             last_market = 0.0
             early_done = False
 
             while True:
-                elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+                elapsed = (
+                    datetime.now(timezone.utc) - tracking_anchor
+                ).total_seconds()
                 if elapsed >= settings.track_max_duration_sec:
                     break
 
