@@ -201,7 +201,9 @@ class WalletRelationshipStore:
                                    MAX(el.observed_at) AS last_seen_at
                             FROM entity_launches el
                             JOIN migration_buyers mb ON mb.mint = el.mint
+                            JOIN migration_tracks mt ON mt.mint = el.mint
                             WHERE el.mint IS NOT NULL
+                              AND COALESCE((mt.meta->>'buyer_capture_complete')::boolean, false)
                               AND mb.wallet IS NOT NULL
                               AND el.deployer_wallet <> mb.wallet
                             GROUP BY el.deployer_wallet, mb.wallet
