@@ -7,6 +7,8 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+CANONICAL_OUTCOME_LABEL_VERSION = "outcome-v1.1.0"
+
 AUTHORITY = {
     "interpretation": "PROSPECTIVE_PHASE10_CORPUS_EVIDENCE_ONLY",
     "predictive_authority": False,
@@ -42,6 +44,7 @@ async def audit_prospective_phase10_corpus(
     limit: int = 200,
     feature_horizon_seconds: int = 300,
     as_of: datetime | str | None = None,
+    outcome_label_version: str = CANONICAL_OUTCOME_LABEL_VERSION,
 ) -> dict[str, Any]:
     """Measure migration-anchored evidence completeness without changing research gates.
 
@@ -54,6 +57,9 @@ async def audit_prospective_phase10_corpus(
     limit = max(1, min(500, int(limit)))
     feature_horizon_seconds = max(0, min(1800, int(feature_horizon_seconds)))
     cutoff = _parse(as_of) or datetime.now(timezone.utc)
+    requested_label_version = str(outcome_label_version or "").strip()
+    if not requested_label_version:
+        return {"status": "UNKNOWN", "missing": ["outcome_label_version"], **AUTHORITY}
     if as_of is not None and _parse(as_of) is None:
         return {"status": "UNKNOWN", "missing": ["valid_as_of"], **AUTHORITY}
 
@@ -92,6 +98,7 @@ async def audit_prospective_phase10_corpus(
         "limit": limit,
         "dataset_as_of": cutoff,
         "feature_seconds": feature_horizon_seconds,
+        "outcome_label_version": requested_label_version,
     }
     try:
         cohort = (await session.execute(text("""
@@ -221,8 +228,9 @@ async def audit_prospective_phase10_corpus(
                 WHERE mint = ANY(:mints)
                   AND observed_at <= :dataset_as_of
                   AND ingested_at <= :dataset_as_of
+                  AND label_version = :outcome_label_version
                 ORDER BY mint, observed_at DESC, ingested_at DESC, id DESC
-            """), {"mints": mints, "dataset_as_of": cutoff})).mappings().all()
+            """), {"mints": mints, "dataset_as_of": cutoff, "outcome_label_version": requested_label_version})).mappings().all()
             for row in labels:
                 labels_by_mint.setdefault(str(row["mint"]), []).append(dict(row))
         except Exception:
@@ -310,6 +318,7 @@ async def audit_prospective_phase10_corpus(
             "migration_creator_may_disagree_with_launch_identity": True,
             "dual_time_required": True,
             "outcome_label_source": "entity_launch_outcome_labels",
+            "outcome_label_version_required": requested_label_version,
             "outcome_label_dual_time_required": True,
             "missing_or_late_outcome_label": "UNKNOWN",
             "missing_evidence_remains_unknown": True,
