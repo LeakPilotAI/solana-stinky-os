@@ -16,6 +16,9 @@ class _Result:
     def mappings(self):
         return self
 
+    def scalars(self):
+        return self
+
     def all(self):
         return self._row or []
 
@@ -194,3 +197,37 @@ async def test_generic_completion_does_not_project_performance_labels() -> None:
     assert "creator_outcome_labels" not in sql
     assert "pattern_outcomes" not in sql
     assert session.committed is True
+
+
+@pytest.mark.asyncio
+async def test_reputation_projection_schema_contract_accepts_complete_schema() -> None:
+    required = [
+        "wallet_observations",
+        "wallet_outcome_labels",
+        "creator_observations",
+        "creator_outcome_labels",
+        "pattern_fingerprints",
+        "pattern_outcomes",
+    ]
+    session = _Session(required)
+    store = LaunchHistoryStore.__new__(LaunchHistoryStore)
+    store._sessions = _Sessions(session)
+
+    await store.ensure_reputation_projection_schema()
+
+    assert sorted(session.params["required"]) == sorted(required)
+
+
+@pytest.mark.asyncio
+async def test_reputation_projection_schema_contract_fails_closed_when_missing() -> None:
+    session = _Session(["wallet_observations", "wallet_outcome_labels"])
+    store = LaunchHistoryStore.__new__(LaunchHistoryStore)
+    store._sessions = _Sessions(session)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await store.ensure_reputation_projection_schema()
+
+    message = str(excinfo.value)
+    assert "Sentinel intelligence-memory migration 006" in message
+    assert "creator_observations" in message
+    assert "pattern_outcomes" in message
