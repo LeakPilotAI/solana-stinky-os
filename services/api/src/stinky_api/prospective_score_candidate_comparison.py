@@ -7,6 +7,8 @@ separate from the full pipeline's historical alert_ok admission.
 from __future__ import annotations
 from datetime import datetime, timezone
 import math
+import hashlib
+import json
 from typing import Any
 from sqlalchemy import text
 
@@ -50,7 +52,17 @@ async def compare_score_paper_candidate(
     if not isinstance(candidate,dict) or candidate.get("status")!="PAPER_CANDIDATE_ARTIFACT":
         return {"status":"UNKNOWN","comparison_status":"NOT_COMPARISON_READY","missing":["paper_candidate_artifact"],**AUTHORITY}
     payload=candidate.get("payload")
-    versions=payload.get("versions") if isinstance(payload,dict) else None
+    if not isinstance(payload,dict):
+        return {"status":"UNKNOWN","comparison_status":"NOT_COMPARISON_READY","missing":["candidate_payload"],**AUTHORITY}
+    try:
+        canonical=json.dumps(payload,sort_keys=True,separators=(",",":"),ensure_ascii=False,allow_nan=False)
+    except (TypeError,ValueError):
+        return {"status":"UNKNOWN","comparison_status":"NOT_COMPARISON_READY","missing":["canonical_candidate_payload"],**AUTHORITY}
+    expected_sha=hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    expected_version=f"{payload.get('schema_version')}:{expected_sha[:16]}"
+    if candidate.get("evidence_sha256")!=expected_sha or candidate.get("candidate_version")!=expected_version:
+        return {"status":"UNKNOWN","comparison_status":"NOT_COMPARISON_READY","missing":["candidate_identity_mismatch"],**AUTHORITY}
+    versions=payload.get("versions")
     cutoff=_dt(payload.get("evaluation_as_of")) if isinstance(payload,dict) else None
     end=_dt(as_of)
     try:
@@ -72,6 +84,8 @@ async def compare_score_paper_candidate(
     rows=(await session.execute(text("""
         SELECT DISTINCT ON (mi.mint)
           mi.mint, mi.inspected_at, mi.stinky_score, mi.alert_ok,
+          mi.evidence->'score'->>'actionable' AS score_actionable,
+          mi.evidence->'score'->>'interpretation' AS score_interpretation,
           ol.label, ol.observed_at AS outcome_observed_at, ol.ingested_at AS outcome_ingested_at
         FROM market_inspections mi
         JOIN entity_launch_outcome_labels ol
@@ -103,13 +117,17 @@ async def compare_score_paper_candidate(
             except (TypeError,ValueError):
                 pass
         r["stinky_score"]=score_value
+        r["score_actionable"]=str(r.get("score_actionable") or "").strip().lower()=="true"
         r["candidate_positive"]=score_value is not None and score_value>=threshold
+        r["actionable_candidate_positive"]=r["score_actionable"] and r["candidate_positive"]
         r["actual_alert_positive"]=r.get("alert_ok") is True
         records.append(r)
 
     runner_count=sum(1 for r in records if r["label"]=="RUNNER")
     negative_count=sum(1 for r in records if r["label"]!="RUNNER")
     unknown_count=sum(1 for r in records if r["stinky_score"] is None)
+    non_actionable_count=sum(1 for r in records if r["stinky_score"] is not None and not r["score_actionable"])
+    actionable_count=sum(1 for r in records if r["stinky_score"] is not None and r["score_actionable"])
     missing=[]
     if len(records)<max(1,int(min_sample)): missing.append("sufficient_later_sample")
     if runner_count<max(1,int(min_runners)): missing.append("sufficient_later_runners")
@@ -119,7 +137,8 @@ async def compare_score_paper_candidate(
             "status":"OBSERVED","comparison_status":"NOT_COMPARISON_READY",
             "candidate_version":candidate["candidate_version"],"evidence_sha256":candidate["evidence_sha256"],
             "sample_count":len(records),"runner_count":runner_count,"negative_count":negative_count,
-            "unknown_score_count":unknown_count,"missing":missing,**AUTHORITY,
+            "unknown_score_count":unknown_count,"actionable_score_count":actionable_count,
+            "non_actionable_numeric_score_count":non_actionable_count,"missing":missing,**AUTHORITY,
         }
 
     return {
@@ -129,8 +148,13 @@ async def compare_score_paper_candidate(
         "sample_count":len(records),"runner_count":runner_count,"negative_count":negative_count,
         "unknown_score_count":unknown_count,
         "unknown_score_rate":unknown_count/len(records) if records else None,
+        "actionable_score_count":actionable_count,
+        "actionable_score_rate":actionable_count/len(records) if records else None,
+        "non_actionable_numeric_score_count":non_actionable_count,
+        "non_actionable_numeric_score_rate":non_actionable_count/len(records) if records else None,
         "score_threshold_metrics":_metrics(records,"candidate_positive"),
+        "actionable_score_threshold_metrics":_metrics(records,"actionable_candidate_positive"),
         "actual_alert_admission_metrics":_metrics(records,"actual_alert_positive"),
-        "note":"Score-threshold discrimination and actual full-pipeline alert admission are separate descriptive measurements.",
+        "note":"Numeric-score discrimination, actionable-score discrimination, and actual full-pipeline alert admission are separate descriptive measurements.",
         "missing":[],**AUTHORITY,
     }
