@@ -326,6 +326,29 @@ class LaunchHistoryStore:
                 await session.execute(
                     text(
                         """
+                        INSERT INTO entity_launch_outcome_labels (
+                            mint, entity_id, label, label_version, observed_at, metadata
+                        )
+                        SELECT :mint, entity_id, :label, :label_version, :observed_at,
+                               CAST(:metadata AS jsonb)
+                        FROM entity_launches
+                        WHERE mint = :mint
+                        ORDER BY observed_at ASC, created_at ASC, id ASC
+                        LIMIT 1
+                        ON CONFLICT (mint, label_version) DO NOTHING
+                        """
+                    ),
+                    {
+                        "mint": mint,
+                        "label": measured_status,
+                        "label_version": label_version,
+                        "observed_at": observed,
+                        "metadata": orjson.dumps(metadata or {}).decode(),
+                    },
+                )
+                await session.execute(
+                    text(
+                        """
                         INSERT INTO wallet_outcome_labels (
                             wallet, mint, labeled_at, label, label_version, source
                         )
