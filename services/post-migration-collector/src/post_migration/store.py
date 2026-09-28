@@ -320,6 +320,29 @@ class Store:
                 },
             )
 
+    async def load_early_buyer_event_keys(
+        self, mint: str
+    ) -> set[tuple[str, str, str]]:
+        """Return durable BUY event identities already represented by the cohort."""
+        async with self._sessions() as session:
+            rows = (
+                await session.execute(
+                    text(
+                        """
+                        SELECT signature, wallet
+                        FROM migration_buyers
+                        WHERE mint = :mint
+                        """
+                    ),
+                    {"mint": mint},
+                )
+            ).mappings().all()
+        return {
+            (str(row["signature"]), str(row["wallet"]), "buy")
+            for row in rows
+            if row.get("signature") and row.get("wallet")
+        }
+
     async def save_early_buyers(
         self, track_id: UUID, mint: str, buyers: Sequence[ObservedTrade]
     ) -> int:
