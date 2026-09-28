@@ -25,10 +25,15 @@ def test_migration_cohort_deduplicates_and_joins_existing_launch_identity():
     source = (API_ROOT / "src" / "stinky_api" / "prospective_phase10_corpus.py").read_text(encoding="utf-8")
     assert "canonical_migrations" in source
     assert "ORDER BY e.payload->>'mint', e.occurred_at ASC, e.ingested_at ASC" in source
-    assert "LEFT JOIN entity_launches l" in source
-    assert "l.mint = m.mint" in source
-    assert "l.deployer_wallet = m.creator" in source
+    assert "LEFT JOIN LATERAL" in source
+    assert "WHERE el.mint = m.mint" in source
+    assert "el.observed_at <= :dataset_as_of" in source
+    assert "el.created_at <= :dataset_as_of" in source
+    assert "l.deployer_wallet = m.creator" not in source
+    assert "ORDER BY el.observed_at ASC, el.created_at ASC, el.id ASC" in source
     assert '"entity_launch_event_id_required": False' in source
+    assert '"canonical_launch_identity": "earliest dual-time-visible entity_launches row by mint"' in source
+    assert '"migration_creator_may_disagree_with_launch_identity": True' in source
     assert '"migration_events_deduplicated_by": "mint"' in source
     assert '"migration_anchor": "earliest dual-time-visible token.migrated event per mint"' in source
 
