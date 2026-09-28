@@ -419,3 +419,41 @@ async def test_successful_watch_state_write_clears_only_its_degradation():
     assert monitor.observation_persistence_degraded == {
         "market_observation": "market failed"
     }
+
+
+@pytest.mark.asyncio
+async def test_provider_probe_failure_marks_observation_degraded():
+    monitor = _monitor()
+    monitor._memory = None
+
+    await monitor._record_probe({
+        "provider": "dexscreener",
+        "at": "2026-01-01T00:00:00+00:00",
+        "status": "FAILED",
+        "ok": False,
+        "error": "upstream unavailable",
+    })
+
+    state = monitor.observation_persistence_degraded
+    assert "provider_probe" in state
+    assert "database unavailable" in state["provider_probe"]
+
+
+@pytest.mark.asyncio
+async def test_successful_provider_probe_write_clears_only_its_degradation():
+    monitor = _monitor()
+    monitor._memory = None
+    monitor._mark_observation_persistence_degraded("provider_probe", "probe failed")
+    monitor._mark_observation_persistence_degraded("market_observation", "market failed")
+    monitor._sessions = _healthy_sessions
+
+    await monitor._record_probe({
+        "provider": "dexscreener",
+        "at": "2026-01-01T00:00:00+00:00",
+        "status": "OK",
+        "ok": True,
+    })
+
+    assert monitor.observation_persistence_degraded == {
+        "market_observation": "market failed"
+    }
