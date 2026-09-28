@@ -30,6 +30,15 @@ def _prob(value: Any) -> float | None:
         return None
     return n if math.isfinite(n) and 0.0 <= n <= 1.0 else None
 
+def _nonnegative_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return n if n >= 0 else None
+
 def assess_held_out_score_readiness(
     evaluation: dict[str, Any], *,
     min_holdout_sample: int,
@@ -69,16 +78,20 @@ def assess_held_out_score_readiness(
     if not isinstance(metrics,dict) or not isinstance(window,dict):
         return {"status":"UNKNOWN","readiness_status":"NOT_READY","missing":["holdout_metrics"],"criteria":criteria,**AUTHORITY}
 
+    holdout_sample = _nonnegative_int(window.get("sample_count"))
+    holdout_runners = _nonnegative_int(window.get("runner_count"))
+    holdout_negatives = _nonnegative_int(window.get("negative_count"))
+    missed_runners = _nonnegative_int(metrics.get("missed_runner_count"))
     checks = {
-        "sufficient_holdout_sample": int(window.get("sample_count") or 0) >= criteria["min_holdout_sample"],
-        "sufficient_holdout_runners": int(window.get("runner_count") or 0) >= criteria["min_holdout_runners"],
-        "sufficient_holdout_negatives": int(window.get("negative_count") or 0) >= criteria["min_holdout_negatives"],
+        "sufficient_holdout_sample": holdout_sample is not None and holdout_sample >= criteria["min_holdout_sample"],
+        "sufficient_holdout_runners": holdout_runners is not None and holdout_runners >= criteria["min_holdout_runners"],
+        "sufficient_holdout_negatives": holdout_negatives is not None and holdout_negatives >= criteria["min_holdout_negatives"],
         "acceptable_unknown_score_rate": _prob(metrics.get("unknown_score_rate")) is not None and float(metrics["unknown_score_rate"]) <= max_unknown_score_rate,
         "minimum_runner_precision": _prob(metrics.get("runner_precision")) is not None and float(metrics["runner_precision"]) >= min_runner_precision,
         "maximum_false_discovery_rate": _prob(metrics.get("false_discovery_rate")) is not None and float(metrics["false_discovery_rate"]) <= max_false_discovery_rate,
         "maximum_false_positive_rate": _prob(metrics.get("false_positive_rate")) is not None and float(metrics["false_positive_rate"]) <= max_false_positive_rate,
         "minimum_runner_recall": _prob(metrics.get("runner_recall")) is not None and float(metrics["runner_recall"]) >= min_runner_recall,
-        "maximum_missed_runners": int(metrics.get("missed_runner_count") or 0) <= criteria["max_missed_runners"],
+        "maximum_missed_runners": missed_runners is not None and missed_runners <= criteria["max_missed_runners"],
     }
     failed=[name for name,passed in checks.items() if not passed]
     ready=not failed
