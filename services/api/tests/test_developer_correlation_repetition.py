@@ -46,7 +46,8 @@ def test_missing_temporal_or_launch_evidence_stays_explicit_unknown():
         "shared_relationship_structures": [{"relationship_kind": "FUNDED", "other_entity_id": "E2", "observation_count": 2}],
     })
     record = result["records"][0]
-    assert record["repetition_state"] == "REPEATED_OBSERVATION"
+    assert record["repetition_state"] == "UNKNOWN"
+    assert record["independent_observation_count"] is None
     assert record["temporal_spread_seconds"] is None
     assert record["distinct_launch_count"] is None
     assert "some_temporal_spans" in result["missing"]
