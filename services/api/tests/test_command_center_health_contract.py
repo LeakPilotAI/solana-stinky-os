@@ -28,3 +28,21 @@ def test_command_center_pipeline_and_precision_failures_degrade_overall_truth():
     assert '"available": not any(k.startswith("pipeline.") for k in section_failures)' in source
     assert 'section_failures["alert_precision"]' in source
     assert '"message": "alert outcomes unavailable"' in source
+
+
+def test_trending_query_uses_latest_row_and_indexable_fee_lookup_shape():
+    source = (API_ROOT / "src" / "stinky_api" / "main.py").read_text(encoding="utf-8")
+    start = source.index("async def _trending_m5")
+    end = source.index('@app.get("/v1/command-center")', start)
+    block = source[start:end]
+    assert "ROW_NUMBER() OVER" not in block
+    assert "SELECT DISTINCT ON (ms.mint)" in block
+    assert "LEFT JOIN LATERAL" in block
+    assert "ORDER BY fe.evaluated_at DESC" in block
+    assert "LIMIT 1" in block
+
+
+def test_runtime_query_indexes_cover_latest_fee_and_market_reads():
+    migration = (API_ROOT / "migrations" / "012_runtime_query_indexes.sql").read_text(encoding="utf-8")
+    assert "filter_evaluations (mint, evaluated_at DESC)" in migration
+    assert "market_snapshots (mint, captured_at DESC)" in migration
