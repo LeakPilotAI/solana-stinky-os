@@ -34,6 +34,8 @@ NAMES = (
     "entities",
     "web",
     "maintain",
+    "paper-intake-producer",
+    "paper-runtime",
 )
 
 GENESIS_CONTAINERS = (
@@ -503,6 +505,10 @@ def main() -> int:
                     [npm, "run", "dev", "--", "-p", "3000", "-H", "127.0.0.1"],
                     cwd=root / "apps" / "web",
                 )
+        elif name == "paper-intake-producer":
+            code = run_supervised([py, "-m", "stinky_api.prospective_paper_policy_runtime"])
+        elif name == "paper-runtime":
+            code = run_supervised([py, "-m", "stinky_api.paper_runtime_worker"])
         elif name == "maintain":
             next_job = 0.0
             while True:
