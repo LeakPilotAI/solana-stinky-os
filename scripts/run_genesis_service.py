@@ -404,7 +404,15 @@ def main() -> int:
             "note": "HTTP health only. UNKNOWN is not UP. Gate 1 is not here.",
         }
         try:
+            # Aggregate current-health snapshot remains convenient for the operator,
+            # but it is intentionally overwriteable by the maintain loop.
             write_state(log_dir / "runtime-state.json", payload)
+            # Preserve each supervisor's last durable phase independently so a
+            # capped FAILED state cannot be erased by another service's heartbeat.
+            service_payload = dict(payload)
+            service_payload["service"] = name
+            service_payload["supervisor_phase"] = phase or "RUNNING"
+            write_state(log_dir / ("runtime-state-" + name + ".json"), service_payload)
         except OSError:
             pass
 
