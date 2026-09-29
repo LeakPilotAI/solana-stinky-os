@@ -82,3 +82,14 @@ def test_operator_summary_never_converts_blockers_to_score_or_signal():
     assert "confidence" not in item
     assert item["interpretation"] == "DESCRIPTIVE_READINESS_EXPLAINABILITY_ONLY"
     assert item["trade_signal"] is False
+
+
+def test_command_center_readiness_route_is_registered_before_uuid_catchall():
+    from stinky_api.main import app
+
+    paths = [route.path for route in app.routes]
+    readiness_path = "/v1/entity-graph/command-center-readiness"
+    catchall_path = "/v1/entity-graph/{entity_id}"
+    assert readiness_path in paths
+    assert catchall_path in paths
+    assert paths.index(readiness_path) < paths.index(catchall_path)
