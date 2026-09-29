@@ -20,3 +20,11 @@ def test_command_center_does_not_claim_empty_investigations_when_alerts_failed()
     assert '"available": "trending" not in section_failures' in source
     assert 'if "alerts" in section_failures or any(a.get("mint") for a in (alerts or []))' in source
     assert '"available": "alerts" not in section_failures' in source
+
+
+def test_command_center_pipeline_and_precision_failures_degrade_overall_truth():
+    source = (API_ROOT / "src" / "stinky_api" / "main.py").read_text(encoding="utf-8")
+    assert 'section_failures[f"pipeline.{key}"]' in source
+    assert '"available": not any(k.startswith("pipeline.") for k in section_failures)' in source
+    assert 'section_failures["alert_precision"]' in source
+    assert '"message": "alert outcomes unavailable"' in source
