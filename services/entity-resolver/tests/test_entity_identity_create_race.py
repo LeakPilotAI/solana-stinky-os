@@ -86,3 +86,24 @@ async def test_create_entity_rolls_back_if_wallet_conflict_has_no_canonical_owne
 
     assert session.rollbacks == 1
     assert session.commits == 0
+
+
+@pytest.mark.asyncio
+async def test_create_entity_normal_path_does_not_reference_merge_only_identifiers():
+    created = UUID("00000000-0000-0000-0000-000000000004")
+    session = _Session([
+        (created,),  # INSERT entities
+        (created,),  # INSERT entity_wallets
+        None,        # UPDATE wallet_count
+        None,        # INSERT entity_link_events
+    ])
+    store = EntityStore.__new__(EntityStore)
+    store._sessions = lambda: _SessionContext(session)
+
+    result = await store.create_entity(primary_wallet="FreshWallet", entity_type="deployer")
+
+    assert result == created
+    assert session.commits == 1
+    sql = "\n".join(call[0] for call in session.calls)
+    assert "entity_behavior_fingerprints" not in sql
+    assert "INSERT INTO entity_link_events" in sql
