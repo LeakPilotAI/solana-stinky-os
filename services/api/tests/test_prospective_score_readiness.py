@@ -30,3 +30,10 @@ def test_readiness_does_not_coerce_missing_counts_to_zero():
     assert "missed_runners = _nonnegative_int" in source
     assert "missed_runners is not None and missed_runners <=" in source
     assert 'int(metrics.get("missed_runner_count") or 0)' not in source
+
+
+def test_readiness_criteria_fail_closed_before_integer_conversion():
+    source=(API_ROOT/"src"/"stinky_api"/"prospective_score_readiness.py").read_text(encoding="utf-8")
+    assert "isinstance(value,float) and not value.is_integer()" in source
+    assert "counts=[_nonnegative_int(x)" in source
+    assert '"min_holdout_sample": int(min_holdout_sample)' not in source

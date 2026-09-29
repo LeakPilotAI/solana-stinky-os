@@ -33,6 +33,8 @@ def _prob(value: Any) -> float | None:
 def _nonnegative_int(value: Any) -> int | None:
     if value is None or isinstance(value, bool):
         return None
+    if isinstance(value,float) and not value.is_integer():
+        return None
     try:
         n = int(value)
     except (TypeError, ValueError):
@@ -51,22 +53,23 @@ def assess_held_out_score_readiness(
     min_runner_recall: float,
     max_missed_runners: int,
 ) -> dict[str, Any]:
+    raw_counts=[min_holdout_sample,min_holdout_runners,min_holdout_negatives,max_missed_runners]
+    counts=[_nonnegative_int(x) for x in raw_counts]
+    probs=[_prob(x) for x in (max_unknown_score_rate,min_runner_precision,max_false_discovery_rate,max_false_positive_rate,min_runner_recall)]
     criteria = {
-        "min_holdout_sample": int(min_holdout_sample),
-        "min_holdout_runners": int(min_holdout_runners),
-        "min_holdout_negatives": int(min_holdout_negatives),
-        "max_unknown_score_rate": max_unknown_score_rate,
-        "min_runner_precision": min_runner_precision,
-        "max_false_discovery_rate": max_false_discovery_rate,
-        "max_false_positive_rate": max_false_positive_rate,
-        "min_runner_recall": min_runner_recall,
-        "max_missed_runners": int(max_missed_runners),
+        "min_holdout_sample": counts[0],
+        "min_holdout_runners": counts[1],
+        "min_holdout_negatives": counts[2],
+        "max_unknown_score_rate": probs[0],
+        "min_runner_precision": probs[1],
+        "max_false_discovery_rate": probs[2],
+        "max_false_positive_rate": probs[3],
+        "min_runner_recall": probs[4],
+        "max_missed_runners": counts[3],
     }
-    probs = [max_unknown_score_rate,min_runner_precision,max_false_discovery_rate,max_false_positive_rate,min_runner_recall]
     if (
-        any(x < 1 for x in (criteria["min_holdout_sample"], criteria["min_holdout_runners"], criteria["min_holdout_negatives"]))
-        or criteria["max_missed_runners"] < 0
-        or any(_prob(x) is None for x in probs)
+        any(x is None for x in counts+probs)
+        or any(x < 1 for x in counts[:3])
     ):
         return {"status":"UNKNOWN","readiness_status":"NOT_READY","missing":["valid_explicit_readiness_criteria"],"criteria":criteria,**AUTHORITY}
     if not isinstance(evaluation,dict) or evaluation.get("evaluation_status")!="HELD_OUT_EVALUATED":
