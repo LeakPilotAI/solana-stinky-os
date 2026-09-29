@@ -840,3 +840,25 @@ async def test_runtime_iso_timestamps_are_bound_as_datetimes_for_watch_probe_and
     assert isinstance(probe_params["at"], datetime)
     assert isinstance(probe_params["last_success_at"], datetime)
     assert isinstance(market_params["observed_at"], datetime)
+
+
+def test_fee_observation_hot_path_does_not_run_schema_ddl():
+    from pathlib import Path
+    source = (Path(__file__).parents[1] / "src" / "sentinel" / "volume.py").read_text(encoding="utf-8")
+    start = source.index("    async def _persist_fee_observation(")
+    end = source.index("    async def _persist_market_snapshot(", start)
+    block = source[start:end]
+    assert "FEE_OBSERVATIONS_INSERT" in block
+    assert "FEE_OBSERVATIONS_DDL" not in block
+    assert "FEE_OBSERVATIONS_INDEXES" not in block
+
+
+def test_probe_and_depth_retry_only_transient_database_disconnects_once():
+    from pathlib import Path
+    source = (Path(__file__).parents[1] / "src" / "sentinel" / "volume.py").read_text(encoding="utf-8")
+    assert "winerror in {64, 10054}" in source
+    assert "async def _record_probe(self, probe: dict[str, Any], *, _retry: bool = True)" in source
+    assert "await self._record_probe(probe, _retry=False)" in source
+    assert "async def _persist_depth_observation(self, obs: Any, *, _retry: bool = True)" in source
+    assert "await self._persist_depth_observation(obs, _retry=False)" in source
+    assert source.count("await self._engine.dispose()") >= 2
