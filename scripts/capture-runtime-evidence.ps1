@@ -18,7 +18,7 @@ function Capture-Url([string]$Label, [string]$Url) {
     $r = Invoke-WebRequest -UseBasicParsing -Uri $Url -TimeoutSec 5
     Write-Evidence ("HTTP " + [int]$r.StatusCode)
     Write-Evidence $r.Content
-    if ($Label -eq "SUPERVISOR EVIDENCE" -and $r.Content -match '"status"\s*:\s*"FAILED"') { $script:SnapshotFailed = $true }
+    if ($Label -eq "SUPERVISOR EVIDENCE" -and $r.Content -match '"status"\s*:\s*"(FAILED|UNKNOWN)"') { $script:SnapshotFailed = $true }
   } catch {
     Write-Evidence ("UNAVAILABLE " + $_.Exception.Message)
     $script:SnapshotFailed = $true
@@ -48,7 +48,11 @@ function Snapshot {
     $p = Join-Path $logs ($name + ".log")
     if (Test-Path $p) {
       Write-Evidence ("--- " + $name + ".log (last 80 lines) ---")
-      Get-Content $p -Tail 80 -ErrorAction SilentlyContinue | Tee-Object -FilePath $out -Append
+      $tail = @(Get-Content $p -Tail 80 -ErrorAction SilentlyContinue)
+      $tail | Tee-Object -FilePath $out -Append
+      if ($tail -match 'persist_failed|entity_service\.loop_error|Traceback \(most recent call last\):') {
+        $script:SnapshotFailed = $true
+      }
     }
   }
 }
