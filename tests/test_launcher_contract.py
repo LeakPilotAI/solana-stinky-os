@@ -338,3 +338,9 @@ def test_stop_restores_path_for_docker():
     assert "Restore-SearchPath" in t
     assert "Docker\\Docker\\resources\\bin" in t
     assert "Test-GenesisOwned" in t
+
+
+def test_canonical_launcher_preserves_failure_exit_code():
+    t = read("Start-Stinky-OS.cmd")
+    assert "endlocal & exit /b %ERR%" in t
+    assert "endlocal\\nexit /b 0" not in t.replace("\\r\\n", "\\n")
