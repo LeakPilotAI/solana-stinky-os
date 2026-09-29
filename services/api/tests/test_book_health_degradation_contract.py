@@ -32,3 +32,14 @@ def test_book_health_propagates_partial_hydration_as_degraded():
     assert '"PARTIAL" if source == "postgres_partial"' in source
     assert '"book_memory_partial_hydration"' in source
     assert 'loaded["_failed_layers"] = failed_layers' in source
+
+
+def test_book_operator_views_do_not_present_degraded_hydration_as_valid_empty_state():
+    source = (API_ROOT / "src" / "stinky_api" / "main.py").read_text(encoding="utf-8")
+    assert "def _book_hydration_meta(source: str)" in source
+    assert "def _degraded_book_response(source: str, loaded: dict[str, Any])" in source
+    assert 'return {**degraded, "desk": None}' in source
+    assert '"dips": None' in source
+    assert '"count": None' in source
+    assert '"empty_note": None' in source
+    assert '"NO ACTIVE QUALITY DETERIORATION" if not cards else None' in source
