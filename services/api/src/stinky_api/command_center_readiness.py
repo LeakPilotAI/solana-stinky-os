@@ -9,7 +9,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import Depends, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,7 +19,8 @@ from stinky_api.entity_readiness_transition_audit import (
     describe_entity_readiness_transition,
     ensure_entity_readiness_audit_table,
 )
-from stinky_api.entity_graph import router
+
+router = APIRouter(prefix="/v1/entity-graph", tags=["entity-graph"])
 
 
 def _dt(value: Any) -> datetime | None:
