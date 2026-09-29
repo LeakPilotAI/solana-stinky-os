@@ -264,6 +264,9 @@ async def book_time_machine(
     mint = str(payload.get("mint") or "").strip()
     if not mint:
         return {"error": "mint required", "calibrated_probability": False, "source": source, "hydrated": loaded}
+    degraded = _degraded_book_response(source, loaded)
+    if degraded is not None:
+        return {**degraded, "result": None}
     as_of = payload.get("as_of") or payload.get("decision_timestamp")
     bundle = payload.get("bundle") if isinstance(payload.get("bundle"), dict) else payload
     out = time_machine(mint=mint, as_of=as_of, bundle=bundle, memory=mem)
@@ -279,10 +282,14 @@ async def book_summary(
     from stinky_core.book import book_stats, creator_book, pattern_book, wallet_book
 
     mem, loaded, source = await _book_memory(payload, session)
+    degraded = _degraded_book_response(source, loaded)
+    if degraded is not None:
+        return {**degraded, "stats": None, "wallets": None, "creators": None, "patterns": None}
     as_of = (payload or {}).get("as_of")
     return {
         "hydrated": loaded,
         "source": source,
+        **_book_hydration_meta(source),
         "stats": book_stats(mem, as_of=as_of),
         "wallets": wallet_book(mem, as_of=as_of),
         "creators": creator_book(mem, as_of=as_of),
@@ -299,6 +306,9 @@ async def book_similarity(
     from stinky_core.similarity import historical_similarity
 
     mem, loaded, source = await _book_memory(payload, session)
+    degraded = _degraded_book_response(source, loaded)
+    if degraded is not None:
+        return {**degraded, "similarity": None}
     out = historical_similarity(
         mem,
         payload.get("fingerprint"),
@@ -322,6 +332,9 @@ async def book_life_slices(
     mint = str(payload.get("mint") or "").strip()
     if not mint:
         return {"error": "mint required", "calibrated_probability": False, "source": source}
+    degraded = _degraded_book_response(source, loaded)
+    if degraded is not None:
+        return {**degraded, "life_slices": None}
     out = life_slices(
         mem,
         mint=mint,
@@ -351,7 +364,18 @@ async def book_report(
             },
             "calibrated_probability": False,
         }
-    mem, _loaded, source = await _book_memory(payload, session)
+    mem, loaded, source = await _book_memory(payload, session)
+    degraded = _degraded_book_response(source, loaded)
+    if degraded is not None:
+        return {
+            **degraded,
+            "gate1_passed": True,
+            "report": None,
+            "similarity": None,
+            "stages": None,
+            "findings": None,
+            "would_change_conclusion": None,
+        }
     inv = investigate(payload, memory=mem)
     return {
         "gate1_passed": True,
@@ -417,6 +441,9 @@ async def book_what_happened(
     mint = str(payload.get("mint") or "").strip()
     if not mint:
         return {"error": "mint required", "calibrated_probability": False, "source": source}
+    degraded = _degraded_book_response(source, loaded)
+    if degraded is not None:
+        return {**degraded, "what_happened": None}
     out = what_happened_next(
         mem,
         mint=mint,
@@ -436,6 +463,9 @@ async def book_recipe(
     from stinky_core.book import recipe_for
 
     mem, loaded, source = await _book_memory(payload, session)
+    degraded = _degraded_book_response(source, loaded)
+    if degraded is not None:
+        return {**degraded, "recipe": None}
     out = recipe_for(
         mem,
         payload.get("fingerprint"),
@@ -455,6 +485,9 @@ async def book_observations(
     from stinky_core.book import observation_book
 
     mem, loaded, source = await _book_memory(payload, session)
+    degraded = _degraded_book_response(source, loaded)
+    if degraded is not None:
+        return {**degraded, "observations": None, "count": None}
     rows = observation_book(mem, as_of=(payload or {}).get("as_of"))
     return {
         "observations": rows,
@@ -484,6 +517,14 @@ async def book_quality(
     from stinky_core.quality_state import evaluate_book, QUALITY_VERSION
 
     mem, loaded, source = await _book_memory(payload, session)
+    degraded = _degraded_book_response(source, loaded)
+    if degraded is not None:
+        return {
+            **degraded,
+            "version": QUALITY_VERSION,
+            "states": None,
+            "count": None,
+        }
     body = payload or {}
     rows = evaluate_book(mem, as_of=body.get("as_of"))
     mint = str(body.get("mint") or "").strip()
