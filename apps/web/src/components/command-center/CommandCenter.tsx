@@ -466,7 +466,7 @@ export function CommandCenter() {
                       colSpan={9}
                       className="px-4 py-10 text-center text-terminal-muted"
                     >
-                      No runners in API payload. If pipeline shows migration_tracks, restart stinky-api (old query may have timed out).
+                      {failed.has("runners") ? "RUNNER EVIDENCE UNAVAILABLE" : "No runners in API payload."}
                     </td>
                   </tr>
                 )}
@@ -509,7 +509,7 @@ export function CommandCenter() {
           <div className="flex-1 space-y-1.5 overflow-auto p-2">
             {uniqueQueue.length === 0 && (
               <p className="py-8 text-center text-[12px] text-terminal-muted">
-                No gated candidates yet.
+                {failed.has("alerts") ? "OPPORTUNITY EVIDENCE UNAVAILABLE" : "No gated candidates yet."}
               </p>
             )}
             {uniqueQueue.map((o, i) => (
@@ -599,7 +599,7 @@ export function CommandCenter() {
             </div>
             <div className="flex gap-1 text-[9px] text-terminal-muted">
               <span className="rounded bg-terminal-accent/15 px-1.5 py-0.5 text-terminal-accent">
-                LIVE
+                {degraded ? "DEGRADED" : "LIVE"}
               </span>
             </div>
           </div>
@@ -724,6 +724,13 @@ export function CommandCenter() {
               </tr>
             </thead>
             <tbody>
+              {data.trending?.available === false && (
+                <tr>
+                  <td colSpan={8} className="px-3 py-8 text-center text-[12px] text-amber-300">
+                    TRENDING EVIDENCE UNAVAILABLE
+                  </td>
+                </tr>
+              )}
               {data.trending?.available !== false && (data.trending?.items ?? []).length === 0 && (
                 <tr>
                   <td colSpan={8} className="px-3 py-8 text-center text-[12px] text-terminal-muted">
@@ -802,9 +809,9 @@ export function CommandCenter() {
       {/* ── EVENT STREAM FOOTER ── */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-terminal-border bg-[#0a0e0a] px-3 py-1.5 text-[10px]">
         <span className="flex items-center gap-1.5 font-semibold text-terminal-text">
-          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-terminal-accent" />
+          <span className={`h-1.5 w-1.5 rounded-full ${failed.has("alerts") ? "bg-amber-400" : "animate-pulse bg-terminal-accent"}`} />
           EVENT STREAM
-          <span className="text-terminal-accent">LIVE</span>
+          <span className="text-terminal-accent">{failed.has("alerts") ? "UNAVAILABLE" : "LIVE"}</span>
         </span>
         <span className="text-terminal-border">|</span>
         {(data.alerts || []).slice(0, 4).map((a, i) => (
