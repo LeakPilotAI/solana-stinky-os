@@ -215,7 +215,7 @@ export function CommandCenter() {
     <div className="flex h-full flex-col gap-2.5 overflow-auto bg-[#050705] p-2.5 lg:p-3">
       {error ? (
         <div className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-[11px] text-amber-200">
-          Last refresh lagged ({error}). Showing last good data — still live.
+          Refresh failed ({error}). Showing last confirmed snapshot — CURRENT LIVENESS UNKNOWN.
         </div>
       ) : null}
       {degraded ? (
@@ -486,8 +486,8 @@ export function CommandCenter() {
           </div>
           <div className="flex items-center gap-3 border-t border-terminal-border px-3 py-1.5 text-[10px] text-terminal-muted">
             <span className="flex items-center gap-1.5">
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-terminal-accent" />
-              Live poll 4s
+              <span className={`h-1.5 w-1.5 rounded-full ${error ? "bg-amber-400" : "animate-pulse bg-terminal-accent"}`} />
+              {error ? "Snapshot stale" : "Live poll 6s"}
             </span>
             <span>
               Last updated{" "}
@@ -607,7 +607,7 @@ export function CommandCenter() {
             </div>
             <div className="flex gap-1 text-[9px] text-terminal-muted">
               <span className="rounded bg-terminal-accent/15 px-1.5 py-0.5 text-terminal-accent">
-                {degraded ? "DEGRADED" : "LIVE"}
+                {error ? "STALE" : degraded ? "DEGRADED" : "LIVE"}
               </span>
             </div>
           </div>
@@ -819,7 +819,7 @@ export function CommandCenter() {
         <span className="flex items-center gap-1.5 font-semibold text-terminal-text">
           <span className={`h-1.5 w-1.5 rounded-full ${failed.has("alerts") ? "bg-amber-400" : "animate-pulse bg-terminal-accent"}`} />
           EVENT STREAM
-          <span className="text-terminal-accent">{failed.has("alerts") ? "UNAVAILABLE" : "LIVE"}</span>
+          <span className="text-terminal-accent">{error ? "STALE" : failed.has("alerts") ? "UNAVAILABLE" : "LIVE"}</span>
         </span>
         <span className="text-terminal-border">|</span>
         {(data.alerts || []).slice(0, 4).map((a, i) => (
