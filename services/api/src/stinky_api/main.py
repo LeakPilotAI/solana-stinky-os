@@ -16,8 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from stinky_api.config import settings
 from stinky_api.db import get_session
 from stinky_api import queries
+from stinky_api.command_center_readiness import router as command_center_readiness_router
 from stinky_api.entity_graph import router as entity_graph_router
-from stinky_api import command_center_readiness as _command_center_readiness  # registers entity-graph readiness route
 
 logger = structlog.get_logger(__name__)
 
@@ -46,6 +46,7 @@ app.add_middleware(
 )
 
 
+app.include_router(command_center_readiness_router)
 app.include_router(entity_graph_router)
 
 async def _book_memory(
