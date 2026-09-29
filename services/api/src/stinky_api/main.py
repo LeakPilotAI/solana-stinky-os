@@ -831,8 +831,8 @@ async def _trending_m5(
                 await session.execute(
                     text(
                         """
-                        WITH high AS (
-                          SELECT
+                        WITH latest AS (
+                          SELECT DISTINCT ON (ms.mint)
                             ms.mint,
                             ms.volume_m5_usd,
                             ms.liquidity_usd,
@@ -841,26 +841,10 @@ async def _trending_m5(
                             ms.fdv_usd,
                             ms.pair_address,
                             ms.dex_id,
-                            ms.captured_at,
-                            ROW_NUMBER() OVER (
-                              PARTITION BY ms.mint
-                              ORDER BY ms.captured_at DESC
-                            ) AS rn
+                            ms.captured_at
                           FROM market_snapshots ms
-                          WHERE ms.volume_m5_usd IS NOT NULL
-                            AND ms.volume_m5_usd >= :min_vol
-                            AND lower(ms.mint) LIKE '%pump'
-                        ),
-                        fees AS (
-                          SELECT DISTINCT ON (mint)
-                            mint,
-                            global_fees_sol,
-                            global_fees_verified,
-                            global_fees_source,
-                            accepted,
-                            rejection_reason
-                          FROM filter_evaluations
-                          ORDER BY mint, evaluated_at DESC
+                          WHERE ms.mint LIKE '%pump'
+                          ORDER BY ms.mint, ms.captured_at DESC
                         )
                         SELECT
                           h.mint,
@@ -883,10 +867,22 @@ async def _trending_m5(
                           mt.status AS track_status,
                           NULL::text AS name,
                           NULL::text AS symbol
-                        FROM high h
+                        FROM latest h
                         LEFT JOIN migration_tracks mt ON mt.mint = h.mint
-                        LEFT JOIN fees f ON f.mint = h.mint
-                        WHERE h.rn = 1
+                        LEFT JOIN LATERAL (
+                          SELECT
+                            fe.global_fees_sol,
+                            fe.global_fees_verified,
+                            fe.global_fees_source,
+                            fe.accepted,
+                            fe.rejection_reason
+                          FROM filter_evaluations fe
+                          WHERE fe.mint = h.mint
+                          ORDER BY fe.evaluated_at DESC
+                          LIMIT 1
+                        ) f ON TRUE
+                        WHERE h.volume_m5_usd IS NOT NULL
+                          AND h.volume_m5_usd >= :min_vol
                         ORDER BY h.volume_m5_usd DESC NULLS LAST
                         LIMIT :lim
                         """
@@ -905,8 +901,8 @@ async def _trending_m5(
                     await session.execute(
                         text(
                             """
-                            WITH high AS (
-                              SELECT
+                            WITH latest AS (
+                              SELECT DISTINCT ON (ms.mint)
                                 ms.mint,
                                 ms.volume_m5_usd,
                                 ms.liquidity_usd,
@@ -915,15 +911,10 @@ async def _trending_m5(
                                 ms.fdv_usd,
                                 ms.pair_address,
                                 ms.dex_id,
-                                ms.captured_at,
-                                ROW_NUMBER() OVER (
-                                  PARTITION BY ms.mint
-                                  ORDER BY ms.captured_at DESC
-                                ) AS rn
+                                ms.captured_at
                               FROM market_snapshots ms
-                              WHERE ms.volume_m5_usd IS NOT NULL
-                                AND ms.volume_m5_usd >= :min_vol
-                                AND lower(ms.mint) LIKE '%pump'
+                              WHERE ms.mint LIKE '%pump'
+                              ORDER BY ms.mint, ms.captured_at DESC
                             )
                             SELECT
                               h.mint,
@@ -946,9 +937,10 @@ async def _trending_m5(
                               mt.status AS track_status,
                               NULL::text AS name,
                               NULL::text AS symbol
-                            FROM high h
+                            FROM latest h
                             LEFT JOIN migration_tracks mt ON mt.mint = h.mint
-                            WHERE h.rn = 1
+                            WHERE h.volume_m5_usd IS NOT NULL
+                              AND h.volume_m5_usd >= :min_vol
                             ORDER BY h.volume_m5_usd DESC NULLS LAST
                             LIMIT :lim
                             """
