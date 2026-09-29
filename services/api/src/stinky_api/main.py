@@ -1183,9 +1183,14 @@ async def command_center() -> dict:
             ):
                 try:
                     stats[key] = (await session.execute(text(sql))).scalar() or 0
-                except Exception:
+                except Exception as exc:
                     stats[key] = None
-            return {"available": True, "tables": stats, "maintain_last_utc": None}
+                    section_failures[f"pipeline.{key}"] = f"{type(exc).__name__}: {exc}"[:240]
+            return {
+                "available": not any(k.startswith("pipeline.") for k in section_failures),
+                "tables": stats,
+                "maintain_last_utc": None,
+            }
 
     async def _precision():
         async with SessionLocal() as session:
@@ -1202,8 +1207,9 @@ async def command_center() -> dict:
                         )
                     )
                 ).mappings().all()
-            except Exception:
-                return {"available": False, "counts": {}, "message": "no alert_outcomes"}
+            except Exception as exc:
+                section_failures["alert_precision"] = f"{type(exc).__name__}: {exc}"[:240]
+                return {"available": False, "counts": {}, "message": "alert outcomes unavailable"}
             counts = {r["label"]: r["n"] for r in rows}
             total = sum(counts.values()) or 0
             runners = counts.get("runner", 0) + counts.get("mega_runner", 0)
