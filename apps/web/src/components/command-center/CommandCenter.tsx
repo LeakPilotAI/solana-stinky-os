@@ -206,6 +206,10 @@ export function CommandCenter() {
 
   if (!data) return null;
   const c = data.counts;
+  const degraded = data.available === false || data.status === "degraded";
+  const failed = new Set(data.degraded_sections || []);
+  const countValue = (key: keyof typeof c) =>
+    c[key] == null ? "—" : Number(c[key]).toLocaleString();
 
   return (
     <div className="flex h-full flex-col gap-2.5 overflow-auto bg-[#050705] p-2.5 lg:p-3">
@@ -214,11 +218,17 @@ export function CommandCenter() {
           Last refresh lagged ({error}). Showing last good data — still live.
         </div>
       ) : null}
+      {degraded ? (
+        <div className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-[11px] text-amber-200">
+          Command Center degraded. Unavailable sections are not being inferred as zero or empty.
+          {data.degraded_sections?.length ? ` Failed: ${data.degraded_sections.join(", ")}.` : ""}
+        </div>
+      ) : null}
       {/* ── KPI STRIP ── */}
       <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">
         <Kpi
           label="Migrations"
-          value={(c.migrations ?? 0).toLocaleString()}
+          value={countValue("migrations")}
           accent
         />
         <Kpi
@@ -227,20 +237,20 @@ export function CommandCenter() {
         />
         <Kpi
           label="Alerts (gated)"
-          value={(c.alerts ?? 0).toLocaleString()}
+          value={countValue("alerts")}
           accent
         />
         <Kpi
           label="Tracked wallets"
-          value={(c.wallets ?? c.wallets ?? c.wallets_perf ?? 0).toLocaleString()}
+          value={c.wallets ?? c.wallets_perf == null ? "—" : Number(c.wallets ?? c.wallets_perf).toLocaleString()}
         />
         <Kpi
           label="Entities"
-          value={(c.entities ?? 0).toLocaleString()}
+          value={countValue("entities")}
         />
         <Kpi
           label="Buyers captured"
-          value={(c.buyers ?? 0).toLocaleString()}
+          value={countValue("buyers")}
         />
       </div>
 
@@ -303,7 +313,7 @@ export function CommandCenter() {
         </p>
         {!(data.synthesis?.investigations || []).length ? (
           <p className="py-3 text-center text-[12px] text-terminal-muted">
-            {data.synthesis?.empty_note || "NO ACTIVE INVESTIGATIONS"}
+            {data.synthesis?.available === false ? "INVESTIGATION EVIDENCE UNAVAILABLE" : (data.synthesis?.empty_note || "NO ACTIVE INVESTIGATIONS")}
           </p>
         ) : (
           <ul className="divide-y divide-terminal-border">
@@ -594,15 +604,15 @@ export function CommandCenter() {
             </div>
           </div>
           <div className="grid grid-cols-2 gap-2 p-3">
-            <MiniStat label="Migrations" value={(c.migrations ?? 0).toLocaleString()} />
-            <MiniStat label="Tracks" value={(c.tracks ?? 0).toLocaleString()} />
-            <MiniStat label="Launches" value={(c.launches ?? 0).toLocaleString()} />
-            <MiniStat label="Entities" value={(c.entities ?? 0).toLocaleString()} />
+            <MiniStat label="Migrations" value={countValue("migrations")} />
+            <MiniStat label="Tracks" value={countValue("tracks")} />
+            <MiniStat label="Launches" value={countValue("launches")} />
+            <MiniStat label="Entities" value={countValue("entities")} />
             <MiniStat
               label="5m Vol (runners)"
               value={vol5mSum != null ? fmtUsd(vol5mSum) : "—"}
             />
-            <MiniStat label="Wallet perf" value={(c.wallets ?? c.wallets_perf ?? 0).toLocaleString()} />
+            <MiniStat label="Wallet perf" value={c.wallets ?? c.wallets_perf == null ? "—" : Number(c.wallets ?? c.wallets_perf).toLocaleString()} />
           </div>
         </section>
 
@@ -694,7 +704,7 @@ export function CommandCenter() {
           </div>
           <div className="flex items-center gap-2 text-[9px] text-terminal-muted">
             <span>
-              {(data.trending?.count ?? data.trending?.items?.length ?? 0)} hits
+              {data.trending?.available === false ? "unavailable" : `${data.trending?.count ?? data.trending?.items?.length ?? 0} hits`}
             </span>
             <span className="text-terminal-muted/60">pump · fees gate when known</span>
           </div>
@@ -714,7 +724,7 @@ export function CommandCenter() {
               </tr>
             </thead>
             <tbody>
-              {(data.trending?.items ?? []).length === 0 && (
+              {data.trending?.available !== false && (data.trending?.items ?? []).length === 0 && (
                 <tr>
                   <td colSpan={8} className="px-3 py-8 text-center text-[12px] text-terminal-muted">
                     No measured coins at ≥ $150k 5m volume yet. Gate 1 is an investigation trigger, not a buy.
