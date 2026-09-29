@@ -335,7 +335,11 @@ export function CommandCenter() {
       </section>
 
       {/* ── ALERT PRECISION (measured outcomes) ── */}
-      {(data as any).pipeline?.available && (
+      {(data as any).pipeline?.available === false ? (
+        <div className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
+          PIPELINE EVIDENCE UNAVAILABLE
+        </div>
+      ) : (data as any).pipeline?.available ? (
         <div className="rounded border border-terminal-border bg-terminal-panel/80 px-3 py-2 text-2xs">
           <div className="mb-1 text-[9px] font-semibold uppercase tracking-wide text-terminal-dim">
             Pipeline
@@ -359,9 +363,13 @@ export function CommandCenter() {
             )}
           </div>
         </div>
-      )}
+      ) : null}
 
-      {data.alert_precision && data.alert_precision.available !== false && (
+      {data.alert_precision?.available === false ? (
+        <div className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
+          ALERT PRECISION EVIDENCE UNAVAILABLE
+        </div>
+      ) : data.alert_precision ? (
         <div className="flex flex-wrap items-center gap-3 rounded-xl border border-terminal-border bg-[#0a0e0a] px-3 py-2">
           <div className="text-[10px] font-semibold uppercase tracking-wider text-terminal-muted">
             Alert precision
@@ -419,7 +427,7 @@ export function CommandCenter() {
             </Link>
           </div>
         </div>
-      )}
+      ) : null}
 
       {/* ── MAIN BAND: Runners | Queue | Alerts ── */}
       <div className="grid min-h-[340px] flex-1 grid-cols-1 gap-2.5 lg:grid-cols-12">
