@@ -39,6 +39,15 @@ function Snapshot {
     Write-Evidence ("--- " + $_.Name + " ---")
     Get-Content $_.FullName -Raw | Tee-Object -FilePath $out -Append
   }
+  Write-Evidence "=== RECENT SERVICE LOG TAILS ==="
+  $names = @("event-log","api","sentinel","discord","collector","entities","web","maintain","paper-intake-producer","paper-runtime","startup")
+  foreach ($name in $names) {
+    $p = Join-Path $logs ($name + ".log")
+    if (Test-Path $p) {
+      Write-Evidence ("--- " + $name + ".log (last 80 lines) ---")
+      Get-Content $p -Tail 80 -ErrorAction SilentlyContinue | Tee-Object -FilePath $out -Append
+    }
+  }
 }
 Snapshot
 if ($DurationMinutes -gt 0) {
