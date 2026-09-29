@@ -19,3 +19,14 @@ def test_recovery_is_explicit_operator_command():
     assert "--dry-run" in text
     assert "recover_historical_research_bridge" in text
     assert "historical_research_bridge_preflight" in text
+
+
+def test_runtime_supervisor_evidence_is_fail_closed():
+    source = (API_ROOT / "src" / "stinky_api" / "main.py").read_text(encoding="utf-8")
+    assert '@app.get("/v1/system/runtime-supervisors")' in source
+    assert '"status": "UNKNOWN"' in source
+    assert 'if phase == "FAILED":' in source
+    assert 'elif age_seconds is None or age_seconds > 180:' in source
+    assert 'item["status"] = "UNKNOWN"' in source
+    assert '"status": "FAILED" if failed else ("UNKNOWN" if unknown else "OBSERVED")' in source
+    assert '"source": "runtime-state-per-service"' in source
