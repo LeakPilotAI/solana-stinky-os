@@ -90,7 +90,7 @@ export function CommandCenter() {
       try {
         const [d, dipRes] = await Promise.all([
           api.commandCenter(),
-          api.bookDips().catch(() => ({ dips: [] as Array<Record<string, unknown>> })),
+          api.bookDips().catch(() => ({ dips: null, available: false })),
         ]);
         if (!cancelled) {
           setData(d);
