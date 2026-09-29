@@ -73,6 +73,33 @@ async def _book_memory(
     return mem, {}, "empty"
 
 
+def _book_hydration_meta(source: str) -> dict[str, Any]:
+    """Truthful availability metadata shared by book endpoints."""
+    status = "UNKNOWN" if source == "unavailable" else ("PARTIAL" if source == "postgres_partial" else "COMPLETE")
+    return {
+        "hydration_status": status,
+        "available": status == "COMPLETE",
+        "partial": status == "PARTIAL",
+        "degradation_reason": (
+            "book_memory_unavailable" if status == "UNKNOWN"
+            else "book_memory_partial_hydration" if status == "PARTIAL"
+            else None
+        ),
+    }
+
+
+def _degraded_book_response(source: str, loaded: dict[str, Any]) -> dict[str, Any] | None:
+    meta = _book_hydration_meta(source)
+    if meta["available"]:
+        return None
+    return {
+        "source": source,
+        "hydrated": loaded,
+        **meta,
+        "calibrated_probability": False,
+    }
+
+
 @app.post("/v1/filter/evaluate")
 async def filter_evaluate(payload: dict) -> dict:
     """Evaluate a market dict through the canonical engine. No scoring."""
@@ -347,23 +374,17 @@ async def book_health(
 
     mem, loaded, source = await _book_memory(payload, session)
     as_of = (payload or {}).get("as_of")
-    hydration_status = "UNKNOWN" if source == "unavailable" else ("PARTIAL" if source == "postgres_partial" else "COMPLETE")
+    hydration = _book_hydration_meta(source)
+    hydration_status = hydration["hydration_status"]
     health = dataset_health(mem, as_of=as_of)
     desk = desk_snapshot(mem, as_of=as_of)
     return {
         "hydrated": loaded,
         "source": source,
-        "hydration_status": hydration_status,
-        "available": hydration_status == "COMPLETE",
-        "partial": hydration_status == "PARTIAL",
+        **hydration,
         "health": health if hydration_status == "COMPLETE" else None,
         "desk": desk if hydration_status == "COMPLETE" else None,
         "calibrated_probability": False,
-        "degradation_reason": (
-            "book_memory_unavailable" if hydration_status == "UNKNOWN"
-            else "book_memory_partial_hydration" if hydration_status == "PARTIAL"
-            else None
-        ),
     }
 
 
@@ -375,9 +396,13 @@ async def book_desk(
     from stinky_core.book import desk_snapshot
 
     mem, loaded, source = await _book_memory(payload, session)
+    degraded = _degraded_book_response(source, loaded)
+    if degraded is not None:
+        return {**degraded, "desk": None}
     out = desk_snapshot(mem, as_of=(payload or {}).get("as_of"))
     out["source"] = source
     out["hydrated"] = loaded
+    out.update(_book_hydration_meta(source))
     return out
 
 
@@ -482,6 +507,15 @@ async def book_dips(
     from stinky_core.quality_state import evaluate_book, quality_dips, QUALITY_VERSION
 
     mem, loaded, source = await _book_memory(payload, session)
+    degraded = _degraded_book_response(source, loaded)
+    if degraded is not None:
+        return {
+            **degraded,
+            "version": QUALITY_VERSION,
+            "dips": None,
+            "count": None,
+            "empty_note": None,
+        }
     body = payload or {}
     cards = quality_dips(evaluate_book(mem, as_of=body.get("as_of")))
     return {
@@ -491,6 +525,7 @@ async def book_dips(
         "empty_note": "NO ACTIVE QUALITY DETERIORATION" if not cards else None,
         "source": source,
         "hydrated": loaded,
+        **_book_hydration_meta(source),
         "calibrated_probability": False,
     }
 
