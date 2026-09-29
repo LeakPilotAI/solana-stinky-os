@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
+import math
 from sqlalchemy import text
 
 AUTHORITY = {
@@ -21,12 +22,27 @@ AUTHORITY = {
     "live_execution": False,
 }
 
-def _dt(value: Any) -> datetime:
+def _dt(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
     raw = str(value or "").strip().replace("Z", "+00:00")
-    parsed = datetime.fromisoformat(raw) if raw else datetime.now(timezone.utc)
+    if not raw: return None
+    try: parsed = datetime.fromisoformat(raw)
+    except ValueError: return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+def _positive_int(value: Any) -> int | None:
+    if value is None or isinstance(value,bool): return None
+    if isinstance(value,float) and not value.is_integer(): return None
+    try: n=int(value)
+    except (TypeError,ValueError): return None
+    return n if n>=1 else None
+
+def _prob(value: Any) -> float | None:
+    if value is None or isinstance(value,bool): return None
+    try: n=float(value)
+    except (TypeError,ValueError): return None
+    return n if math.isfinite(n) and 0.0<=n<=1.0 else None
 
 def _metrics(rows: list[dict[str, Any]], threshold: float) -> dict[str, Any]:
     scored = [r for r in rows if r.get("stinky_score") is not None]
@@ -70,17 +86,21 @@ async def evaluate_score_threshold_out_of_sample(
     score_model = str(score_model_version or "").strip()
     label_version = str(outcome_label_version or "").strip()
     cutoff = _dt(as_of)
-    thresholds = sorted({float(x) for x in candidate_thresholds})
-    fraction = min(max(float(evaluation_fraction), 0.10), 0.50)
-    min_train = max(1, int(min_training_sample))
-    min_holdout = max(1, int(min_holdout_sample))
-    min_train_runners = max(1, int(min_training_runners))
-    min_train_negatives = max(1, int(min_training_negatives))
-    min_test_runners = max(1, int(min_holdout_runners))
-    min_test_negatives = max(1, int(min_holdout_negatives))
-    precision_floor = min(max(float(min_training_runner_precision), 0.0), 1.0)
-    if not intel or not score_model or not label_version or not thresholds:
-        return {"status": "UNKNOWN", "evaluation_status": "NOT_EVALUATION_READY", "missing": ["version_or_threshold_configuration"], **AUTHORITY}
+    try:
+        thresholds = sorted({float(x) for x in candidate_thresholds})
+    except (TypeError,ValueError):
+        thresholds = []
+    fraction = _prob(evaluation_fraction)
+    precision_floor = _prob(min_training_runner_precision)
+    counts=[_positive_int(x) for x in (min_training_sample,min_holdout_sample,min_training_runners,min_training_negatives,min_holdout_runners,min_holdout_negatives)]
+    if (
+        not intel or not score_model or not label_version or cutoff is None
+        or not thresholds or any(not math.isfinite(x) or not 0.0<=x<=100.0 for x in thresholds)
+        or fraction is None or not 0.10<=fraction<=0.50 or precision_floor is None
+        or any(x is None for x in counts)
+    ):
+        return {"status": "UNKNOWN", "evaluation_status": "NOT_EVALUATION_READY", "missing": ["valid_explicit_evaluation_configuration"], **AUTHORITY}
+    min_train,min_holdout,min_train_runners,min_train_negatives,min_test_runners,min_test_negatives=counts
 
     rows = (await session.execute(text("""
         SELECT DISTINCT ON (mi.mint)
@@ -103,7 +123,7 @@ async def evaluate_score_threshold_out_of_sample(
         "as_of": cutoff,
     })).mappings().all()
     records = [dict(r) for r in rows if str(r.get("label") or "") in {"RUNNER", "HELD", "FADE"}]
-    records.sort(key=lambda r: _dt(r["inspected_at"]))
+    records.sort(key=lambda r: _dt(r["inspected_at"]) or datetime.max.replace(tzinfo=timezone.utc))
 
     total = len(records)
     holdout_count = max(min_holdout, int(round(total * fraction))) if total else 0
