@@ -342,12 +342,18 @@ async def book_health(
 
     mem, loaded, source = await _book_memory(payload, session)
     as_of = (payload or {}).get("as_of")
+    hydration_status = "UNKNOWN" if source == "unavailable" else "COMPLETE"
+    health = dataset_health(mem, as_of=as_of)
+    desk = desk_snapshot(mem, as_of=as_of)
     return {
         "hydrated": loaded,
         "source": source,
-        "health": dataset_health(mem, as_of=as_of),
-        "desk": desk_snapshot(mem, as_of=as_of),
+        "hydration_status": hydration_status,
+        "available": hydration_status == "COMPLETE",
+        "health": health if hydration_status == "COMPLETE" else None,
+        "desk": desk if hydration_status == "COMPLETE" else None,
         "calibrated_probability": False,
+        "degradation_reason": "book_memory_unavailable" if hydration_status == "UNKNOWN" else None,
     }
 
 
