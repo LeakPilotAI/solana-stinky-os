@@ -719,7 +719,10 @@ async def operator_endpoint(session: Annotated[AsyncSession, Depends(get_session
         await session.execute(text("SELECT 1"))
         db_ok = True
         last_read = now
-        mem, _loaded, source = await _book_memory(None, session)
+        db_snap = await queries.load_operator_snapshot(session)
+        failed_layers = db_snap.pop("_hydration_failed_layers", [])
+        mem.hydrate(db_snap)
+        source = "postgres_partial" if failed_layers else "postgres_operator_bounded"
         mem.record_provider_probe(_probe_postgres(True, at=now.isoformat()))
     except Exception as exc:
         db_ok = False
