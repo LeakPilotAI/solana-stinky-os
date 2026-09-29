@@ -5,7 +5,8 @@ REPO_ROOT = API_ROOT.parents[1]
 
 def test_book_health_does_not_present_unavailable_hydration_as_empty_health():
     source = (API_ROOT / "src" / "stinky_api" / "main.py").read_text(encoding="utf-8")
-    assert 'hydration_status = "UNKNOWN" if source == "unavailable" else "COMPLETE"' in source
+    assert 'hydration_status = "UNKNOWN" if source == "unavailable"' in source
+    assert '"PARTIAL" if source == "postgres_partial" else "COMPLETE"' in source
     assert '"health": health if hydration_status == "COMPLETE" else None' in source
     assert '"desk": desk if hydration_status == "COMPLETE" else None' in source
     assert '"degradation_reason": "book_memory_unavailable"' in source
