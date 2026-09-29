@@ -37,3 +37,10 @@ test("command center removes remaining false-live section states", () => {
   expect(source).toContain("TRENDING EVIDENCE UNAVAILABLE");
   expect(source).toContain('failed.has("alerts") ? "UNAVAILABLE" : "LIVE"');
 });
+
+
+test("command center renders pipeline and precision failures explicitly", () => {
+  const source = fs.readFileSync(path.join(root, "src/components/command-center/CommandCenter.tsx"), "utf8");
+  expect(source).toContain("PIPELINE EVIDENCE UNAVAILABLE");
+  expect(source).toContain("ALERT PRECISION EVIDENCE UNAVAILABLE");
+});
