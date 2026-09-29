@@ -27,3 +27,13 @@ test("command center renders degraded sections without false zero or empty claim
   expect(source).toContain("ENTITY EVIDENCE UNAVAILABLE");
   expect(source).toContain('data.trending?.available === false ? "unavailable"');
 });
+
+
+test("command center removes remaining false-live section states", () => {
+  const source = fs.readFileSync(path.join(root, "src/components/command-center/CommandCenter.tsx"), "utf8");
+  expect(source).toContain("RUNNER EVIDENCE UNAVAILABLE");
+  expect(source).toContain("OPPORTUNITY EVIDENCE UNAVAILABLE");
+  expect(source).toContain('degraded ? "DEGRADED" : "LIVE"');
+  expect(source).toContain("TRENDING EVIDENCE UNAVAILABLE");
+  expect(source).toContain('failed.has("alerts") ? "UNAVAILABLE" : "LIVE"');
+});
