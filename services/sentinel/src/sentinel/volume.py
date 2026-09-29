@@ -84,6 +84,19 @@ logger = structlog.get_logger(__name__)
 _prospective_fee_clock = time.monotonic
 _prospective_depth_clock = time.monotonic
 
+
+def _db_timestamp(value: Any) -> datetime | None:
+    """Coerce ISO runtime evidence timestamps to DB-native datetimes."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str):
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+    raise TypeError(f"unsupported timestamp value: {type(value).__name__}")
+
+
 def _allowed_dexes() -> set[str]:
     raw = getattr(settings, "allowed_dex_ids", "pumpswap,pumpfun,pump") or ""
     return {x.strip().lower() for x in raw.split(",") if x.strip()}
@@ -1456,7 +1469,7 @@ class VolumeMonitor:
                     text(MEMORY_INSERT_MARKET_OBS),
                     {
                         "mint": mint,
-                        "observed_at": at,
+                        "observed_at": _db_timestamp(at),
                         "volume_m5_usd": snap.volume_m5_usd,
                         "price_usd": snap.price_usd,
                         "liquidity_usd": snap.liquidity_usd,
@@ -1550,7 +1563,7 @@ class VolumeMonitor:
                     text(MEMORY_INSERT_QUALITY),
                     {
                         "mint": row.get("mint"),
-                        "as_of": row.get("as_of"),
+                        "as_of": _db_timestamp(row.get("as_of")),
                         "state": row.get("state"),
                         "previous_state": row.get("previous_state"),
                         "severity": row.get("severity"),
@@ -1584,7 +1597,7 @@ class VolumeMonitor:
                     text(MEMORY_INSERT_OPERATOR_EVENT),
                     {
                         "mint": mint,
-                        "at": rec["at"],
+                        "at": _db_timestamp(rec["at"]),
                         "kind": kind,
                         "message": message,
                         "evidence_label": "LIVE",
@@ -1625,10 +1638,10 @@ class VolumeMonitor:
                     text(MEMORY_INSERT_WATCH_STATE),
                     {
                         "mint": mint,
-                        "started_at": started_at,
-                        "last_observation_at": rec.get("last_observation_at"),
+                        "started_at": _db_timestamp(started_at),
+                        "last_observation_at": _db_timestamp(rec.get("last_observation_at")),
                         "observation_count": rec.get("observation_count"),
-                        "next_due_at": extra.get("next_due_at"),
+                        "next_due_at": _db_timestamp(extra.get("next_due_at")),
                         "status": status,
                         "resumed": resumed,
                         "interrupted": bool(rec.get("interrupted")),
@@ -1664,11 +1677,11 @@ class VolumeMonitor:
                     text(MEMORY_INSERT_PROVIDER_PROBE),
                     {
                         "provider": probe.get("provider") or "dexscreener",
-                        "at": probe.get("at"),
+                        "at": _db_timestamp(probe.get("at")),
                         "status": probe.get("status") or "UNKNOWN",
                         "latency_ms": probe.get("latency_ms"),
-                        "last_success_at": probe.get("last_success_at") or (probe.get("at") if probe.get("ok") else None),
-                        "last_failure_at": probe.get("last_failure_at") or (probe.get("at") if probe.get("ok") is False else None),
+                        "last_success_at": _db_timestamp(probe.get("last_success_at") or (probe.get("at") if probe.get("ok") else None)),
+                        "last_failure_at": _db_timestamp(probe.get("last_failure_at") or (probe.get("at") if probe.get("ok") is False else None)),
                         "error": probe.get("error"),
                         "row": json.dumps(probe, default=str),
                     },
