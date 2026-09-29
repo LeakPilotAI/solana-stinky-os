@@ -319,9 +319,9 @@ def main() -> int:
         last = 0
         history: list[float] = []
         healthy_url = core_url(name)
-        # The proven Windows dead-listener failure is API-specific. Keep this repair
-        # narrow; event-log/web retain their existing exit-based supervision.
-        watched_url = healthy_url if name == "api" else None
+        # All core HTTP services must recycle a child that remains alive while its
+        # listener is unavailable. Process-exists is not service health.
+        watched_url = healthy_url
         while True:
             last = run(cmd, cwd, health_url=watched_url)
             if healthy_url and http_ok(healthy_url):
