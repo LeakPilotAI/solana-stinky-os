@@ -59,6 +59,8 @@ export function PaperCalibrationPanel() {
   const o = d.outcomes || {};
   const s = d.decisions || {};
   const p = d.paper || {};
+  const observed = String(d.status || "").toUpperCase() === "OBSERVED";
+  const metric = (value: number | undefined) => observed && value != null ? value : "—";
 
   return (
     <section className="shrink-0 border-b border-terminal-border bg-[#080a08] px-4 py-3">
@@ -73,21 +75,22 @@ export function PaperCalibrationPanel() {
       <div className="grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-8">
         <Stat label="Producer" value={d.producer || "UNKNOWN"} hint={d.producer_version || undefined} />
         <Stat label="Paper runtime" value={d.paper_runtime || "UNKNOWN"} />
-        <Stat label="Prospective candidates" value={d.candidates ?? 0} hint={d.prospective_started_at ? `since ${d.prospective_started_at.slice(0, 19)}` : "epoch not observed"} />
-        <Stat label="Closed outcomes" value={o.closed ?? 0} hint={`R/H/F/U ${o.RUNNER ?? 0}/${o.HELD ?? 0}/${o.FADE ?? 0}/${o.UNKNOWN ?? 0}`} />
-        <Stat label="WOULD_WATCH" value={s.WOULD_WATCH ?? 0} />
-        <Stat label="WOULD_SKIP" value={s.WOULD_SKIP ?? 0} />
-        <Stat label="WOULD_ENTER" value={s.WOULD_ENTER ?? 0} />
+        <Stat label="Prospective candidates" value={metric(d.candidates)} hint={d.prospective_started_at ? `since ${d.prospective_started_at.slice(0, 19)}` : "epoch not observed"} />
+        <Stat label="Closed outcomes" value={metric(o.closed)} hint={observed ? `R/H/F/U ${o.RUNNER ?? 0}/${o.HELD ?? 0}/${o.FADE ?? 0}/${o.UNKNOWN ?? 0}` : "outcomes unavailable"} />
+        <Stat label="WOULD_WATCH" value={metric(s.WOULD_WATCH)} />
+        <Stat label="WOULD_SKIP" value={metric(s.WOULD_SKIP)} />
+        <Stat label="WOULD_ENTER" value={metric(s.WOULD_ENTER)} />
         <Stat label="Paper policy" value={d.policy?.status || "NOT_SET"} hint={d.policy?.version || "explicit policy not provisioned"} />
       </div>
 
       <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-4">
-        <Stat label="Open paper" value={p.SIMULATED_OPEN ?? 0} />
-        <Stat label="Closed paper" value={p.SIMULATED_CLOSED ?? 0} />
-        <Stat label="Intake queue" value={d.intake?.unprocessed ?? 0} hint={`${d.intake?.processed ?? 0} processed`} />
+        <Stat label="Open paper" value={metric(p.SIMULATED_OPEN)} />
+        <Stat label="Closed paper" value={metric(p.SIMULATED_CLOSED)} />
+        <Stat label="Intake queue" value={metric(d.intake?.unprocessed)} hint={observed ? `${d.intake?.processed ?? 0} processed` : "intake unavailable"} />
         <Stat label="Policy horizon / notional" value={d.policy?.horizon || "UNKNOWN"} hint={d.policy?.notional_usd != null ? `$${d.policy.notional_usd} paper notional` : "not configured"} />
       </div>
 
+      {!observed ? <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-[10px] text-amber-300">PAPER EVIDENCE UNAVAILABLE — counts are not inferred as zero.</div> : null}
       {d.error ? <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-[10px] text-amber-300">Status surface: {d.error}</div> : null}
     </section>
   );
