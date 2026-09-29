@@ -444,6 +444,7 @@ class VolumeMonitor:
         fees_verified: bool,
         snap: "VolumeSnapshot | None" = None,
         fees_source: str | None = None,
+        _retry: bool = True,
     ) -> None:
         """Persist one quality decision for operator audit (fail-soft)."""
         try:
@@ -487,6 +488,15 @@ class VolumeMonitor:
                 await session.commit()
             self._clear_observation_persistence_degraded("filter_evaluation")
         except Exception as exc:
+            if _retry and _is_transient_db_disconnect(exc):
+                await self._engine.dispose()
+                await asyncio.sleep(0.05)
+                await self._record_filter_eval(
+                    mint=mint, accepted=accepted, reason=reason, fees_sol=fees_sol,
+                    fees_verified=fees_verified, snap=snap, fees_source=fees_source,
+                    _retry=False,
+                )
+                return
             self._mark_observation_persistence_degraded("filter_evaluation", exc)
             logger.warning(
                 "filter_eval.persist_failed",
@@ -513,7 +523,7 @@ class VolumeMonitor:
 
 
 
-    async def _persist_market_snapshot(self, mint: str, snap: "VolumeSnapshot") -> None:
+    async def _persist_market_snapshot(self, mint: str, snap: "VolumeSnapshot", *, _retry: bool = True) -> None:
         """Write measured DexScreener snapshot so Trending / CC / Backtest have data."""
         if not self._sessions:
             return
@@ -548,6 +558,11 @@ class VolumeMonitor:
                 await session.commit()
             self._clear_observation_persistence_degraded("market_snapshot")
         except Exception as exc:
+            if _retry and _is_transient_db_disconnect(exc):
+                await self._engine.dispose()
+                await asyncio.sleep(0.05)
+                await self._persist_market_snapshot(mint, snap, _retry=False)
+                return
             self._mark_observation_persistence_degraded("market_snapshot", exc)
             logger.warning("volume.snapshot_persist_failed", mint=mint, error=str(exc)[:200])
 
