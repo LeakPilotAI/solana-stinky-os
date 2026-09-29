@@ -22,8 +22,33 @@ from stinky_api.entity_graph import router as entity_graph_router
 logger = structlog.get_logger(__name__)
 
 
+def _install_windows_connection_reset_handler() -> None:
+    """Suppress only the benign Proactor callback reset; delegate every other asyncio error."""
+    loop = asyncio.get_running_loop()
+    previous = loop.get_exception_handler()
+
+    def _handler(active_loop: asyncio.AbstractEventLoop, context: dict) -> None:
+        exc = context.get("exception")
+        message = str(context.get("message") or "")
+        winerror = getattr(exc, "winerror", None)
+        benign_reset = (
+            isinstance(exc, ConnectionResetError)
+            and winerror == 10054
+            and "_call_connection_lost" in message
+        )
+        if benign_reset:
+            return
+        if previous is not None:
+            previous(active_loop, context)
+        else:
+            active_loop.default_exception_handler(context)
+
+    loop.set_exception_handler(_handler)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _install_windows_connection_reset_handler()
     logger.info("api.started", service=settings.service_name, port=settings.api_port)
     yield
     logger.info("api.stopped")
