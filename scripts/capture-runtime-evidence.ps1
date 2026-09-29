@@ -6,6 +6,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $logs = Join-Path $root "logs"
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $out = Join-Path $logs ("runtime-evidence-" + $stamp + ".txt")
+$script:SnapshotFailed = $false
 New-Item -ItemType Directory -Force -Path $logs | Out-Null
 
 function Write-Evidence([string]$Text) {
@@ -17,8 +18,10 @@ function Capture-Url([string]$Label, [string]$Url) {
     $r = Invoke-WebRequest -UseBasicParsing -Uri $Url -TimeoutSec 5
     Write-Evidence ("HTTP " + [int]$r.StatusCode)
     Write-Evidence $r.Content
+    if ($Label -eq "SUPERVISOR EVIDENCE" -and $r.Content -match '"status"\s*:\s*"FAILED"') { $script:SnapshotFailed = $true }
   } catch {
     Write-Evidence ("UNAVAILABLE " + $_.Exception.Message)
+    $script:SnapshotFailed = $true
   }
 }
 function Snapshot {
@@ -58,5 +61,9 @@ if ($DurationMinutes -gt 0) {
   }
 }
 Write-Evidence ("\nEVIDENCE_FILE=" + $out)
-Write-Host "Runtime evidence captured: $out" -ForegroundColor Green
+if ($script:SnapshotFailed) {
+  Write-Host "Runtime evidence captured with failures: $out" -ForegroundColor Red
+  exit 1
+}
+Write-Host "Runtime evidence captured cleanly: $out" -ForegroundColor Green
 exit 0
