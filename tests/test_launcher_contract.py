@@ -360,3 +360,13 @@ def test_runtime_evidence_capture_checks_health_supervisors_and_owned_processes(
     assert "RECENT SERVICE LOG TAILS" in t
     assert "Get-Content $p -Tail 80" in t
     assert '"paper-runtime","startup"' in t
+
+
+def test_runtime_evidence_capture_fails_closed_on_observed_runtime_failure():
+    t = read("scripts/capture-runtime-evidence.ps1")
+    assert "$script:SnapshotFailed = $false" in t
+    assert '$script:SnapshotFailed = $true' in t
+    assert '"SUPERVISOR EVIDENCE"' in t
+    assert "'\"status\"\\s*:\\s*\"FAILED\"'" in t
+    assert "exit 1" in t
+    assert "Runtime evidence captured cleanly" in t
