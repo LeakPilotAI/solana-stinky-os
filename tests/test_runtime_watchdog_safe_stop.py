@@ -85,3 +85,14 @@ def test_healthy_core_supervisor_heartbeats_runtime_state():
     assert "if now - last_heartbeat >= 60:" in t
     assert 'dump_runtime("RUNNING")' in t
     assert "last_heartbeat = now" in t
+
+
+def test_paper_workers_use_capped_genesis_supervisor():
+    runtime = read("scripts/run_genesis_service.py")
+    starter = read("scripts/start_paper_runtime.py")
+    assert '"paper-intake-producer"' in runtime
+    assert '"paper-runtime"' in runtime
+    assert 'run_supervised([py, "-m", "stinky_api.prospective_paper_policy_runtime"])' in runtime
+    assert 'run_supervised([py, "-m", "stinky_api.paper_runtime_worker"])' in runtime
+    assert '[exe, str(supervisor), "--name", name]' in starter
+    assert 'subprocess.Popen([exe, "-m", module]' not in starter
