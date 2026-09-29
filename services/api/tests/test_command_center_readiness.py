@@ -85,11 +85,11 @@ def test_operator_summary_never_converts_blockers_to_score_or_signal():
 
 
 def test_command_center_readiness_route_is_registered_before_uuid_catchall():
+    from fastapi.testclient import TestClient
     from stinky_api.main import app
 
-    paths = [route.path for route in app.routes]
-    readiness_path = "/v1/entity-graph/command-center-readiness"
-    catchall_path = "/v1/entity-graph/{entity_id}"
-    assert readiness_path in paths
-    assert catchall_path in paths
-    assert paths.index(readiness_path) < paths.index(catchall_path)
+    response = TestClient(app).get("/v1/entity-graph/command-center-readiness?limit=1")
+    assert response.status_code == 200
+    body = response.json()
+    assert body.get("evidence_only") is True
+    assert body.get("status") in {"OBSERVED", "UNKNOWN"}
