@@ -37,3 +37,14 @@ def test_comparison_verifies_candidate_identity_and_exposes_actionability():
     assert '"actionable_score_count"' in source
     assert '"non_actionable_numeric_score_count"' in source
     assert '"actionable_score_threshold_metrics"' in source
+
+
+def test_comparison_uses_explicit_metric_universes():
+    source=(API_ROOT/"src"/"stinky_api"/"prospective_score_candidate_comparison.py").read_text(encoding="utf-8")
+    assert 'universe=="numeric_score"' in source
+    assert 'universe=="actionable_score"' in source
+    assert 'universe=="all_labeled"' in source
+    assert '_metrics(records,"candidate_positive",universe="numeric_score")' in source
+    assert '_metrics(records,"actionable_candidate_positive",universe="actionable_score")' in source
+    assert '_metrics(records,"actual_alert_positive",universe="all_labeled")' in source
+    assert '"eligible_count":len(eligible)' in source
