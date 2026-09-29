@@ -382,3 +382,16 @@ def test_runtime_supervisor_evidence_includes_canonical_paper_workers():
     block = t[start:end]
     assert '"paper-intake-producer"' in block
     assert '"paper-runtime"' in block
+
+
+def test_windows_http_services_use_selector_event_loop_policy():
+    root = Path(__file__).resolve().parents[1]
+    runner = (root / "scripts" / "run_genesis_service.py").read_text(encoding="utf-8")
+    api_cli = (root / "services" / "api" / "src" / "stinky_api" / "cli.py").read_text(encoding="utf-8")
+    event_cli = (root / "services" / "event-log" / "src" / "event_log" / "cli.py").read_text(encoding="utf-8")
+
+    assert '[py, "-m", "event_log.cli"]' in runner
+    assert "WindowsSelectorEventLoopPolicy" in api_cli
+    assert "WindowsSelectorEventLoopPolicy" in event_cli
+    assert '"event_log.api:app"' in event_cli
+    assert "port=8002" in event_cli
