@@ -1357,8 +1357,6 @@ class VolumeMonitor:
             return
         try:
             from stinky_core.depth import (
-                DEPTH_OBSERVATIONS_DDL,
-                DEPTH_OBSERVATIONS_INDEXES,
                 DEPTH_OBSERVATIONS_INSERT,
                 depth_persist_params,
             )
