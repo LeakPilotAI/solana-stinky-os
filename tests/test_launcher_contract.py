@@ -357,3 +357,6 @@ def test_runtime_evidence_capture_checks_health_supervisors_and_owned_processes(
     assert 'runtime-state-*.json' in t
     assert "DurationMinutes" in t
     assert "Start-Sleep -Seconds 60" in t
+    assert "RECENT SERVICE LOG TAILS" in t
+    assert "Get-Content $p -Tail 80" in t
+    assert '"paper-runtime","startup"' in t
