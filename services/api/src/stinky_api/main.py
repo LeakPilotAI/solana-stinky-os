@@ -980,16 +980,20 @@ async def command_center() -> dict:
     if _CC_LOCK.locked() and cached:
         return cached
 
+    section_failures: dict[str, str] = {}
+
     async def _safe(label: str, coro_factory, default, timeout: float = 4.0):
         # Do not wait_for-cancel a session-holding coroutine.
         # statement_timeout inside the session fails the query instead.
         try:
             return await coro_factory()
         except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"[:240]
+            section_failures[label] = error
             logger.warning(
                 "command_center.section_failed",
                 section=label,
-                error=f"{type(exc).__name__}: {exc}"[:240],
+                error=error,
             )
             return default
 
@@ -1014,8 +1018,9 @@ async def command_center() -> dict:
             ):
                 try:
                     out[key] = (await session.execute(text(sql))).scalar() or 0
-                except Exception:
-                    out[key] = 0
+                except Exception as exc:
+                    out[key] = None
+                    section_failures[f"counts.{key}"] = f"{type(exc).__name__}: {exc}"[:240]
             return out
 
     async def _runners():
@@ -1249,8 +1254,13 @@ async def command_center() -> dict:
                 }
             )
 
+        degraded_sections = sorted(section_failures)
+        command_center_available = not degraded_sections
         body = {
-            "status": "live",
+            "status": "live" if command_center_available else "degraded",
+            "available": command_center_available,
+            "degraded_sections": degraded_sections,
+            "section_failures": section_failures,
             "counts": c or {},
             "pipeline": pipeline,
             "runners": runners or [],
@@ -1260,7 +1270,7 @@ async def command_center() -> dict:
             "launches": [],
             "opportunity_queue": opportunity[:12],
             "trending": {
-                "available": True,
+                "available": "trending" not in section_failures,
                 "min_volume_m5_usd": 33000,
                 "engine": "trending-v1.0.0-volume-first",
                 "message": "Gate 1: latest measured 5m volume >= $33k. Investigation trigger, not a buy signal. Fees optional evidence.",
@@ -1291,9 +1301,10 @@ async def command_center() -> dict:
                 ],
                 "empty_note": (
                     None
-                    if any(a.get("mint") for a in (alerts or []))
+                    if "alerts" in section_failures or any(a.get("mint") for a in (alerts or []))
                     else "NO ACTIVE INVESTIGATIONS"
                 ),
+                "available": "alerts" not in section_failures,
                 "note": "Desk synthesis from stored alerts. Full case file on the token page. Not a buy.",
                 "calibrated_probability": False,
             },
