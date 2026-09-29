@@ -16,3 +16,17 @@ def test_health_ui_suppresses_zero_stats_when_hydration_is_unavailable():
     assert "zero counts are not being inferred" in source
     assert "!loading && !available" in source
     assert "!loading && available" in source
+
+
+def test_memory_snapshot_reports_failed_layers_instead_of_silent_empty_success():
+    source=(API_ROOT/"src"/"stinky_api"/"queries.py").read_text(encoding="utf-8")
+    assert "failed_layers: list[str] = []" in source
+    assert "failed_layers.append(layer)" in source
+    assert '"_hydration_failed_layers": failed_layers' in source
+
+def test_book_health_propagates_partial_hydration_as_degraded():
+    source=(API_ROOT/"src"/"stinky_api"/"main.py").read_text(encoding="utf-8")
+    assert '"postgres_partial"' in source
+    assert '"PARTIAL" if source == "postgres_partial"' in source
+    assert '"book_memory_partial_hydration"' in source
+    assert 'loaded["_failed_layers"] = failed_layers' in source
