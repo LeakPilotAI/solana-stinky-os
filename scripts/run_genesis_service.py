@@ -273,6 +273,16 @@ def main() -> int:
         reader.start()
 
         if not health_url:
+            # No application-level health endpoint exists for this worker. Poll
+            # the child only so the supervisor can prove its own liveness; this
+            # heartbeat is not an assertion that the application is healthy.
+            last_heartbeat = 0.0
+            while proc.poll() is None:
+                now = time.monotonic()
+                if now - last_heartbeat >= 60:
+                    dump_runtime("SUPERVISING")
+                    last_heartbeat = now
+                time.sleep(API_HEALTH_POLL_SECONDS)
             code = int(proc.wait())
             reader.join(timeout=3)
             return code
