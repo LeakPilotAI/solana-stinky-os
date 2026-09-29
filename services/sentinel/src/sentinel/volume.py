@@ -97,6 +97,13 @@ def _db_timestamp(value: Any) -> datetime | None:
     raise TypeError(f"unsupported timestamp value: {type(value).__name__}")
 
 
+def _is_transient_db_disconnect(exc: Exception) -> bool:
+    """Recognize only connection-loss errors safe to retry once."""
+    winerror = getattr(exc, "winerror", None)
+    message = str(exc)
+    return winerror in {64, 10054} or "[WinError 64]" in message or "[WinError 10054]" in message
+
+
 def _allowed_dexes() -> set[str]:
     raw = getattr(settings, "allowed_dex_ids", "pumpswap,pumpfun,pump") or ""
     return {x.strip().lower() for x in raw.split(",") if x.strip()}
@@ -1350,7 +1357,7 @@ class VolumeMonitor:
             self._mark_observation_persistence_degraded("investigation_memory", exc)
             logger.warning("memory.persist_failed", mint=mint, error=str(exc)[:200])
 
-    async def _persist_depth_observation(self, obs: Any) -> None:
+    async def _persist_depth_observation(self, obs: Any, *, _retry: bool = True) -> None:
         """Append-only prospective quote evidence. UNKNOWN is retained."""
         if not self._sessions:
             return
@@ -1367,6 +1374,11 @@ class VolumeMonitor:
                 await session.commit()
             self._clear_observation_persistence_degraded("depth_observation")
         except Exception as exc:
+            if _retry and _is_transient_db_disconnect(exc):
+                await self._engine.dispose()
+                await asyncio.sleep(0.05)
+                await self._persist_depth_observation(obs, _retry=False)
+                return
             self._mark_observation_persistence_degraded("depth_observation", exc)
             logger.warning("depth_observation.persist_failed", mint=getattr(obs, "mint", None), error=str(exc)[:200])
 
@@ -1659,7 +1671,7 @@ class VolumeMonitor:
             self._mark_observation_persistence_degraded("watch_state", exc)
             logger.warning("watch.persist_failed", mint=mint, error=str(exc)[:160])
 
-    async def _record_probe(self, probe: dict[str, Any]) -> None:
+    async def _record_probe(self, probe: dict[str, Any], *, _retry: bool = True) -> None:
         mem = getattr(self, "_memory", None)
         if mem is not None:
             mem.record_provider_probe(probe)
@@ -1686,6 +1698,11 @@ class VolumeMonitor:
                 await session.commit()
             self._clear_observation_persistence_degraded("provider_probe")
         except Exception as exc:
+            if _retry and _is_transient_db_disconnect(exc):
+                await self._engine.dispose()
+                await asyncio.sleep(0.05)
+                await self._record_probe(probe, _retry=False)
+                return
             self._mark_observation_persistence_degraded("provider_probe", exc)
             logger.warning("probe.persist_failed", error=str(exc)[:160])
 
