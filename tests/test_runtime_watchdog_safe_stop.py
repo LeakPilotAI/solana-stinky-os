@@ -96,3 +96,11 @@ def test_paper_workers_use_capped_genesis_supervisor():
     assert 'run_supervised([py, "-m", "stinky_api.paper_runtime_worker"])' in runtime
     assert '[exe, str(supervisor), "--name", name]' in starter
     assert 'subprocess.Popen([exe, "-m", module]' not in starter
+
+
+def test_non_http_supervisor_heartbeat_proves_supervision_not_application_health():
+    t = read("scripts/run_genesis_service.py")
+    assert 'dump_runtime("SUPERVISING")' in t
+    assert "while proc.poll() is None:" in t
+    assert "heartbeat is not an assertion that the application is healthy" in t
+    assert 'dump_runtime("RUNNING")' in t
