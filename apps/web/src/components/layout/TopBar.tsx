@@ -9,7 +9,7 @@ function StatusDot({
   label,
   detail,
 }: {
-  ok: boolean;
+  ok: boolean | null;
   label: string;
   detail?: string;
 }) {
@@ -17,16 +17,16 @@ function StatusDot({
     <span className="flex items-center gap-1.5 text-[11px]">
       <span
         className={`h-1.5 w-1.5 rounded-full ${
-          ok
+          ok === true
             ? "bg-terminal-accent shadow-[0_0_6px_#39ff14]"
-            : "bg-terminal-danger"
+            : ok === false ? "bg-terminal-danger" : "bg-terminal-muted"
         }`}
       />
-      <span className={ok ? "text-terminal-dim" : "text-terminal-danger"}>
+      <span className={ok === true ? "text-terminal-dim" : ok === false ? "text-terminal-danger" : "text-terminal-muted"}>
         {label}
       </span>
       {detail && (
-        <span className={ok ? "text-terminal-muted" : "text-terminal-danger/80"}>
+        <span className={ok === true ? "text-terminal-muted" : ok === false ? "text-terminal-danger/80" : "text-terminal-muted"}>
           {detail}
         </span>
       )}
@@ -103,8 +103,8 @@ export function TopBar({ onOpenSearch }: { onOpenSearch: () => void }) {
           detail={latencyMs != null ? `${latencyMs}ms` : undefined}
         />
         <StatusDot ok={eventsOk} label="Events" />
-        <StatusDot ok={live} label="Sentinel" detail={live ? "Live" : "Down"} />
-        <StatusDot ok={apiOk} label="Collector" detail={apiOk ? "Live" : "—"} />
+        <StatusDot ok={null} label="Sentinel" detail="Unknown" />
+        <StatusDot ok={null} label="Collector" detail="Unknown" />
       </div>
 
       <span
