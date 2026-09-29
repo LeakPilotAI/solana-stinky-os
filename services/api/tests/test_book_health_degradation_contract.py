@@ -45,3 +45,24 @@ def test_book_operator_views_do_not_present_degraded_hydration_as_valid_empty_st
     assert '"count": None' in source
     assert '"empty_note": None' in source
     assert '"NO ACTIVE QUALITY DETERIORATION" if not cards else None' in source
+
+
+def test_evidence_derived_book_analytics_fail_closed_on_degraded_hydration():
+    source = (API_ROOT / "src" / "stinky_api" / "main.py").read_text(encoding="utf-8")
+    assert 'return {**degraded, "result": None}' in source
+    assert '"stats": None, "wallets": None, "creators": None, "patterns": None' in source
+    assert 'return {**degraded, "similarity": None}' in source
+    assert 'return {**degraded, "life_slices": None}' in source
+    assert '"report": None' in source
+    assert '"would_change_conclusion": None' in source
+    assert 'return {**degraded, "what_happened": None}' in source
+    assert 'return {**degraded, "recipe": None}' in source
+    assert 'return {**degraded, "observations": None, "count": None}' in source
+    assert '"states": None' in source
+
+
+def test_complete_book_hydration_keeps_legitimate_empty_analytics_available():
+    source = (API_ROOT / "src" / "stinky_api" / "main.py").read_text(encoding="utf-8")
+    assert 'if meta["available"]:' in source
+    assert 'return None' in source
+    assert '"available": status == "COMPLETE"' in source
