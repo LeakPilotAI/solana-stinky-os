@@ -76,8 +76,11 @@ def test_source_enforces_prospective_epoch_and_separate_later_close_evidence():
 
 def test_launcher_starts_both_prospective_producer_and_paper_worker():
     starter = (ROOT / "scripts/start_paper_runtime.py").read_text(encoding="utf-8")
-    assert "stinky_api.prospective_paper_intake_producer" in starter
-    assert "stinky_api.paper_runtime_worker" in starter
+    supervisor = (ROOT / "scripts/run_genesis_service.py").read_text(encoding="utf-8")
+    assert '"paper-intake-producer"' in starter
+    assert '"paper-runtime"' in starter
+    assert "stinky_api.prospective_paper_policy_runtime" in supervisor
+    assert "stinky_api.paper_runtime_worker" in supervisor
     assert "paper-intake-producer" in starter
     forbidden = ("send_transaction", "sign_transaction", "private_key", "solana.rpc")
     corpus = (
