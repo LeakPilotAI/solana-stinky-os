@@ -65,5 +65,4 @@ echo.
 pause
 echo   Window stays open. Press any key again to close.
 pause
-endlocal
-exit /b 0
+endlocal & exit /b %ERR%
