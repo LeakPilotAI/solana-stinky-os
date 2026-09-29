@@ -6,7 +6,7 @@ def test_holdout_threshold_selection_is_chronological_training_only():
     source = (API_ROOT / "src" / "stinky_api" / "prospective_score_holdout_evaluation.py").read_text(encoding="utf-8")
     assert "SELECT DISTINCT ON (mi.mint)" in source
     assert "ORDER BY mi.mint, mi.inspected_at ASC" in source
-    assert "records.sort(key=lambda r: _dt(r[\"inspected_at\"]))" in source
+    assert "records.sort(key=lambda r: _dt(r[\\\"inspected_at\\\"]) or datetime.max.replace(tzinfo=timezone.utc))" in source
     assert "training = records[:train_count]" in source
     assert "holdout = records[train_count:]" in source
     assert "training_candidates.append" in source
