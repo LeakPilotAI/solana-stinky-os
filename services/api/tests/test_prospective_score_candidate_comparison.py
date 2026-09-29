@@ -48,3 +48,11 @@ def test_comparison_uses_explicit_metric_universes():
     assert '_metrics(records,"actionable_candidate_positive",universe="actionable_score")' in source
     assert '_metrics(records,"actual_alert_positive",universe="all_labeled")' in source
     assert '"eligible_count":len(eligible)' in source
+
+
+def test_comparison_criteria_fail_closed_without_integer_truncation():
+    source=(API_ROOT/"src"/"stinky_api"/"prospective_score_candidate_comparison.py").read_text(encoding="utf-8")
+    assert "isinstance(v,float) and not v.is_integer()" in source
+    assert '"valid_explicit_comparison_criteria"' in source
+    assert "required_counts=[_positive_count(x)" in source
+    assert "max(1,int(min_sample))" not in source
