@@ -275,7 +275,7 @@ def test_static_service_runner_is_allowlisted():
     assert (ROOT / "scripts/run_genesis_service.py").exists()
     assert (ROOT / "scripts/start-genesis-svc.cmd").exists()
     t = read("scripts/run_genesis_service.py")
-    for name in ("event-log", "api", "sentinel", "discord", "collector", "entities", "web", "maintain"):
+    for name in ("event-log", "api", "sentinel", "discord", "collector", "entities", "web", "maintain", "paper-intake-producer", "paper-runtime"):
         assert name in t
     assert "run_supervised" in t
     assert "MAX_RESTARTS" in t
