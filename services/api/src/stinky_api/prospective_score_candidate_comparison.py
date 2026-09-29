@@ -28,6 +28,13 @@ def _dt(v:Any)->datetime|None:
         return None
     return x if x.tzinfo else x.replace(tzinfo=timezone.utc)
 
+def _positive_count(v:Any)->int|None:
+    if v is None or isinstance(v,bool): return None
+    if isinstance(v,float) and not v.is_integer(): return None
+    try: n=int(v)
+    except (TypeError,ValueError): return None
+    return n if n>=1 else None
+
 def _metrics(rows:list[dict[str,Any]],positive_key:str,*,universe:str)->dict[str,Any]:
     if universe=="numeric_score":
         eligible=[r for r in rows if r.get("stinky_score") is not None]
@@ -59,6 +66,9 @@ async def compare_score_paper_candidate(
     session, *, candidate:dict[str,Any], as_of:datetime|str,
     min_sample:int=8,min_runners:int=2,min_negatives:int=2,
 )->dict[str,Any]:
+    required_counts=[_positive_count(x) for x in (min_sample,min_runners,min_negatives)]
+    if any(x is None for x in required_counts):
+        return {"status":"UNKNOWN","comparison_status":"NOT_COMPARISON_READY","missing":["valid_explicit_comparison_criteria"],**AUTHORITY}
     if not isinstance(candidate,dict) or candidate.get("status")!="PAPER_CANDIDATE_ARTIFACT":
         return {"status":"UNKNOWN","comparison_status":"NOT_COMPARISON_READY","missing":["paper_candidate_artifact"],**AUTHORITY}
     payload=candidate.get("payload")
@@ -139,9 +149,9 @@ async def compare_score_paper_candidate(
     non_actionable_count=sum(1 for r in records if r["stinky_score"] is not None and not r["score_actionable"])
     actionable_count=sum(1 for r in records if r["stinky_score"] is not None and r["score_actionable"])
     missing=[]
-    if len(records)<max(1,int(min_sample)): missing.append("sufficient_later_sample")
-    if runner_count<max(1,int(min_runners)): missing.append("sufficient_later_runners")
-    if negative_count<max(1,int(min_negatives)): missing.append("sufficient_later_negatives")
+    if len(records)<required_counts[0]: missing.append("sufficient_later_sample")
+    if runner_count<required_counts[1]: missing.append("sufficient_later_runners")
+    if negative_count<required_counts[2]: missing.append("sufficient_later_negatives")
     if missing:
         return {
             "status":"OBSERVED","comparison_status":"NOT_COMPARISON_READY",
