@@ -78,8 +78,7 @@ export function TopBar({ onOpenSearch }: { onOpenSearch: () => void }) {
   const eventsOk =
     health?.event_log === "ok" ||
     health?.event_log === "up" ||
-    health?.event_log === "connected" ||
-    health?.event_log === "degraded";
+    health?.event_log === "connected";
   const apiOk = !!health?.database || health?.status === "ok";
 
   return (
