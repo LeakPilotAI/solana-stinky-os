@@ -21,7 +21,7 @@ def main() -> None:
     uvicorn.run(
         "event_log.api:app",
         host="127.0.0.1",
-        port=settings.event_log_port,
+        port=8002,
         reload=False,
     )
 
