@@ -278,6 +278,7 @@ def main() -> int:
         started = time.monotonic()
         seen_healthy = False
         unhealthy_since: float | None = None
+        last_heartbeat = 0.0
         while proc.poll() is None:
             now = time.monotonic()
             healthy = http_ok(health_url, 2.5)
@@ -286,6 +287,9 @@ def main() -> int:
                     append_log("[%s] %s health watchdog armed pid=%s" % (utc_stamp(), name, proc.pid))
                 seen_healthy = True
                 unhealthy_since = None
+                if now - last_heartbeat >= 60:
+                    dump_runtime("RUNNING")
+                    last_heartbeat = now
             elif seen_healthy:
                 if unhealthy_since is None:
                     unhealthy_since = now
