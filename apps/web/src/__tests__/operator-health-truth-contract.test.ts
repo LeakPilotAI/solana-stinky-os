@@ -54,3 +54,21 @@ test("command center marks cached data stale after refresh failure", () => {
   expect(source).toContain('error ? "STALE" : failed.has("alerts") ? "UNAVAILABLE" : "LIVE"');
   expect(source).not.toContain("Showing last good data — still live.");
 });
+
+
+test("wallets page distinguishes unavailable evidence from measured zero wallets", () => {
+  const source = fs.readFileSync(path.join(root, "src/app/wallets/page.tsx"), "utf8");
+  expect(source).toContain("SMART WALLET EVIDENCE UNAVAILABLE");
+  expect(source).toContain('value={error ? "—" : String(stats.total)}');
+  expect(source).toContain("!loading && !error && filtered.length === 0");
+});
+
+test("operator auxiliary feeds distinguish fetch failure from legitimate empty history", () => {
+  const source = fs.readFileSync(path.join(root, "src/app/operator/page.tsx"), "utf8");
+  expect(source).toContain("MOTIF OUTCOME EVIDENCE UNAVAILABLE");
+  expect(source).toContain("CORRELATION EVIDENCE UNAVAILABLE");
+  expect(source).toContain("DEVELOPER EVIDENCE UNAVAILABLE");
+  expect(source).toContain("CALIBRATION EVIDENCE UNAVAILABLE");
+  expect(source).toContain("setChangeAvailable(feed !== null)");
+  expect(source).toContain("setDeveloperChangeAvailable(developerFeed !== null)");
+});
