@@ -3268,26 +3268,30 @@ async def load_memory_snapshot(session: AsyncSession) -> dict[str, Any]:
                 d[k] = v.isoformat()
         return d
 
-    async def rows(sql: str) -> list[dict[str, Any]]:
+    failed_layers: list[str] = []
+
+    async def rows(layer: str, sql: str) -> list[dict[str, Any]]:
         try:
             found = (await session.execute(text(sql))).mappings().all()
             return [_clean(r) for r in found]
         except Exception:
+            failed_layers.append(layer)
             return []
 
     return {
-        "wallet_obs": await rows(MEMORY_SELECT_WALLET_OBS),
-        "wallet_outcomes": await rows(MEMORY_SELECT_WALLET_OUTCOME),
-        "creator_obs": await rows(MEMORY_SELECT_CREATOR_OBS),
-        "creator_outcomes": await rows(MEMORY_SELECT_CREATOR_OUTCOME),
-        "fingerprints": await rows(MEMORY_SELECT_FINGERPRINT),
-        "fingerprint_outcomes": await rows(MEMORY_SELECT_FINGERPRINT_OUTCOME),
-        "decisions": await rows(MEMORY_SELECT_DECISION),
-        "market_ticks": await rows(MEMORY_SELECT_MARKET_OBS),
-        "investigations": await rows(MEMORY_SELECT_INVESTIGATION),
-        "quality_states": await rows(MEMORY_SELECT_QUALITY),
-        "operator_events": await rows(MEMORY_SELECT_OPERATOR_EVENT),
-        "watch_states": await rows(MEMORY_SELECT_WATCH_STATE),
-        "provider_probes": await rows(MEMORY_SELECT_PROVIDER_PROBE),
-        "discord_deliveries": await rows(MEMORY_SELECT_DISCORD_DELIVERY),
+        "wallet_obs": await rows("wallet_obs", MEMORY_SELECT_WALLET_OBS),
+        "wallet_outcomes": await rows("wallet_outcomes", MEMORY_SELECT_WALLET_OUTCOME),
+        "creator_obs": await rows("creator_obs", MEMORY_SELECT_CREATOR_OBS),
+        "creator_outcomes": await rows("creator_outcomes", MEMORY_SELECT_CREATOR_OUTCOME),
+        "fingerprints": await rows("fingerprints", MEMORY_SELECT_FINGERPRINT),
+        "fingerprint_outcomes": await rows("fingerprint_outcomes", MEMORY_SELECT_FINGERPRINT_OUTCOME),
+        "decisions": await rows("decisions", MEMORY_SELECT_DECISION),
+        "market_ticks": await rows("market_ticks", MEMORY_SELECT_MARKET_OBS),
+        "investigations": await rows("investigations", MEMORY_SELECT_INVESTIGATION),
+        "quality_states": await rows("quality_states", MEMORY_SELECT_QUALITY),
+        "operator_events": await rows("operator_events", MEMORY_SELECT_OPERATOR_EVENT),
+        "watch_states": await rows("watch_states", MEMORY_SELECT_WATCH_STATE),
+        "provider_probes": await rows("provider_probes", MEMORY_SELECT_PROVIDER_PROBE),
+        "discord_deliveries": await rows("discord_deliveries", MEMORY_SELECT_DISCORD_DELIVERY),
+        "_hydration_failed_layers": failed_layers,
     }
