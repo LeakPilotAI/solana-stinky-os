@@ -13,12 +13,16 @@ def read(rel: str) -> str:
     return (ROOT / rel).read_text(encoding="utf-8", errors="replace")
 
 
-def test_api_supervisor_recycles_sustained_dead_listener():
+def test_core_http_supervisors_recycle_sustained_dead_listener():
     t = read("scripts/run_genesis_service.py")
     assert "API_HEALTH_FAILURE_GRACE_SECONDS = 30.0" in t
     assert "API_STARTUP_GRACE_SECONDS = 60.0" in t
     assert "API_HEALTH_RECYCLE_EXIT = 86" in t
-    assert 'watched_url = healthy_url if name == "api" else None' in t
+    assert "watched_url = healthy_url" in t
+    assert 'watched_url = healthy_url if name == "api" else None' not in t
+    assert '("event-log", 8002, "http://127.0.0.1:8002/health")' in t
+    assert '("api", 8010, "http://127.0.0.1:8010/health")' in t
+    assert '("web", 3000, "http://127.0.0.1:3000/operator")' in t
     assert "seen_healthy" in t
     assert "unhealthy_since" in t
     assert "terminate_owned_child(proc, reason)" in t
