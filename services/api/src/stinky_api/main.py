@@ -740,21 +740,19 @@ async def health() -> dict:
                 event_log = "degraded"
             else:
                 body = r.json() if r.content else {}
-                event_log = (
-                    "ok"
-                    if body.get("status") in ("ok", "degraded")
-                    else "degraded"
-                )
+                upstream_status = str(body.get("status") or "").lower()
+                event_log = "ok" if upstream_status == "ok" else "degraded"
     except Exception:
         event_log = "down"
 
-    status = "ok" if db_ok else "degraded"
+    dependencies_ok = db_ok and event_log == "ok"
+    status = "ok" if dependencies_ok else "degraded"
     out = {
         "status": status,
         "service": settings.service_name,
         "database": db_ok,
         "event_log": event_log,
-        "live": db_ok,
+        "live": dependencies_ok,
         "pool_checkedout": pool_checkedout,
     }
     _HEALTH_CACHE["at"] = _time.monotonic()
