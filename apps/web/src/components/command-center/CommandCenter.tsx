@@ -73,7 +73,8 @@ export function CommandCenter() {
   const [loading, setLoading] = useState(true);
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
   const [now, setNow] = useState(() => Date.now());
-  const [dips, setDips] = useState<Array<Record<string, unknown>>>([]);
+  const [dips, setDips] = useState<Array<Record<string, unknown>> | null>(null);
+  const [dipsAvailable, setDipsAvailable] = useState(true);
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
@@ -93,7 +94,10 @@ export function CommandCenter() {
         ]);
         if (!cancelled) {
           setData(d);
-          setDips((dipRes as { dips?: Array<Record<string, unknown>> }).dips || []);
+          const dipBody = dipRes as { dips?: Array<Record<string, unknown>> | null; available?: boolean };
+          const dipRows = Array.isArray(dipBody.dips) ? dipBody.dips : null;
+          setDips(dipRows);
+          setDipsAvailable(dipBody.available !== false && dipRows !== null);
           setError(null);
           setUpdatedAt(new Date());
         }
@@ -252,13 +256,17 @@ export function CommandCenter() {
         <p className="mb-1 text-[10px] text-terminal-dim">
           Setup deterioration after Gate 1. Not price-down. Not a buy.
         </p>
-        {dips.length === 0 ? (
+        {!dipsAvailable ? (
+          <p className="py-3 text-center text-[12px] text-amber-300">
+            QUALITY DETERIORATION EVIDENCE UNAVAILABLE
+          </p>
+        ) : (dips || []).length === 0 ? (
           <p className="py-3 text-center text-[12px] text-terminal-muted">
             NO ACTIVE QUALITY DETERIORATION
           </p>
         ) : (
           <ul className="divide-y divide-terminal-border">
-            {dips.slice(0, 6).map((d, i) => {
+            {(dips || []).slice(0, 6).map((d, i) => {
               const mint = String(d.mint || "");
               const why = Array.isArray(d.why) ? d.why : [];
               const first = why[0] as { explanation?: string } | string | undefined;
