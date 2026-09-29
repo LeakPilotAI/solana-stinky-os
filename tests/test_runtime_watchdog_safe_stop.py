@@ -66,3 +66,14 @@ def test_stop_never_kills_docker_daemon_and_stops_supervisors_first():
     compose_at = t.index("down --remove-orphans")
     process_at = t.index("Get-CimInstance Win32_Process")
     assert process_at < compose_at
+
+
+def test_supervisor_failure_state_is_durable_per_service():
+    t = read("scripts/run_genesis_service.py")
+    assert 'write_state(log_dir / "runtime-state.json", payload)' in t
+    assert 'write_state(log_dir / ("runtime-state-" + name + ".json"), service_payload)' in t
+    assert 'service_payload["service"] = name' in t
+    assert 'service_payload["supervisor_phase"] = phase or "RUNNING"' in t
+    failed_at = t.index('dump_runtime("FAILED")')
+    durable_at = t.index('write_state(log_dir / ("runtime-state-" + name + ".json"), service_payload)')
+    assert failed_at < durable_at
