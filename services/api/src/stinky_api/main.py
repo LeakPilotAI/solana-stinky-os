@@ -611,6 +611,52 @@ async def filter_stats_endpoint() -> dict:
     return {"filter_version": FILTER_VERSION, "stats": filter_stats.snapshot()}
 
 
+@app.get("/v1/system/runtime-supervisors")
+async def runtime_supervisors_endpoint() -> dict:
+    """Read durable launcher supervisor evidence. Missing/stale evidence is UNKNOWN, never healthy."""
+    import json
+    import os
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    root = Path(os.environ.get("STINKY_ROOT") or Path.cwd())
+    log_dir = root / "logs"
+    names = ("event-log", "api", "sentinel", "discord", "collector", "entities", "web", "maintain")
+    now = datetime.now(timezone.utc)
+    services: dict[str, dict] = {}
+    failed: list[str] = []
+    unknown: list[str] = []
+    for name in names:
+        p = log_dir / f"runtime-state-{name}.json"
+        item = {"service": name, "status": "UNKNOWN", "supervisor_phase": "UNKNOWN", "as_of": None}
+        try:
+            raw = json.loads(p.read_text(encoding="utf-8"))
+            phase = str(raw.get("supervisor_phase") or "UNKNOWN").upper()
+            as_of = raw.get("as_of")
+            age_seconds = None
+            if as_of:
+                stamp = datetime.fromisoformat(str(as_of).replace("Z", "+00:00"))
+                age_seconds = max(0, int((now - stamp).total_seconds()))
+            item.update({"status": phase, "supervisor_phase": phase, "as_of": as_of, "age_seconds": age_seconds})
+            if phase == "FAILED":
+                failed.append(name)
+            elif age_seconds is None or age_seconds > 180:
+                item["status"] = "UNKNOWN"
+                unknown.append(name)
+        except Exception as exc:
+            item["error"] = f"{type(exc).__name__}: {exc}"[:160]
+            unknown.append(name)
+        services[name] = item
+    return {
+        "available": bool(services) and not unknown,
+        "status": "FAILED" if failed else ("UNKNOWN" if unknown else "OBSERVED"),
+        "failed_services": failed,
+        "unknown_services": unknown,
+        "services": services,
+        "source": "runtime-state-per-service",
+    }
+
+
 def _probe_postgres(ok: bool, *, error: str | None = None, at: str | None = None) -> dict:
     return {
         "provider": "postgres",
