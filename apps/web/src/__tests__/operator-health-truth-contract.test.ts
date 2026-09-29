@@ -44,3 +44,13 @@ test("command center renders pipeline and precision failures explicitly", () => 
   expect(source).toContain("PIPELINE EVIDENCE UNAVAILABLE");
   expect(source).toContain("ALERT PRECISION EVIDENCE UNAVAILABLE");
 });
+
+
+test("command center marks cached data stale after refresh failure", () => {
+  const source = fs.readFileSync(path.join(root, "src/components/command-center/CommandCenter.tsx"), "utf8");
+  expect(source).toContain("Showing last confirmed snapshot — CURRENT LIVENESS UNKNOWN.");
+  expect(source).toContain('error ? "Snapshot stale" : "Live poll 6s"');
+  expect(source).toContain('error ? "STALE" : degraded ? "DEGRADED" : "LIVE"');
+  expect(source).toContain('error ? "STALE" : failed.has("alerts") ? "UNAVAILABLE" : "LIVE"');
+  expect(source).not.toContain("Showing last good data — still live.");
+});
