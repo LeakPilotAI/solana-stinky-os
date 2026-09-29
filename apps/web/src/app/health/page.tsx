@@ -30,6 +30,8 @@ export default function HealthPage() {
   const coverage = (health.data_coverage || {}) as Record<string, unknown>;
   const patterns = (health.patterns || {}) as Record<string, unknown>;
   const warnings = (Array.isArray(health.warnings) ? health.warnings : []) as string[];
+  const hydrationStatus = String(data?.hydration_status || "UNKNOWN");
+  const available = data?.available === true;
 
   return (
     <div className="space-y-3 p-4">
@@ -43,7 +45,13 @@ export default function HealthPage() {
       </header>
       {error && <p className="text-xs text-rose-300">API: {error}</p>}
       {loading && <p className="text-xs text-terminal-muted">Loading health…</p>}
-      {!loading && (
+      {!loading && !available && (
+        <section className="panel border-amber-500/40 p-3 text-[11px] text-amber-300">
+          Evidence hydration: {hydrationStatus}. Stored book health is unavailable; zero counts are not being inferred.
+          {data?.degradation_reason ? ` Reason: ${String(data.degradation_reason)}.` : ""}
+        </section>
+      )}
+      {!loading && available && (
         <>
           <section className="grid grid-cols-2 gap-2 md:grid-cols-4">
             <Stat label="Investigated" value={String(health.investigated_tokens ?? 0)} />
