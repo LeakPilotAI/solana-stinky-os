@@ -395,3 +395,13 @@ def test_windows_http_services_use_selector_event_loop_policy():
     assert "WindowsSelectorEventLoopPolicy" in event_cli
     assert '"event_log.api:app"' in event_cli
     assert "port=8002" in event_cli
+
+
+def test_windows_runtime_installs_connection_reset_handlers():
+    root = Path(__file__).resolve().parents[1]
+    api_main = (root / "services" / "api" / "src" / "stinky_api" / "main.py").read_text(encoding="utf-8")
+    event_main = (root / "services" / "event-log" / "src" / "event_log" / "api.py").read_text(encoding="utf-8")
+    for source in (api_main, event_main):
+        assert "_install_windows_connection_reset_handler()" in source
+        assert "winerror == 10054" in source
+        assert "default_exception_handler(context)" in source
