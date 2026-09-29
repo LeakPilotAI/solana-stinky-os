@@ -862,3 +862,12 @@ def test_probe_and_depth_retry_only_transient_database_disconnects_once():
     assert "async def _persist_depth_observation(self, obs: Any, *, _retry: bool = True)" in source
     assert "await self._persist_depth_observation(obs, _retry=False)" in source
     assert source.count("await self._engine.dispose()") >= 2
+
+
+def test_filter_and_market_snapshot_retry_transient_database_disconnects_once():
+    from pathlib import Path
+    source = (Path(__file__).parents[1] / "src" / "sentinel" / "volume.py").read_text(encoding="utf-8")
+    assert "fees_source: str | None = None,\n        _retry: bool = True," in source
+    assert "_retry=False,\n                )\n                return\n            self._mark_observation_persistence_degraded(\"filter_evaluation\"" in source
+    assert 'async def _persist_market_snapshot(self, mint: str, snap: "VolumeSnapshot", *, _retry: bool = True)' in source
+    assert "await self._persist_market_snapshot(mint, snap, _retry=False)" in source
