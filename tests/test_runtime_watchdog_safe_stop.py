@@ -77,3 +77,11 @@ def test_supervisor_failure_state_is_durable_per_service():
     failed_at = t.index('dump_runtime("FAILED")')
     durable_at = t.index('write_state(log_dir / ("runtime-state-" + name + ".json"), service_payload)')
     assert failed_at < durable_at
+
+
+def test_healthy_core_supervisor_heartbeats_runtime_state():
+    t = read("scripts/run_genesis_service.py")
+    assert "last_heartbeat = 0.0" in t
+    assert "if now - last_heartbeat >= 60:" in t
+    assert 'dump_runtime("RUNNING")' in t
+    assert "last_heartbeat = now" in t
