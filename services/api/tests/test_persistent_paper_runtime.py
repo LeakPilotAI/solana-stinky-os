@@ -54,7 +54,9 @@ def test_migration_is_immutable_and_launcher_wires_worker_after_main_start():
     assert "paper_runtime_intake" in migration and "paper_runtime_record" in migration
     assert "paper_runtime_record is immutable" in migration
     assert launcher.index("start_genesis.py") < launcher.index("start_paper_runtime.py")
-    assert "stinky_api.paper_runtime_worker" in starter
+    supervisor=(ROOT/"scripts/run_genesis_service.py").read_text()
+    assert '"paper-runtime"' in starter
+    assert "stinky_api.paper_runtime_worker" in supervisor
     forbidden=("solana.rpc","send_transaction","sign_transaction","private_key")
     corpus=(migration+starter+(ROOT/"services/api/src/stinky_api/paper_runtime_worker.py").read_text()).lower()
     assert not any(token in corpus for token in forbidden)
