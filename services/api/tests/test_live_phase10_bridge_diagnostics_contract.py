@@ -22,7 +22,7 @@ def test_recovery_is_explicit_operator_command():
 
 
 def test_runtime_supervisor_evidence_is_fail_closed():
-    source = (API_ROOT / "src" / "stinky_api" / "main.py").read_text(encoding="utf-8")
+    source = (ROOT / "src" / "stinky_api" / "main.py").read_text(encoding="utf-8")
     assert '@app.get("/v1/system/runtime-supervisors")' in source
     assert '"status": "UNKNOWN"' in source
     assert 'if phase == "FAILED":' in source
