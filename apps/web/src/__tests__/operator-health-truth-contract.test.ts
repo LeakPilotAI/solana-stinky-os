@@ -16,3 +16,14 @@ test("command center preserves unavailable quality-dips evidence", () => {
   expect(source).toContain("QUALITY DETERIORATION EVIDENCE UNAVAILABLE");
   expect(source).toContain("NO ACTIVE QUALITY DETERIORATION");
 });
+
+
+test("command center renders degraded sections without false zero or empty claims", () => {
+  const source = fs.readFileSync(path.join(root, "src/components/command-center/CommandCenter.tsx"), "utf8");
+  expect(source).toContain("Command Center degraded. Unavailable sections are not being inferred as zero or empty.");
+  expect(source).toContain('c[key] == null ? "—"');
+  expect(source).toContain("INVESTIGATION EVIDENCE UNAVAILABLE");
+  expect(source).toContain("ALERT EVIDENCE UNAVAILABLE");
+  expect(source).toContain("ENTITY EVIDENCE UNAVAILABLE");
+  expect(source).toContain('data.trending?.available === false ? "unavailable"');
+});
