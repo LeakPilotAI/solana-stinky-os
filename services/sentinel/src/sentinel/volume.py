@@ -1363,9 +1363,9 @@ class VolumeMonitor:
                 depth_persist_params,
             )
             async with self._sessions() as session:
-                await session.execute(text(DEPTH_OBSERVATIONS_DDL))
-                for idx in DEPTH_OBSERVATIONS_INDEXES:
-                    await session.execute(text(idx))
+                # Schema/index DDL belongs to migrations/startup, not the hot
+                # append path. Re-running CREATE INDEX concurrently from many
+                # background samplers can deadlock PostgreSQL relation locks.
                 await session.execute(text(DEPTH_OBSERVATIONS_INSERT), depth_persist_params(obs))
                 await session.commit()
             self._clear_observation_persistence_degraded("depth_observation")
