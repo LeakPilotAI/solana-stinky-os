@@ -72,3 +72,13 @@ test("operator auxiliary feeds distinguish fetch failure from legitimate empty h
   expect(source).toContain("setChangeAvailable(feed !== null)");
   expect(source).toContain("setDeveloperChangeAvailable(developerFeed !== null)");
 });
+
+
+test("paper calibration does not infer unavailable evidence as zero", () => {
+  const source = fs.readFileSync(path.join(root, "src/components/command-center/PaperCalibrationPanel.tsx"), "utf8");
+  expect(source).toContain('const observed = String(d.status || "").toUpperCase() === "OBSERVED"');
+  expect(source).toContain('observed && value != null ? value : "—"');
+  expect(source).toContain("PAPER EVIDENCE UNAVAILABLE — counts are not inferred as zero.");
+  expect(source).toContain('outcomes unavailable');
+  expect(source).toContain('intake unavailable');
+});
