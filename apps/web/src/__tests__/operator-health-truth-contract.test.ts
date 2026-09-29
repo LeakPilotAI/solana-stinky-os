@@ -91,3 +91,13 @@ test("top bar does not infer sentinel or collector health from aggregate api hea
   expect(source).not.toContain('label="Sentinel" detail={live ? "Live" : "Down"}');
   expect(source).not.toContain('label="Collector" detail={apiOk ? "Live" : "—"}');
 });
+
+
+test("operator surfaces durable supervisor failed or unknown evidence", () => {
+  const source = fs.readFileSync(path.join(root, "src/app/operator/page.tsx"), "utf8");
+  expect(source).toContain("/api/stinky/v1/system/runtime-supervisors");
+  expect(source).toContain("SUPERVISOR FAILURE");
+  expect(source).toContain("SUPERVISOR EVIDENCE UNKNOWN");
+  expect(source).toContain('runtime?.status === "FAILED"');
+  expect(source).toContain('runtime?.status !== "OBSERVED"');
+});
