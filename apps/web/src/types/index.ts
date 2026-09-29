@@ -9,14 +9,14 @@ export interface SystemHealth {
 }
 
 export interface Counts {
-  migrations?: number;
-  launches?: number;
-  alerts?: number;
-  tracks?: number;
-  buyers?: number;
-  entities?: number;
-  wallets?: number;
-  wallets_perf?: number;
+  migrations?: number | null;
+  launches?: number | null;
+  alerts?: number | null;
+  tracks?: number | null;
+  buyers?: number | null;
+  entities?: number | null;
+  wallets?: number | null;
+  wallets_perf?: number | null;
 }
 
 export interface Runner {
@@ -150,6 +150,9 @@ export interface CommandCenterData {
   };
   alert_precision?: AlertPrecision;
   status: string;
+  available?: boolean;
+  degraded_sections?: string[];
+  section_failures?: Record<string, string>;
   counts: Counts;
   runners: Runner[];
   alerts: Alert[];
@@ -176,6 +179,7 @@ export interface CommandCenterData {
     }>;
     empty_note?: string | null;
     note?: string;
+    available?: boolean;
   };
 }
 
