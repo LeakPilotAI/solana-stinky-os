@@ -491,9 +491,8 @@ class VolumeMonitor:
         """Append-only fee observation. Never overwrite history."""
         try:
             async with self._sessions() as session:
-                await session.execute(text(FEE_OBSERVATIONS_DDL))
-                for idx in FEE_OBSERVATIONS_INDEXES:
-                    await session.execute(text(idx))
+                # Schema/index DDL belongs to migrations/startup, not the hot
+                # append path. Concurrent DDL here can deadlock relation locks.
                 await session.execute(text(FEE_OBSERVATIONS_INSERT), obs.persist_params())
                 await session.commit()
             self._clear_observation_persistence_degraded("fee_observation")
