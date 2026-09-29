@@ -344,3 +344,16 @@ def test_canonical_launcher_preserves_failure_exit_code():
     t = read("Start-Stinky-OS.cmd")
     assert "endlocal & exit /b %ERR%" in t
     assert "endlocal\\nexit /b 0" not in t.replace("\\r\\n", "\\n")
+
+
+def test_runtime_evidence_capture_checks_health_supervisors_and_owned_processes():
+    t = read("scripts/capture-runtime-evidence.ps1")
+    assert "http://127.0.0.1:8002/health" in t
+    assert "http://127.0.0.1:8010/health" in t
+    assert "http://127.0.0.1:8010/v1/system/runtime-supervisors" in t
+    assert "http://127.0.0.1:3000/operator" in t
+    assert "stinky-pids.txt" in t
+    assert "run_genesis_service.py" in t
+    assert 'runtime-state-*.json' in t
+    assert "DurationMinutes" in t
+    assert "Start-Sleep -Seconds 60" in t
