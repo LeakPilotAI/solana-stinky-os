@@ -9,7 +9,8 @@ def test_book_health_does_not_present_unavailable_hydration_as_empty_health():
     assert '"PARTIAL" if source == "postgres_partial" else "COMPLETE"' in source
     assert '"health": health if hydration_status == "COMPLETE" else None' in source
     assert '"desk": desk if hydration_status == "COMPLETE" else None' in source
-    assert '"degradation_reason": "book_memory_unavailable"' in source
+    assert '"degradation_reason": (' in source
+    assert '"book_memory_unavailable" if hydration_status == "UNKNOWN"' in source
 
 def test_health_ui_suppresses_zero_stats_when_hydration_is_unavailable():
     source = (REPO_ROOT / "apps" / "web" / "src" / "app" / "health" / "page.tsx").read_text(encoding="utf-8")
