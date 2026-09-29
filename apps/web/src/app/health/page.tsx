@@ -47,8 +47,11 @@ export default function HealthPage() {
       {loading && <p className="text-xs text-terminal-muted">Loading health…</p>}
       {!loading && !available && (
         <section className="panel border-amber-500/40 p-3 text-[11px] text-amber-300">
-          Evidence hydration: {hydrationStatus}. Stored book health is unavailable; zero counts are not being inferred.
+          Evidence hydration: {hydrationStatus}. Stored book health is degraded; zero counts are not being inferred.
           {data?.degradation_reason ? ` Reason: ${String(data.degradation_reason)}.` : ""}
+          {Array.isArray((data?.hydrated as Record<string, unknown> | undefined)?._failed_layers)
+            ? ` Failed layers: ${((data?.hydrated as Record<string, unknown>)._failed_layers as unknown[]).join(", ")}.`
+            : ""}
         </section>
       )}
       {!loading && available && (
