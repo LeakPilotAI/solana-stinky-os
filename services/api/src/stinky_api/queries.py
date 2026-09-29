@@ -3242,6 +3242,37 @@ async def alert_precision_summary(session: AsyncSession) -> dict[str, Any]:
             return {"available": False, "error": str(exc)}
 
 
+async def load_operator_snapshot(session: AsyncSession) -> dict[str, Any]:
+    """Bounded operational hydration for the live Operator desk."""
+    def _clean(row: Any) -> dict[str, Any]:
+        d = dict(row)
+        for k, v in list(d.items()):
+            if hasattr(v, "isoformat"):
+                d[k] = v.isoformat()
+        return d
+
+    failed_layers: list[str] = []
+    async def rows(layer: str, sql: str) -> list[dict[str, Any]]:
+        try:
+            found = (await session.execute(text(sql))).mappings().all()
+            return [_clean(r) for r in found]
+        except Exception:
+            failed_layers.append(layer)
+            return []
+
+    # The live desk needs recent operational state, not the complete research corpus.
+    # Inner DESC limits bound database work; outer ASC preserves hydration chronology.
+    return {
+        "investigations": await rows("investigations", "SELECT * FROM (SELECT mint, gate1_at, discovered_at, protocol, volume_5m_at_gate, liquidity_at_gate, market_cap_at_gate, price_at_gate, pair_identifier, creator, gate_decision, investigation_status, correlation_id, row FROM intelligence_investigations ORDER BY discovered_at DESC NULLS LAST LIMIT 500) q ORDER BY discovered_at ASC NULLS FIRST"),
+        "quality_states": await rows("quality_states", "SELECT * FROM (SELECT mint, as_of, state, previous_state, severity, row FROM quality_state_transitions ORDER BY as_of DESC NULLS LAST LIMIT 500) q ORDER BY as_of ASC NULLS FIRST"),
+        "operator_events": await rows("operator_events", "SELECT * FROM (SELECT mint, at, kind, message, evidence_label, row FROM operator_events ORDER BY at DESC NULLS LAST LIMIT 500) q ORDER BY at ASC NULLS FIRST"),
+        "watch_states": await rows("watch_states", "SELECT mint, started_at, last_observation_at, observation_count, next_due_at, status, resumed, interrupted, persistence_status, stop_reason, row FROM watch_states ORDER BY last_observation_at DESC NULLS LAST LIMIT 500"),
+        "provider_probes": await rows("provider_probes", "SELECT * FROM (SELECT provider, at, status, latency_ms, last_success_at, last_failure_at, error, row FROM provider_probes ORDER BY at DESC NULLS LAST LIMIT 100) q ORDER BY at ASC NULLS FIRST"),
+        "discord_deliveries": await rows("discord_deliveries", "SELECT * FROM (SELECT mint, at, policy, category, delivery, error, row FROM discord_deliveries ORDER BY at DESC NULLS LAST LIMIT 200) q ORDER BY at ASC NULLS FIRST"),
+        "_hydration_failed_layers": failed_layers,
+    }
+
+
 async def load_memory_snapshot(session: AsyncSession) -> dict[str, Any]:
     """Hydrate IntelligenceMemory from Postgres. Missing tables stay empty. Never invented."""
     from stinky_core.memory import (
