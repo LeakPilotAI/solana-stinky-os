@@ -367,6 +367,18 @@ def test_runtime_evidence_capture_fails_closed_on_observed_runtime_failure():
     assert "$script:SnapshotFailed = $false" in t
     assert '$script:SnapshotFailed = $true' in t
     assert '"SUPERVISOR EVIDENCE"' in t
-    assert "'\"status\"\\s*:\\s*\"FAILED\"'" in t
+    assert "'\"status\"\\s*:\\s*\"(FAILED|UNKNOWN)\"'" in t
+    assert "persist_failed" in t
+    assert "entity_service\\.loop_error" in t
+    assert "Traceback \\(most recent call last\\):" in t
     assert "exit 1" in t
     assert "Runtime evidence captured cleanly" in t
+
+
+def test_runtime_supervisor_evidence_includes_canonical_paper_workers():
+    t = read("services/api/src/stinky_api/main.py")
+    start = t.index('@app.get("/v1/system/runtime-supervisors")')
+    end = t.index("def _probe_postgres", start)
+    block = t[start:end]
+    assert '"paper-intake-producer"' in block
+    assert '"paper-runtime"' in block
