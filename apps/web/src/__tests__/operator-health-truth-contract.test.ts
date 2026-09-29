@@ -82,3 +82,12 @@ test("paper calibration does not infer unavailable evidence as zero", () => {
   expect(source).toContain('outcomes unavailable');
   expect(source).toContain('intake unavailable');
 });
+
+
+test("top bar does not infer sentinel or collector health from aggregate api health", () => {
+  const source = fs.readFileSync(path.join(root, "src/components/layout/TopBar.tsx"), "utf8");
+  expect(source).toContain('<StatusDot ok={null} label="Sentinel" detail="Unknown" />');
+  expect(source).toContain('<StatusDot ok={null} label="Collector" detail="Unknown" />');
+  expect(source).not.toContain('label="Sentinel" detail={live ? "Live" : "Down"}');
+  expect(source).not.toContain('label="Collector" detail={apiOk ? "Live" : "—"}');
+});
