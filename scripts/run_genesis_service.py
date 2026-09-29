@@ -490,7 +490,7 @@ def main() -> int:
     code = 0
     try:
         if name == "event-log":
-            code = run_supervised([py, "-m", "uvicorn", "event_log.api:app", "--port", "8002", "--host", "127.0.0.1"])
+            code = run_supervised([py, "-m", "event_log.cli"])
         elif name == "api":
             code = run_supervised([py, "-m", "stinky_api.cli"])
         elif name == "sentinel":
