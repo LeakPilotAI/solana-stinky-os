@@ -14,6 +14,7 @@ type Status = {
   paper?: { SIMULATED_OPEN?: number; SIMULATED_CLOSED?: number; UNKNOWN?: number };
   intake?: { processed?: number; unprocessed?: number };
   policy?: { status?: string; version?: string | null; horizon?: string | null; notional_usd?: number | null };
+  prospective_evidence?: { status?: string; closed_outcomes?: number; pending_outcomes?: number; represented_outcome_classes?: number; first_candidate_at?: string | null; latest_candidate_at?: string | null; policy_threshold_proposal?: string; thresholds_invented?: boolean };
   live_trading?: string;
   error?: string;
 };
@@ -59,6 +60,7 @@ export function PaperCalibrationPanel() {
   const o = d.outcomes || {};
   const s = d.decisions || {};
   const p = d.paper || {};
+  const e = d.prospective_evidence || {};
   const observed = String(d.status || "").toUpperCase() === "OBSERVED";
   const metric = (value: number | undefined) => observed && value != null ? value : "—";
 
@@ -89,6 +91,17 @@ export function PaperCalibrationPanel() {
         <Stat label="Intake queue" value={metric(d.intake?.unprocessed)} hint={observed ? `${d.intake?.processed ?? 0} processed` : "intake unavailable"} />
         <Stat label="Policy horizon / notional" value={d.policy?.horizon || "UNKNOWN"} hint={d.policy?.notional_usd != null ? `$${d.policy.notional_usd} paper notional` : "not configured"} />
       </div>
+
+      {observed ? (
+        <div className="mt-2 rounded border border-terminal-border bg-[#0c0e0c] px-3 py-2 text-[10px] text-terminal-muted">
+          <span className="font-semibold uppercase tracking-[0.12em] text-terminal-dim">Prospective evidence</span>
+          <span className="ml-3 font-mono text-terminal-text">{e.status || "AWAITING_CANDIDATES"}</span>
+          <span className="ml-3">closed {e.closed_outcomes ?? 0}</span>
+          <span className="ml-3">pending {e.pending_outcomes ?? 0}</span>
+          <span className="ml-3">outcome classes {e.represented_outcome_classes ?? 0}/3</span>
+          {d.policy?.status === "NOT_SET" ? <span className="ml-3 text-amber-300">Policy remains intentionally unset until explicit evidence-sufficiency criteria are supplied.</span> : null}
+        </div>
+      ) : null}
 
       {!observed ? <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-[10px] text-amber-300">PAPER EVIDENCE UNAVAILABLE — counts are not inferred as zero.</div> : null}
       {d.error ? <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-[10px] text-amber-300">Status surface: {d.error}</div> : null}
