@@ -10,6 +10,8 @@ import json
 from typing import Any
 
 from sqlalchemy import text
+from datetime import datetime
+from stinky_api.paper_policy_identity import validated_provenance
 
 AUTHORITY = {
     "paper_only": True,
@@ -85,10 +87,27 @@ def _evidence_provenance(candidate: dict[str, Any], readiness: dict[str, Any]) -
         return None
     if not isinstance(readiness, dict) or readiness.get("readiness_status") != "READY_FOR_PAPER_POLICY_REVIEW":
         return None
+    for evidence in (candidate, readiness):
+        if evidence.get("paper_only") is not True or any(evidence.get(key) is not False for key in (
+            "live_execution", "trading_authority", "automatic_activation", "policy_provisioning_authority",
+        )):
+            return None
     version = str(candidate.get("candidate_version") or "").strip()
     sha = str(candidate.get("evidence_sha256") or "").strip()
     payload = candidate.get("payload")
     if not version or len(sha) != 64 or not isinstance(payload, dict):
+        return None
+    from stinky_api.paper_evidence_json import content_sha256
+    from stinky_api.prospective_score_paper_candidate import CANDIDATE_SCHEMA_VERSION
+    try:
+        expected_sha = content_sha256(payload)
+        if (payload.get("schema_version") != CANDIDATE_SCHEMA_VERSION or sha != expected_sha
+                or version != f"{CANDIDATE_SCHEMA_VERSION}:{expected_sha[:16]}"):
+            return None
+        threshold = _num(payload.get("selected_threshold"))
+        if threshold is None or not 0 <= threshold <= 100:
+            return None
+    except (TypeError, ValueError, OverflowError, RecursionError):
         return None
     if readiness.get("candidate_version") != version or readiness.get("evidence_sha256") != sha:
         return None
@@ -97,9 +116,16 @@ def _evidence_provenance(candidate: dict[str, Any], readiness: dict[str, Any]) -
     comparison_as_of = str(readiness.get("comparison_as_of") or "").strip()
     if not cutoff or comparison_cutoff != cutoff or not comparison_as_of:
         return None
+    try:
+        begin = datetime.fromisoformat(cutoff.replace("Z", "+00:00"))
+        end = datetime.fromisoformat(comparison_as_of.replace("Z", "+00:00"))
+        if begin.tzinfo is None or end.tzinfo is None or end <= begin:
+            return None
+    except (TypeError, ValueError, OverflowError):
+        return None
     checks = readiness.get("checks")
     criteria = readiness.get("criteria")
-    if not isinstance(checks, dict) or not checks or not all(v is True for v in checks.values()) or not isinstance(criteria, dict):
+    if not isinstance(checks, dict) or not checks or not all(v is True for v in checks.values()) or not isinstance(criteria, dict) or not criteria:
         return None
     frozen = {
         "mode": "EVIDENCE_BACKED_SCORE_CANDIDATE",
@@ -111,9 +137,11 @@ def _evidence_provenance(candidate: dict[str, Any], readiness: dict[str, Any]) -
         "readiness_criteria": criteria,
         "readiness_checks": checks,
     }
-    raw = json.dumps(frozen, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
-    frozen["provenance_sha256"] = hashlib.sha256(raw).hexdigest()
-    return frozen
+    try:
+        frozen["provenance_sha256"] = content_sha256(frozen)
+    except (TypeError, ValueError, OverflowError, RecursionError):
+        return None
+    return validated_provenance(frozen)
 
 
 async def provision_evidence_backed_paper_policy(
@@ -142,7 +170,7 @@ async def provision_paper_policy(session, config: dict[str, Any], *, activate: b
     canonical = checked["configuration"]
     if _validated_bound:
         provenance = config.get("provenance") if isinstance(config, dict) else None
-        if not isinstance(provenance, dict) or provenance.get("mode") != "EVIDENCE_BACKED_SCORE_CANDIDATE" or provenance.get("evidence_backed") is not True:
+        if validated_provenance(provenance) is None or provenance.get("evidence_backed") is not True:
             return {"status": "BLOCKED", "reason": "missing_evidence_provenance", **AUTHORITY}
         canonical["provenance"] = provenance
         raw = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
@@ -194,7 +222,14 @@ async def load_active_paper_configuration(session) -> dict[str, Any]:
     checked = validate_paper_configuration(payload or {})
     if checked.get("status") != "VALIDATED" or not isinstance(payload, dict):
         return {"configured": False, "missing": ["active_paper_policy_integrity"], **AUTHORITY}
-    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    if hashlib.sha256(raw).hexdigest() != row["policy_sha256"]:
+    from stinky_api.paper_policy_identity import frozen_policy_matches_identity
+    frozen = {**payload, "policy_identity": {"policy_sha256": row["policy_sha256"], "provenance": payload.get("provenance")}}
+    from stinky_api.paper_evidence_json import content_sha256
+    try:
+        exact_payload_matches = content_sha256(payload) == row["policy_sha256"]
+    except (TypeError, ValueError, OverflowError, RecursionError):
+        exact_payload_matches = False
+    if (payload.get("paper_policy", {}).get("policy_version") != row["policy_version"]
+            or not exact_payload_matches or not frozen_policy_matches_identity(frozen)):
         return {"configured": False, "missing": ["active_paper_policy_integrity"], **AUTHORITY}
     return {"configured": True, **payload, "policy_sha256": row["policy_sha256"], "activated_at": row["activated_at"], **AUTHORITY}

@@ -69,6 +69,10 @@ def test_evidence_provenance_requires_exact_candidate_readiness_identity():
         "evidence_sha256": "a" * 64,
         "payload": {"evaluation_as_of": "2026-09-30T00:00:00+00:00"},
     }
+    from stinky_api.paper_runtime_worker import canonical_sha256
+    candidate["payload"].update(schema_version="score-paper-candidate-v1", selected_threshold=55)
+    candidate["evidence_sha256"] = canonical_sha256(candidate["payload"])
+    candidate["candidate_version"] = "score-paper-candidate-v1:" + candidate["evidence_sha256"][:16]
     readiness = {
         "readiness_status": "READY_FOR_PAPER_POLICY_REVIEW",
         "candidate_version": candidate["candidate_version"],
@@ -78,6 +82,10 @@ def test_evidence_provenance_requires_exact_candidate_readiness_identity():
         "criteria": {"min_later_sample": 20},
         "checks": {"sufficient_later_sample": True},
     }
+    from stinky_api.prospective_score_paper_candidate import AUTHORITY as candidate_authority
+    from stinky_api.prospective_score_candidate_readiness import AUTHORITY as readiness_authority
+    candidate.update(candidate_authority)
+    readiness.update(readiness_authority)
     provenance = _evidence_provenance(candidate, readiness)
     assert provenance is not None
     assert provenance["evidence_backed"] is True

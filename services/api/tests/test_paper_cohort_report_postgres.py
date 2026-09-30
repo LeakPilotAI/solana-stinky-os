@@ -66,7 +66,7 @@ async def test_database_selection_cutoff_identity_and_overflow_are_fail_closed(m
             truncated = await report_paper_cohort(session, **selection(as_of="2026-09-13T00:00:00Z", record_limit=1))
             assert truncated["reasons"] == ["cohort_exceeds_record_limit"]
             # Same SHA with a different version cannot be hidden by SQL filtering.
-            await insert(session, row("conflict", version="conflicting-version"))
+            await insert(session, row("conflict", version="conflicting-version", sha=selection()["policy_sha256"]))
             await session.commit()
             conflict = await report_paper_cohort(session, **selection(), release_criteria=criteria())
             assert conflict["reasons"] == ["stored_policy_identity_mismatch"]
@@ -78,7 +78,7 @@ async def test_database_selection_cutoff_identity_and_overflow_are_fail_closed(m
             assert "(policy_sha256, created_at, intake_id)" in index
             # Exercise the real worker, including asyncpg timestamp bindings,
             # atomic intake acknowledgement, and duplicate-processing protection.
-            worker_row = row("worker", sha="c" * 64, version="worker-policy")
+            worker_row = row("worker", version="worker-policy")
             await session.execute(text("""
                 INSERT INTO paper_runtime_intake(intake_id,mint,observed_at,payload,payload_sha256)
                 VALUES ('worker','mint-1',:observed,CAST(:payload AS jsonb),:sha)
@@ -90,7 +90,7 @@ async def test_database_selection_cutoff_identity_and_overflow_are_fail_closed(m
         assert await worker.process_one() is True
         assert await worker.process_one() is False
         async with factory() as session:
-            persisted = await report_paper_cohort(session, **selection(policy_sha256="c" * 64,
+            persisted = await report_paper_cohort(session, **selection(policy_sha256=worker_row["policy_sha256"],
                 policy_version="worker-policy", as_of=(datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat()),
                 release_criteria=criteria())
             assert persisted["walk_forward_evaluated"] is True

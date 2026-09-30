@@ -13,7 +13,7 @@ from typing import Any
 from stinky_api.paper_policy_identity import validated_policy_identity
 
 # Bump when validation, ordering, metrics, or release-result semantics change.
-EVALUATOR_VERSION = "walk-forward-paper-v1"
+EVALUATOR_VERSION = "walk-forward-paper-v2"
 
 AUTHORITY = {
     "interpretation": "WALK_FORWARD_PAPER_VALIDATION_ONLY",
@@ -106,6 +106,11 @@ def evaluate_walk_forward_paper(
             unsafe.append(index)
             continue
         if execution.get("rpc_contacted") is not False or execution.get("transaction_signed") is not False or execution.get("order_submitted") is not False:
+            unsafe.append(index)
+            continue
+        if any(execution.get(key, False) is not False for key in (
+            "wallet_mutated", "recommendation_authority", "automatic_activation",
+        )):
             unsafe.append(index)
             continue
         normalized_identity = validated_policy_identity(execution.get("policy_identity"))

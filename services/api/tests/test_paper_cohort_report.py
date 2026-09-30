@@ -6,17 +6,31 @@ import pytest
 
 from stinky_api.paper_cohort_report import report_paper_cohort
 from stinky_api.paper_runtime_worker import canonical_sha256, process_frozen_bundle
-from test_persistent_paper_runtime import bundle
+from test_persistent_paper_runtime import bundle, bind_policy
 
 
-def row(intake_id="close-1", at="2026-09-10T07:00:00Z", sha="a" * 64, version="shadow-v1", backed=False):
+def row(intake_id="close-1", at="2026-09-10T07:00:00Z", sha=None, version="shadow-v1", backed=False):
     payload = bundle()
     payload["paper_policy"]["policy_version"] = version
     payload["policy_identity"] = {"policy_sha256": sha, "provenance": {
         "mode": "EVIDENCE_BACKED_SCORE_CANDIDATE" if backed else "MANUAL_OPERATOR_SUPPLIED", "evidence_backed": backed}}
     payload["paper_close_evidence"] = {"snapshot_id": intake_id, "captured_at": at,
         "source": "fixture", "strictly_later_than_t0": True, "t0_bundle_recomputed": False}
+    if backed:
+        provenance = payload["policy_identity"]["provenance"]
+        provenance.update(candidate_version="score-paper-candidate-v1:" + "a" * 16,
+            candidate_evidence_sha256="a" * 64, candidate_cutoff="2026-09-01T00:00:00Z",
+            comparison_as_of="2026-09-02T00:00:00Z", readiness_criteria={"min_later_sample": 1},
+            readiness_checks={"sufficient_later_sample": True})
+        provenance["provenance_sha256"] = canonical_sha256(provenance)
+    bind_policy(payload)
+    actual_sha = payload["policy_identity"]["policy_sha256"]
     record = process_frozen_bundle(payload)
+    if sha is not None:
+        payload["policy_identity"]["policy_sha256"] = sha
+        record["policy_identity"]["policy_sha256"] = sha
+    else:
+        sha = actual_sha
     return {"intake_id": intake_id, "mint": "mint-1", "intake_mint": "mint-1",
         "decided_at": payload["decision_context"]["decided_at"], "observed_at": at,
         "created_at": at, "intake_created_at": at, "policy_version": version,
@@ -32,7 +46,7 @@ def session(rows):
 
 
 def selection(**overrides):
-    return {"policy_sha256": "a" * 64, "policy_version": "shadow-v1", "evidence_backed": False,
+    return {"policy_sha256": bundle()["policy_identity"]["policy_sha256"], "policy_version": "shadow-v1", "evidence_backed": False,
             "as_of": "2026-09-11T00:00:00Z", **overrides}
 
 

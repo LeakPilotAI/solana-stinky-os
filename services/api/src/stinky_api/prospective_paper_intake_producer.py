@@ -30,6 +30,7 @@ from stinky_api.market_pattern_outcome_calibration import calibrate_market_patte
 from stinky_api.market_pattern_outcome_distribution import summarize_pattern_outcome_distribution
 from stinky_api.market_path_patterns import canonical_pattern_hash
 from stinky_api.paper_runtime_worker import canonical_sha256
+from stinky_api.paper_policy_identity import frozen_policy_matches_identity
 
 try:
     from stinky_core.admission import FILTER_VERSION
@@ -116,7 +117,7 @@ def paper_configuration_from_env(env: dict[str, str] | None = None) -> dict[str,
         missing.append("STINKY_PAPER_POLICY_VERSION")
     if len(policy_sha256) != 64:
         missing.append("STINKY_PAPER_POLICY_SHA256")
-    if not isinstance(provenance, dict) or provenance.get("evidence_backed") not in {True, False}:
+    if not isinstance(provenance, dict) or type(provenance.get("evidence_backed")) is not bool:
         missing.append("STINKY_PAPER_POLICY_PROVENANCE_JSON")
     if policy["horizon"] not in _ALLOWED_HORIZONS:
         missing.append("STINKY_PAPER_HORIZON")
@@ -129,6 +130,12 @@ def paper_configuration_from_env(env: dict[str, str] | None = None) -> dict[str,
             missing.append("STINKY_PAPER_" + key.upper())
     if notional is None or notional <= 0 or notional > 20.0:
         missing.append("STINKY_PAPER_NOTIONAL_USD")
+    if not missing and not frozen_policy_matches_identity({
+        "paper_policy": policy, "execution_assumptions": assumptions,
+        "paper_notional_usd": notional,
+        "policy_identity": {"policy_sha256": policy_sha256, "provenance": provenance},
+    }):
+        missing.append("frozen_policy_hash_mismatch")
     return {
         "configured": not missing,
         "missing": missing,

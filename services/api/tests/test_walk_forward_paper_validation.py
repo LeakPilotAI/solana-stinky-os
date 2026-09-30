@@ -134,7 +134,8 @@ def test_mixed_policy_sha_cohorts_fail_closed_instead_of_being_averaged():
 
 def test_manual_and_evidence_backed_cohorts_cannot_mix():
     rows=_passing_rows()
-    rows[2]["policy_identity"]["provenance"]={"mode":"EVIDENCE_BACKED_SCORE_CANDIDATE","evidence_backed":True}
+    from test_paper_cohort_report import row
+    rows[2]["policy_identity"]["provenance"]=row(backed=True)["record"]["policy_identity"]["provenance"]
     result=evaluate_walk_forward_paper(rows,_policy())
     assert result["status"]=="UNKNOWN"
     assert "single_immutable_policy_cohort" in result["missing"]

@@ -7,6 +7,7 @@ from stinky_api.paper_cohort_report import report_paper_cohort
 from stinky_api.paper_evaluation_artifact import content_sha256, verify_evaluation_artifact
 from stinky_api.paper_runtime_worker import canonical_sha256, process_frozen_bundle
 from test_paper_cohort_report import criteria, row, selection, session
+from test_persistent_paper_runtime import bind_policy
 
 
 async def artifact(rows=None, **kwargs):
@@ -60,6 +61,12 @@ async def test_material_input_changes_identity(change):
     if change == 'provenance':
         values[0]['payload']['policy_identity']['provenance']['operator_note'] = 'different'
     if change in ('payload', 'policy_sha', 'policy_version', 'provenance'):
+        if change == 'policy_sha':
+            report = await report_paper_cohort(session(values), **args, release_criteria=policy)
+            assert not report['evaluation_artifact_produced']
+            return
+        bind_policy(values[0]['payload'])
+        args['policy_sha256'] = values[0]['policy_sha256'] = values[0]['payload']['policy_identity']['policy_sha256']
         processed = values[0]['record']['processed_at']
         values[0]['record'] = process_frozen_bundle(values[0]['payload'])
         values[0]['record']['processed_at'] = processed
@@ -129,3 +136,35 @@ async def test_ineligible_evidence_never_gets_artifact(kind):
 @pytest.mark.parametrize('value', [None, [], {}, {'content': {}}, {'content': [], 'artifact_sha256': ''}])
 def test_malformed_envelope_is_unknown(value):
     assert verify_evaluation_artifact(value)['valid'] is False
+
+@pytest.mark.asyncio
+async def test_evidence_backed_artifact_preserves_complete_provenance_and_replays():
+    value = row(backed=True)
+    report = await report_paper_cohort(session([value]),
+        **selection(policy_sha256=value['policy_sha256'], evidence_backed=True), release_criteria=criteria())
+    assert report['evaluation_artifact_produced']
+    artifact = report['evaluation_artifact']
+    assert artifact['content']['policy_identity']['provenance']['evidence_backed'] is True
+    assert verify_evaluation_artifact(artifact)['valid'] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('field', ['automatic_activation','wallet_mutated','recommendation_authority'])
+async def test_contaminated_source_authority_is_rejected_even_with_recomputed_hashes(field):
+    original = await artifact()
+    source = original['content']['source_records'][0]
+    source['record'][field] = True
+    source['record_sha256'] = content_sha256(source['record'])
+    original['artifact_sha256'] = content_sha256(original['content'])
+    assert verify_evaluation_artifact(original)['valid'] is False
+
+
+@pytest.mark.asyncio
+async def test_artifact_is_detached_from_later_caller_mutations():
+    values = [row()]
+    result = await artifact(values)
+    original = deepcopy(result)
+    values[0]['payload']['decision_context']['mint'] = 'mutated'
+    values[0]['record']['policy_identity']['policy_version'] = 'mutated'
+    assert result == original
+    assert verify_evaluation_artifact(result)['valid'] is True

@@ -79,6 +79,10 @@ def adapt_simulated_execution_for_walk_forward(
         "rpc_contacted", "transaction_signed", "order_submitted",
     )):
         missing.append("non_executing_paper_record")
+    if any(simulated_execution.get(key, False) is not False for key in (
+        "wallet_mutated", "recommendation_authority", "automatic_activation",
+    )):
+        missing.append("non_executing_paper_record")
 
     identity = validated_policy_identity(simulated_execution.get("policy_identity"))
     if identity is None:

@@ -14,7 +14,19 @@ def context():
 def policy():
     return {"policy_version":"shadow-v1","horizon":"1h","min_runner_probability":.5,"max_fade_probability":.3,"min_nonnegative_market_cap_probability":.6}
 def bundle():
-    return {"probability_distribution":distribution(),"decision_context":context(),"paper_policy":policy(),"policy_identity":{"policy_sha256":"a"*64,"provenance":{"mode":"MANUAL_OPERATOR_SUPPLIED","evidence_backed":False}},"execution_assumptions":{"entry_slippage_bps":100,"exit_slippage_bps":150,"entry_fee_bps":50,"exit_fee_bps":50,"latency_ms":750},"reference_entry_price":1.0,"reference_exit_price":1.5,"paper_notional_usd":20.0}
+    payload = {"probability_distribution":distribution(),"decision_context":context(),"paper_policy":policy(),"policy_identity":{"policy_sha256":"a"*64,"provenance":{"mode":"MANUAL_OPERATOR_SUPPLIED","evidence_backed":False}},"execution_assumptions":{"entry_slippage_bps":100,"exit_slippage_bps":150,"entry_fee_bps":50,"exit_fee_bps":50,"latency_ms":750},"reference_entry_price":1.0,"reference_exit_price":1.5,"paper_notional_usd":20.0}
+
+    bind_policy(payload)
+    return payload
+
+
+def bind_policy(payload):
+    from stinky_api.paper_policy_provisioning import validate_paper_configuration
+    config = validate_paper_configuration(payload)["configuration"]
+    config["provenance"] = payload["policy_identity"]["provenance"]
+    payload["policy_identity"]["policy_sha256"] = canonical_sha256(config)
+    return payload
+
 
 def test_actual_shadow_output_adapts_into_actual_paper_simulator():
     shadow=build_shadow_paper_decision(distribution(),context(),policy())
@@ -40,6 +52,7 @@ def test_unknown_is_preserved_instead_of_inventing_probability():
 
 def test_would_skip_is_persistable_but_never_simulated_as_entry():
     bad=bundle(); bad["paper_policy"]["min_runner_probability"]=.9
+    bind_policy(bad)
     result=process_frozen_bundle(bad)
     assert result["shadow"]["action"]=="WOULD_SKIP"
     assert result["paper"]["status"]=="NOT_SIMULATED"
@@ -66,7 +79,7 @@ def test_migration_is_immutable_and_launcher_wires_worker_after_main_start():
 def test_runtime_record_preserves_exact_policy_identity_and_manual_provenance():
     result=process_frozen_bundle(bundle())
     assert result["policy_identity"]["policy_version"]=="shadow-v1"
-    assert result["policy_identity"]["policy_sha256"]=="a"*64
+    assert result["policy_identity"]["policy_sha256"]==bundle()["policy_identity"]["policy_sha256"]
     assert result["policy_identity"]["provenance"]["mode"]=="MANUAL_OPERATOR_SUPPLIED"
     assert result["policy_identity"]["provenance"]["evidence_backed"] is False
 

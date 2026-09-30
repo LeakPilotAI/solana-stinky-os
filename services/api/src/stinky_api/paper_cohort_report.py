@@ -10,7 +10,7 @@ from typing import Any
 
 from sqlalchemy import text
 
-from stinky_api.paper_policy_identity import validated_policy_identity
+from stinky_api.paper_policy_identity import validated_policy_identity, frozen_policy_matches_identity
 from stinky_api.paper_runtime_worker import canonical_sha256
 from stinky_api.paper_walk_forward_adapter import adapt_simulated_execution_for_walk_forward
 from stinky_api.walk_forward_paper_validation import evaluate_walk_forward_paper
@@ -53,7 +53,7 @@ def _safe(value: Any) -> bool:
             "live_execution", "trading_authority", "trade_signal",
             "rpc_contacted", "transaction_signed", "order_submitted",
         )
-    ) and all(value.get(key, False) is False for key in ("wallet_mutated", "recommendation_authority"))
+    ) and all(value.get(key, False) is False for key in ("wallet_mutated", "recommendation_authority", "automatic_activation"))
 
 
 async def report_paper_cohort(session, *, policy_sha256: Any = None,
@@ -162,6 +162,8 @@ def evaluate_cohort_rows(rows, *, selection, release_criteria, produce_artifact=
         if (not isinstance(frozen_identity, dict) or not isinstance(frozen_policy, dict)
                 or validated_policy_identity({**frozen_identity, "policy_version": frozen_policy.get("policy_version")}) != identity):
             return unknown("frozen_intake_policy_mismatch")
+        if not frozen_policy_matches_identity(payload):
+            return unknown("frozen_policy_hash_mismatch")
         intake_id = row.get("intake_id")
         if not isinstance(intake_id, str) or not intake_id or intake_id in seen:
             return unknown("duplicate_or_missing_record_identity")

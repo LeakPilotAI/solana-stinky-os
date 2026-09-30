@@ -17,7 +17,7 @@ DB_URL = os.getenv("API_TEST_DATABASE_URL")
 
 
 def valid_env():
-    return {
+    env = {
         "STINKY_PAPER_POLICY_VERSION": "paper-policy-explicit-v1",
         "STINKY_PAPER_HORIZON": "1h",
         "STINKY_PAPER_MIN_RUNNER_PROBABILITY": "0.50",
@@ -33,6 +33,11 @@ def valid_env():
         "STINKY_PAPER_POLICY_PROVENANCE_JSON": '{"mode":"MANUAL_OPERATOR_SUPPLIED","evidence_backed":false}',
     }
 
+    from stinky_api.paper_policy_provisioning import validate_paper_configuration
+    config = paper_configuration_from_env(env)
+    env["STINKY_PAPER_POLICY_SHA256"] = validate_paper_configuration(config)["policy_sha256"]
+    return env
+
 
 def test_producer_has_no_hidden_policy_defaults():
     result = paper_configuration_from_env({})
@@ -47,7 +52,7 @@ def test_explicit_policy_is_accepted_but_hard_caps_notional_at_20():
     result = paper_configuration_from_env(valid_env())
     assert result["configured"] is True
     assert result["paper_notional_usd"] == 20.0
-    assert result["policy_sha256"] == "a" * 64
+    assert result["policy_sha256"] == valid_env()["STINKY_PAPER_POLICY_SHA256"]
     assert result["provenance"]["evidence_backed"] is False
     too_large = valid_env(); too_large["STINKY_PAPER_NOTIONAL_USD"] = "20.01"
     assert paper_configuration_from_env(too_large)["configured"] is False

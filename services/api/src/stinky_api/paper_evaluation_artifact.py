@@ -6,9 +6,7 @@ timestamps are historical evidence; no generation clock enters the identity.
 """
 from copy import deepcopy
 from datetime import datetime, timezone
-import hashlib
-import json
-from math import isfinite
+from stinky_api.paper_evidence_json import canonical_bytes, content_sha256
 
 from stinky_api.walk_forward_paper_validation import EVALUATOR_VERSION
 
@@ -25,31 +23,6 @@ SOURCE_FIELDS = (
     "policy_evidence_backed", "paper_status", "record", "payload", "payload_sha256",
 )
 TIME_FIELDS = ("decided_at", "observed_at", "created_at", "intake_created_at")
-
-
-def canonical_bytes(value):
-    """Strict JSON only: no coerced keys, tuples, non-finite numbers or defaults."""
-    def check(item):
-        if item is None or type(item) in (str, bool, int):
-            return
-        if type(item) is float and isfinite(item):
-            return
-        if type(item) is list:
-            for child in item:
-                check(child)
-            return
-        if type(item) is dict and all(type(key) is str for key in item):
-            for child in item.values():
-                check(child)
-            return
-        raise ValueError("noncanonical_json")
-    check(value)
-    return json.dumps(value, sort_keys=True, separators=(",", ":"),
-                      ensure_ascii=False, allow_nan=False).encode("utf-8")
-
-
-def content_sha256(value):
-    return hashlib.sha256(canonical_bytes(value)).hexdigest()
 
 
 def build_evaluation_artifact(rows, report, criteria):
