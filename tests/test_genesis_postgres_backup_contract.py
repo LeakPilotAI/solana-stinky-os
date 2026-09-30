@@ -115,3 +115,16 @@ def test_stopped_source_container_fails_cleanly_before_endpoint_discovery():
     assert '"{{json .State}}|{{json .NetworkSettings.Networks}}"' in source
     main = source.split("def main() -> int:", 1)[1]
     assert main.index("try:") < main.index("pg = PgTools(")
+
+
+def test_backup_launcher_self_starts_only_postgres_and_waits_for_health():
+    source = (ROOT / "Backup-Genesis.cmd").read_text(encoding="utf-8")
+    assert "docker version >nul 2>nul" in source
+    assert "docker compose -p project-genesis up -d postgres" in source
+    assert "docker compose -p project-genesis up -d" not in source.replace(
+        "docker compose -p project-genesis up -d postgres", ""
+    )
+    assert "waiting for stinky-postgres to become healthy" in source
+    assert ".State.Health.Status" in source
+    assert "postgres_not_healthy" in source
+    assert "docker logs --tail 80 stinky-postgres" in source
