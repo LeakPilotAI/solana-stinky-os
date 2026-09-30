@@ -168,3 +168,18 @@ async def test_artifact_is_detached_from_later_caller_mutations():
     values[0]['record']['policy_identity']['policy_version'] = 'mutated'
     assert result == original
     assert verify_evaluation_artifact(result)['valid'] is True
+
+
+@pytest.mark.asyncio
+async def test_verification_route_preserves_offline_non_authoritative_semantics():
+    from stinky_api.paper_cohort_routes import paper_evaluation_artifact_verify
+    value = await artifact()
+    checked = await paper_evaluation_artifact_verify({"artifact": value})
+    assert checked["status"] == "VERIFIED"
+    assert checked["valid"] is True
+    assert checked["automatic_activation"] is False
+    assert checked["live_execution"] is False
+    assert checked["trading_authority"] is False
+    invalid = await paper_evaluation_artifact_verify({"artifact": {"artifact_sha256": "0" * 64, "content": {}}})
+    assert invalid["valid"] is False
+    assert invalid["automatic_activation"] is False
