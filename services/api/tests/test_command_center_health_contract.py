@@ -36,7 +36,8 @@ def test_trending_query_uses_latest_row_and_indexable_fee_lookup_shape():
     end = source.index('@app.get("/v1/command-center")', start)
     block = source[start:end]
     assert "ROW_NUMBER() OVER" not in block
-    assert "SELECT DISTINCT ON (ms.mint)" in block
+    assert "WITH candidate_tracks AS" in block
+    assert "LIMIT 500" in block
     assert "LEFT JOIN LATERAL" in block
     assert "ORDER BY fe.evaluated_at DESC" in block
     assert "LIMIT 1" in block
