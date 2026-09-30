@@ -92,7 +92,7 @@ async function policyStatus() {
 export async function GET() {
   try {
     const criteria = evidenceCriteria();
-    const [workers, policy, epochRaw, candidateRaw, outcomeRaw, shadowRaw, paperRaw, intakeRaw, evidenceRaw, marketRaw, cohortRaw] = await Promise.all([
+    const [workers, policy, epochRaw, candidateRaw, outcomeRaw, shadowRaw, paperRaw, intakeRaw, evidenceRaw, marketRaw, cohortRaw, registryRaw] = await Promise.all([
       workerHealth(), policyStatus(),
       psql("SELECT producer_version || '|' || prospective_started_at::text FROM paper_intake_producer_state WHERE singleton=TRUE LIMIT 1;"),
       psql("SELECT count(*) FROM paper_prospective_candidate;"),
