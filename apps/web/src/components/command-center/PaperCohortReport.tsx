@@ -35,7 +35,7 @@ export function PaperCohortReport() {
   const generation = useRef(0);
   const reset = () => { generation.current += 1; setReport(null); setVerification(null); setBusy(false); };
   const releaseCriteria = () => {
-    if (!/^\\d+$/.test(minimumClosed.trim()) || Number(minimumClosed) <= 0) return null;
+    if (!/^\d+$/.test(minimumClosed.trim()) || Number(minimumClosed) <= 0) return null;
     const mean = Number(minimumMean), drawdown = Number(maximumDrawdown), win = Number(minimumWinRate);
     if (!minimumMean.trim() || !maximumDrawdown.trim() || !minimumWinRate.trim() || !Number.isFinite(mean) || !Number.isFinite(drawdown) || drawdown < 0 || !Number.isFinite(win) || win < 0 || win > 1) return null;
     return { minimum_closed_trades: Number(minimumClosed), minimum_mean_net_return_pct: mean, maximum_drawdown_pct: drawdown, minimum_win_rate: win };
