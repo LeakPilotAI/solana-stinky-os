@@ -18,7 +18,13 @@ def validated_provenance(provenance: Any) -> dict | None:
         canonical_bytes(provenance)
         if provenance["evidence_backed"]:
             sha = provenance.get("candidate_evidence_sha256")
+            comparison_sha = provenance.get("comparison_evidence_sha256")
+            provenance_sha = provenance.get("provenance_sha256")
             if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha):
+                return None
+            if not isinstance(comparison_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", comparison_sha):
+                return None
+            if not isinstance(provenance_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", provenance_sha):
                 return None
             if provenance.get("candidate_version") != f"score-paper-candidate-v1:{sha[:16]}":
                 return None
