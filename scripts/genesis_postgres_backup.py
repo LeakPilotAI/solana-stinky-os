@@ -56,6 +56,7 @@ REQUIRED_TABLES = (
     "paper_runtime_record",
 )
 _DB_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SAFE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
 class BackupError(RuntimeError):
@@ -94,6 +95,8 @@ class PgTools:
         host: str = "127.0.0.1",
         port: int = 5432,
         password: str | None = None,
+        network: str = "project-genesis_default",
+        db_host: str = "postgres",
     ) -> None:
         self.mode = mode
         self.user = user
@@ -101,8 +104,14 @@ class PgTools:
         self.host = host
         self.port = int(port)
         self.password = password or os.environ.get("PGPASSWORD") or user
-        if mode not in {"docker", "direct"}:
+        self.network = network
+        self.db_host = db_host
+        if mode not in {"docker-network", "direct"}:
             raise BackupError("unsupported_mode")
+        if not _SAFE_TOKEN_RE.fullmatch(network):
+            raise BackupError("unsafe_network_name")
+        if not _SAFE_TOKEN_RE.fullmatch(db_host):
+            raise BackupError("unsafe_database_host")
 
     def run(
         self,
@@ -147,57 +156,93 @@ class PgTools:
             server_settings={"timezone": "UTC"},
         )
 
-    async def _fetch_text(self, database: str, sql: str) -> str:
+    async def _fetch_text_direct(self, database: str, sql: str) -> str:
         conn = await self._connect(database)
         try:
             rows = await conn.fetch(sql)
-            values = []
+            vals = []
             for row in rows:
                 value = row[0] if len(row) else None
                 if value is not None:
-                    values.append(str(value))
-            return "\n".join(values).strip()
+                    vals.append(str(value))
+            return "\n".join(vals).strip()
         finally:
             await conn.close()
 
-    def psql(self, database: str, sql: str) -> str:
-        try:
-            return asyncio.run(self._fetch_text(database, sql))
-        except (asyncpg.PostgresError, OSError, TimeoutError) as exc:
-            raise BackupError(f"database_query_failed:{database}:{type(exc).__name__}:{exc}") from exc
+    def _docker_psql_cmd(self, database: str) -> list[str]:
+        return [
+            "docker", "run", "--rm", "-i",
+            "--network", self.network,
+            "-e", "PGPASSWORD",
+            "postgres:16",
+            "psql",
+            "-h", self.db_host,
+            "-p", str(self.port),
+            "-U", self.user,
+            "-d", _safe_db_name(database),
+            "-X", "-A", "-t", "-q",
+            "-v", "ON_ERROR_STOP=1",
+        ]
 
-    async def _execute(self, database: str, sql: str) -> None:
+    def psql(self, database: str, sql: str) -> str:
+        if self.mode == "direct":
+            try:
+                return asyncio.run(self._fetch_text_direct(database, sql))
+            except (asyncpg.PostgresError, OSError, TimeoutError) as exc:
+                raise BackupError(
+                    f"database_query_failed:{database}:{type(exc).__name__}:{exc}"
+                ) from exc
+        result = self.run(
+            [*self._docker_psql_cmd(database), "-c", sql],
+            capture=True,
+            env={"PGPASSWORD": self.password},
+            timeout=METADATA_TIMEOUT_SECONDS,
+        )
+        return (result.stdout or b"").decode("utf-8", errors="strict").strip()
+
+    async def _execute_direct(self, database: str, sql: str) -> None:
         conn = await self._connect(database)
         try:
             await conn.execute(sql)
         finally:
             await conn.close()
 
+    def _execute(self, database: str, sql: str) -> None:
+        if self.mode == "direct":
+            try:
+                asyncio.run(self._execute_direct(database, sql))
+                return
+            except (asyncpg.PostgresError, OSError, TimeoutError) as exc:
+                raise BackupError(
+                    f"database_execute_failed:{database}:{type(exc).__name__}:{exc}"
+                ) from exc
+        self.run(
+            [*self._docker_psql_cmd(database), "-c", sql],
+            env={"PGPASSWORD": self.password},
+            timeout=METADATA_TIMEOUT_SECONDS,
+        )
+
     def create_database(self, database: str) -> None:
         database = _safe_db_name(database)
-        try:
-            asyncio.run(self._execute("postgres", f"CREATE DATABASE {_quoted_ident(database)}"))
-        except (asyncpg.PostgresError, OSError, TimeoutError) as exc:
-            raise BackupError(f"create_database_failed:{database}:{exc}") from exc
+        self._execute("postgres", f"CREATE DATABASE {_quoted_ident(database)}")
 
     def drop_database(self, database: str) -> None:
         database = _safe_db_name(database)
-        try:
-            asyncio.run(self._execute("postgres", f"DROP DATABASE IF EXISTS {_quoted_ident(database)} WITH (FORCE)"))
-        except (asyncpg.PostgresError, OSError, TimeoutError) as exc:
-            raise BackupError(f"drop_database_failed:{database}:{exc}") from exc
+        self._execute(
+            "postgres",
+            f"DROP DATABASE IF EXISTS {_quoted_ident(database)} WITH (FORCE)",
+        )
 
     def _client_tool(self, tool: str) -> list[str]:
         if self.mode == "direct":
             return [tool, "-h", self.host, "-p", str(self.port)]
-        # Avoid docker exec into the live database container. A short-lived
-        # PostgreSQL client container connects to the host-mapped DB port.
         return [
             "docker", "run", "--rm", "-i",
-            "-e", f"PGPASSWORD={self.password}",
+            "--network", self.network,
+            "-e", "PGPASSWORD",
             "postgres:16",
             tool,
-            "-h", "host.docker.internal",
+            "-h", self.db_host,
             "-p", str(self.port),
         ]
 
@@ -211,9 +256,13 @@ class PgTools:
             "--no-owner",
             "--no-privileges",
         ]
-        env = {"PGPASSWORD": self.password}
         with path.open("wb") as out:
-            self.run(cmd, stdout=out, env=env, timeout=BACKUP_COMMAND_TIMEOUT_SECONDS)
+            self.run(
+                cmd,
+                stdout=out,
+                env={"PGPASSWORD": self.password},
+                timeout=BACKUP_COMMAND_TIMEOUT_SECONDS,
+            )
 
     def restore(self, database: str, path: Path) -> None:
         database = _safe_db_name(database)
@@ -225,11 +274,17 @@ class PgTools:
             "--no-owner",
             "--no-privileges",
         ]
-        env = {"PGPASSWORD": self.password}
         with path.open("rb") as source:
-            self.run(cmd, stdin=source, env=env, timeout=BACKUP_COMMAND_TIMEOUT_SECONDS)
+            self.run(
+                cmd,
+                stdin=source,
+                env={"PGPASSWORD": self.password},
+                timeout=BACKUP_COMMAND_TIMEOUT_SECONDS,
+            )
 
-    async def _stream_digest_async(self, database: str, sql: str, label: str) -> tuple[int, str]:
+    async def _stream_digest_direct(
+        self, database: str, sql: str, label: str
+    ) -> tuple[int, str]:
         conn = await self._connect(database)
         digest = hashlib.sha256()
         row_count = 0
@@ -239,8 +294,7 @@ class PgTools:
                     value = row[0] if len(row) else None
                     if value is None:
                         continue
-                    raw = str(value).encode("utf-8")
-                    digest.update(raw)
+                    digest.update(str(value).encode("utf-8"))
                     digest.update(b"\n")
                     row_count += 1
                     if row_count % STREAM_PROGRESS_ROWS == 0:
@@ -249,26 +303,77 @@ class PgTools:
             await conn.close()
         return row_count, digest.hexdigest()
 
-    def stream_digest(self, database: str, sql: str, *, label: str) -> tuple[int, str]:
+    def stream_digest(
+        self,
+        database: str,
+        sql: str,
+        *,
+        label: str,
+        count_sql: str,
+    ) -> tuple[int, str]:
+        if self.mode == "direct":
+            try:
+                return asyncio.run(self._stream_digest_direct(database, sql, label))
+            except (asyncpg.PostgresError, OSError, TimeoutError) as exc:
+                raise BackupError(
+                    f"stream_query_failed:{label}:{type(exc).__name__}:{exc}"
+                ) from exc
+
+        shell = (
+            'set -eu; '
+            'count="$(psql -h "$GENESIS_DB_HOST" -p "$GENESIS_DB_PORT" '
+            '-U "$GENESIS_DB_USER" -d "$GENESIS_DB_NAME" -X -A -t -q '
+            '-v ON_ERROR_STOP=1 -c "$GENESIS_COUNT_SQL")"; '
+            'digest="$(psql -h "$GENESIS_DB_HOST" -p "$GENESIS_DB_PORT" '
+            '-U "$GENESIS_DB_USER" -d "$GENESIS_DB_NAME" -X -A -t -q '
+            '-v ON_ERROR_STOP=1 -c "$GENESIS_HASH_SQL" | sha256sum | cut -d" " -f1)"; '
+            'printf "%s\t%s\n" "$count" "$digest"'
+        )
+        cmd = [
+            "docker", "run", "--rm",
+            "--network", self.network,
+            "-e", "PGPASSWORD",
+            "-e", f"GENESIS_DB_HOST={self.db_host}",
+            "-e", f"GENESIS_DB_PORT={self.port}",
+            "-e", f"GENESIS_DB_USER={self.user}",
+            "-e", f"GENESIS_DB_NAME={_safe_db_name(database)}",
+            "-e", f"GENESIS_COUNT_SQL={count_sql}",
+            "-e", f"GENESIS_HASH_SQL={sql}",
+            "postgres:16",
+            "sh", "-c", shell,
+        ]
+        result = self.run(
+            cmd,
+            capture=True,
+            env={"PGPASSWORD": self.password},
+            timeout=BACKUP_COMMAND_TIMEOUT_SECONDS,
+        )
+        raw = (result.stdout or b"").decode("utf-8", errors="strict").strip()
         try:
-            return asyncio.run(self._stream_digest_async(database, sql, label))
-        except (asyncpg.PostgresError, OSError, TimeoutError) as exc:
-            raise BackupError(f"stream_query_failed:{label}:{type(exc).__name__}:{exc}") from exc
+            count_raw, digest = raw.split("\t", 1)
+            row_count = int(count_raw.strip())
+        except (ValueError, TypeError) as exc:
+            raise BackupError(f"invalid_stream_digest_result:{label}:{raw[:200]}") from exc
+        digest = digest.strip()
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise BackupError(f"invalid_stream_digest_sha256:{label}")
+        return row_count, digest
 
     def has_extension(self, database: str, extension: str) -> bool:
         if not re.fullmatch(r"[A-Za-z0-9_]+", extension):
             raise BackupError("unsafe_extension_name")
-        return self.psql(
+        value = self.psql(
             database,
             f"SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname='{extension}');",
-        ) == "True"
+        )
+        return value.lower() in {"t", "true", "1"}
 
     def has_timescaledb(self, database: str) -> bool:
         return self.has_extension(database, "timescaledb")
 
 def _table_exists(pg: PgTools, database: str, table: str) -> bool:
     value = pg.psql(database, f"SELECT to_regclass('public.{table}') IS NOT NULL;")
-    return value == "True"
+    return value.lower() in {"t", "true", "1"}
 
 
 def _primary_key_columns(pg: PgTools, database: str, table: str) -> list[str]:
@@ -334,6 +439,7 @@ def _table_digest(pg: PgTools, database: str, table: str) -> dict[str, Any]:
         database,
         f"SELECT {projection} FROM public.{_quoted_ident(table)} t ORDER BY {order};",
         label=label,
+        count_sql=f"SELECT COUNT(*) FROM public.{_quoted_ident(table)};",
     )
     print(
         f"  [manifest] {label}: done ({row_count:,} rows, {rows_sha256[:16]}...)",
@@ -585,8 +691,10 @@ def certify(
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Certify a Genesis Postgres backup via isolated restore.")
     parser.add_argument("command", choices=("certify",))
-    parser.add_argument("--mode", choices=("docker", "direct"), default="docker")
+    parser.add_argument("--mode", choices=("docker-network", "direct"), default="docker-network")
     parser.add_argument("--container", default="stinky-postgres")
+    parser.add_argument("--network", default="project-genesis_default")
+    parser.add_argument("--db-host", default="postgres")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=5432)
     parser.add_argument("--user", default="stinky")
@@ -605,6 +713,8 @@ def main() -> int:
         host=args.host,
         port=args.port,
         password=args.password,
+        network=args.network,
+        db_host=args.db_host,
     )
     try:
         result = certify(pg, database=args.database, output_dir=Path(args.output_dir))
