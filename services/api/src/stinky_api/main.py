@@ -511,7 +511,13 @@ async def book_observations(
 ) -> dict:
     from stinky_core.book import observation_book
 
-    mem, loaded, source = await _book_memory(payload, session)
+    from stinky_core.memory import IntelligenceMemory
+
+    mem = IntelligenceMemory()
+    snap = await queries.load_observation_snapshot(session)
+    failed_layers = snap.pop("_hydration_failed_layers", [])
+    loaded = mem.hydrate(snap)
+    source = "postgres_partial" if failed_layers else "postgres"
     degraded = _degraded_book_response(source, loaded)
     if degraded is not None:
         return {**degraded, "observations": None, "count": None}
