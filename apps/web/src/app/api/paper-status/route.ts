@@ -124,6 +124,9 @@ export async function GET() {
     } : { status: "CRITERIA_NOT_SET", criteria, deficits: null, observed_market_cap_samples: marketCapSamples, policy_provisioned: false, automatic_activation: false };
     const closedOutcomes = (outcomes.RUNNER || 0) + (outcomes.HELD || 0) + (outcomes.FADE || 0);
     const policyCohorts = cohortRaw.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+    const registryAll = registryRaw.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+    const policyRegistryTruncated = registryAll.length > 50;
+    const policyRegistry = registryAll.slice(0, 50);
     return NextResponse.json({
       status: "OBSERVED", paper_only: true, live_trading: "LOCKED",
       producer: workers.producer, paper_runtime: workers.runtime,
@@ -134,6 +137,9 @@ export async function GET() {
       paper: { SIMULATED_OPEN: paper.SIMULATED_OPEN || 0, SIMULATED_CLOSED: paper.SIMULATED_CLOSED || 0, UNKNOWN: paper.UNKNOWN || 0 },
       intake: { processed: intake.PROCESSED || 0, unprocessed: intake.UNPROCESSED || 0 },
       policy,
+      policy_registry: policyRegistry,
+      policy_registry_scope: "LATEST_50_IMMUTABLE_POLICIES",
+      policy_registry_truncated: policyRegistryTruncated,
       policy_cohorts: policyCohorts,
       aggregate_scope: "ALL_IMMUTABLE_POLICY_COHORTS",
       historical_identity_inference: false,
@@ -144,7 +150,7 @@ export async function GET() {
         represented_outcome_classes: representedOutcomeClasses,
         first_candidate_at: firstCandidateAt || null,
         latest_candidate_at: latestCandidateAt || null,
-        policy_threshold_proposal: "REQUIRES_EXPLICIT_SUFFICIENCY_CRITERIA",
+        policy_threshold_proposal: criteria.configured ? "NOT_EVALUATED_ON_STATUS_SURFACE" : "REQUIRES_EXPLICIT_SUFFICIENCY_CRITERIA",
         thresholds_invented: false,
         readiness,
       },
