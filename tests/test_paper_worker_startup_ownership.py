@@ -1,5 +1,8 @@
 from datetime import datetime, timedelta, timezone
 import json
+from types import SimpleNamespace
+
+import pytest
 
 from scripts import start_paper_runtime as starter
 
@@ -46,3 +49,43 @@ def test_pid_file_is_rewritten_canonically(tmp_path):
     assert known == {"api": 11, "paper-runtime": 13}
     starter._write_pids(path, known)
     assert path.read_text(encoding="ascii") == "api=11\npaper-runtime=13\n"
+
+
+@pytest.mark.parametrize("child_pid", [123, 456])
+def test_startup_returns_actual_heartbeat_pid_bound_to_launch(monkeypatch, tmp_path, child_pid):
+    now = datetime.now(timezone.utc).isoformat()
+    _state(tmp_path, pid=child_pid, as_of=now)
+    path = tmp_path / "runtime-state-paper-runtime.json"
+    state = json.loads(path.read_text())
+    state["supervisor_launch_token"] = "new-launch"
+    path.write_text(json.dumps(state))
+    monkeypatch.setattr(starter, "_alive", lambda pid: pid == child_pid)
+    proc = SimpleNamespace(pid=123, poll=lambda: None)
+    assert starter._wait_for_owned_supervisor(proc, "paper-runtime", tmp_path, "new-launch") == child_pid
+
+
+@pytest.mark.parametrize("mutation", ["wrong_token", "missing_token", "wrong_service", "dead_child", "failed", "stale", "exited_launcher", "malformed_pid"])
+def test_startup_rejects_unbound_or_unhealthy_child(monkeypatch, tmp_path, mutation):
+    _state(tmp_path, pid=456, as_of=datetime.now(timezone.utc).isoformat())
+    path = tmp_path / "runtime-state-paper-runtime.json"
+    state = json.loads(path.read_text())
+    state["supervisor_launch_token"] = "new-launch"
+    if mutation == "wrong_token":
+        state["supervisor_launch_token"] = "old-launch"
+    elif mutation == "missing_token":
+        state.pop("supervisor_launch_token")
+    elif mutation == "wrong_service":
+        state["service"] = "paper-intake-producer"
+    elif mutation == "failed":
+        state["supervisor_phase"] = "FAILED"
+    elif mutation == "stale":
+        state["as_of"] = "2020-01-01T00:00:00Z"
+    elif mutation == "malformed_pid":
+        state["supervisor_pid"] = "456"
+    path.write_text(json.dumps(state))
+    monkeypatch.setattr(starter, "_alive", lambda pid: mutation != "dead_child")
+    ticks = iter([0, 0, 99])
+    monkeypatch.setattr(starter.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(starter.time, "sleep", lambda _: None)
+    proc = SimpleNamespace(pid=123, poll=lambda: 1 if mutation == "exited_launcher" else None)
+    assert starter._wait_for_owned_supervisor(proc, "paper-runtime", tmp_path, "new-launch") == 0
