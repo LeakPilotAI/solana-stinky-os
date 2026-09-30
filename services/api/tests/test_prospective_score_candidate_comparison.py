@@ -56,3 +56,12 @@ def test_comparison_criteria_fail_closed_without_integer_truncation():
     assert '"valid_explicit_comparison_criteria"' in source
     assert "required_counts=[_positive_count(x)" in source
     assert "max(1,int(min_sample))" not in source
+
+
+def test_comparison_has_no_hidden_evidence_sufficiency_defaults():
+    import inspect
+    from stinky_api.prospective_score_candidate_comparison import compare_score_paper_candidate
+
+    params = inspect.signature(compare_score_paper_candidate).parameters
+    for name in ("min_sample", "min_runners", "min_negatives"):
+        assert params[name].default is inspect.Parameter.empty
