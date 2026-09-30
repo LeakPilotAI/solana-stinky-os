@@ -13,7 +13,10 @@ type Status = {
   decisions?: { WOULD_WATCH?: number; WOULD_SKIP?: number; WOULD_ENTER?: number; UNKNOWN?: number };
   paper?: { SIMULATED_OPEN?: number; SIMULATED_CLOSED?: number; UNKNOWN?: number };
   intake?: { processed?: number; unprocessed?: number };
-  policy?: { status?: string; version?: string | null; horizon?: string | null; notional_usd?: number | null };
+  policy?: { status?: string; version?: string | null; horizon?: string | null; notional_usd?: number | null; policy_sha256?: string | null };
+  policy_cohorts?: { policy_version?: string; policy_sha256?: string; provenance?: string; records?: number }[];
+  aggregate_scope?: string;
+  historical_identity_inference?: boolean;
   prospective_evidence?: { status?: string; closed_outcomes?: number; pending_outcomes?: number; represented_outcome_classes?: number; first_candidate_at?: string | null; latest_candidate_at?: string | null; policy_threshold_proposal?: string; thresholds_invented?: boolean; readiness?: { status?: string; criteria?: { min_closed_outcomes?: number | null; min_market_cap_samples?: number | null; min_outcome_classes?: number | null }; deficits?: { closed_outcomes_needed?: number; market_cap_samples_needed?: number; outcome_classes_needed?: number } | null; observed_market_cap_samples?: number; policy_provisioned?: boolean; automatic_activation?: boolean } };
   live_trading?: string;
   error?: string;
@@ -92,6 +95,14 @@ export function PaperCalibrationPanel() {
         <Stat label="Intake queue" value={metric(d.intake?.unprocessed)} hint={observed ? `${d.intake?.processed ?? 0} processed` : "intake unavailable"} />
         <Stat label="Policy horizon / notional" value={d.policy?.horizon || "UNKNOWN"} hint={d.policy?.notional_usd != null ? `$${d.policy.notional_usd} paper notional` : "not configured"} />
       </div>
+
+      {observed && (d.policy_cohorts?.length || 0) > 0 ? (
+        <div className="mt-2 rounded border border-terminal-border bg-[#0c0e0c] px-3 py-2 text-[10px] text-terminal-muted">
+          <span className="font-semibold uppercase tracking-[0.12em] text-terminal-dim">Immutable policy cohorts</span>
+          {d.policy_cohorts?.map((cohort, index) => <span key={`${cohort.policy_sha256 || "unknown"}:${index}`} className="ml-3 font-mono text-terminal-text">{cohort.policy_version || "LEGACY_UNKNOWN"} · {cohort.provenance || "UNKNOWN"} · {cohort.records ?? 0} records · {(cohort.policy_sha256 || "UNKNOWN").slice(0, 12)}</span>)}
+          <span className="ml-3 text-terminal-dim">Historical identity is never inferred from the active policy.</span>
+        </div>
+      ) : null}
 
       {observed ? (
         <div className="mt-2 rounded border border-terminal-border bg-[#0c0e0c] px-3 py-2 text-[10px] text-terminal-muted">
