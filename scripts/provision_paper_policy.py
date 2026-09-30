@@ -15,7 +15,7 @@ from stinky_api.paper_policy_provisioning import provision_paper_policy
 
 
 def parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Provision a versioned Genesis PAPER-ONLY policy. No defaults are supplied.")
+    p = argparse.ArgumentParser(description="Provision a versioned Genesis PAPER-ONLY policy. Thresholds have no defaults; activation requires explicit --activate.")
     p.add_argument("--policy-version", required=True)
     p.add_argument("--horizon", required=True, choices=["5m", "15m", "30m", "1h", "4h", "24h"])
     p.add_argument("--min-runner-probability", required=True, type=float)
@@ -27,7 +27,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--exit-fee-bps", required=True, type=float)
     p.add_argument("--latency-ms", required=True, type=float)
     p.add_argument("--paper-notional-usd", required=True, type=float)
-    p.add_argument("--provision-only", action="store_true", help="Register immutably without activating.")
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--activate", action="store_true", help="Explicitly activate after immutable registration. Omit to provision only.")
+    mode.add_argument("--provision-only", action="store_true", help="Explicit provision-only marker; provision-only is already the safe default.")
     return p
 
 
@@ -50,7 +52,7 @@ async def run(args: argparse.Namespace) -> int:
         "paper_notional_usd": args.paper_notional_usd,
     }
     async with SessionLocal() as session:
-        result = await provision_paper_policy(session, config, activate=not args.provision_only)
+        result = await provision_paper_policy(session, config, activate=bool(args.activate))
     print(json.dumps(result, sort_keys=True, default=str))
     return 0 if result.get("status") in {"ACTIVE", "PROVISIONED"} else 2
 
