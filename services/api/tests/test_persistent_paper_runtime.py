@@ -13,7 +13,7 @@ def context():
 def policy():
     return {"policy_version":"shadow-v1","horizon":"1h","min_runner_probability":.5,"max_fade_probability":.3,"min_nonnegative_market_cap_probability":.6}
 def bundle():
-    return {"probability_distribution":distribution(),"decision_context":context(),"paper_policy":policy(),"execution_assumptions":{"entry_slippage_bps":100,"exit_slippage_bps":150,"entry_fee_bps":50,"exit_fee_bps":50,"latency_ms":750},"reference_entry_price":1.0,"reference_exit_price":1.5,"paper_notional_usd":20.0}
+    return {"probability_distribution":distribution(),"decision_context":context(),"paper_policy":policy(),"policy_identity":{"policy_sha256":"a"*64,"provenance":{"mode":"MANUAL_OPERATOR_SUPPLIED","evidence_backed":False}},"execution_assumptions":{"entry_slippage_bps":100,"exit_slippage_bps":150,"entry_fee_bps":50,"exit_fee_bps":50,"latency_ms":750},"reference_entry_price":1.0,"reference_exit_price":1.5,"paper_notional_usd":20.0}
 
 def test_actual_shadow_output_adapts_into_actual_paper_simulator():
     shadow=build_shadow_paper_decision(distribution(),context(),policy())
@@ -60,3 +60,20 @@ def test_migration_is_immutable_and_launcher_wires_worker_after_main_start():
     forbidden=("solana.rpc","send_transaction","sign_transaction","private_key")
     corpus=(migration+starter+(ROOT/"services/api/src/stinky_api/paper_runtime_worker.py").read_text()).lower()
     assert not any(token in corpus for token in forbidden)
+
+
+def test_runtime_record_preserves_exact_policy_identity_and_manual_provenance():
+    result=process_frozen_bundle(bundle())
+    assert result["policy_identity"]["policy_version"]=="shadow-v1"
+    assert result["policy_identity"]["policy_sha256"]=="a"*64
+    assert result["policy_identity"]["provenance"]["mode"]=="MANUAL_OPERATOR_SUPPLIED"
+    assert result["policy_identity"]["provenance"]["evidence_backed"] is False
+
+
+def test_runtime_fails_closed_when_policy_identity_is_missing_or_malformed():
+    missing=bundle(); missing.pop("policy_identity")
+    assert process_frozen_bundle(missing)["status"]=="UNKNOWN"
+    malformed=bundle(); malformed["policy_identity"]["policy_sha256"]="short"
+    result=process_frozen_bundle(malformed)
+    assert result["status"]=="UNKNOWN"
+    assert "valid_policy_identity" in result["missing"]
