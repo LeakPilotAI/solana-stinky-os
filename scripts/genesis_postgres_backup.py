@@ -138,9 +138,10 @@ class PgTools:
             "-d", database,
             "-X", "-A", "-t",
             "-v", "ON_ERROR_STOP=1",
-            "-c", "SET TIME ZONE 'UTC'; " + sql,
+            "-c", sql,
         ]
-        result = self.run(cmd, capture=True)
+        pgoptions = ((os.environ.get("PGOPTIONS") or "") + " -c timezone=UTC").strip()
+        result = self.run(cmd, capture=True, env={"PGOPTIONS": pgoptions})
         return (result.stdout or b"").decode("utf-8", errors="strict").strip()
 
     def create_database(self, database: str) -> None:
