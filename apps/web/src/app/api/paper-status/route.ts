@@ -102,6 +102,7 @@ export async function GET() {
       psql("SELECT paper_status, count(*) FROM paper_runtime_record GROUP BY paper_status ORDER BY paper_status;"),
       psql("SELECT CASE WHEN processed_at IS NULL THEN 'UNPROCESSED' ELSE 'PROCESSED' END, count(*) FROM paper_runtime_intake GROUP BY 1 ORDER BY 1;"),
       psql("SELECT count(*) FILTER (WHERE canonical_outcome IN ('RUNNER','HELD','FADE'))::text || '|' || count(DISTINCT canonical_outcome) FILTER (WHERE canonical_outcome IN ('RUNNER','HELD','FADE'))::text || '|' || COALESCE(min(decided_at)::text,'') || '|' || COALESCE(max(decided_at)::text,'') FROM paper_prospective_candidate;"),
+      psql("SELECT COALESCE(max(sample_count),0) FROM market_pattern_outcome_distributions WHERE status='CALIBRATED_EMPIRICAL';").catch(() => "0"),
     ]);
     const [producerVersion, prospectiveStartedAt] = epochRaw ? epochRaw.split("|", 2) : [null, null];
     const outcomes = parseCountRows(outcomeRaw), shadow = parseCountRows(shadowRaw), paper = parseCountRows(paperRaw), intake = parseCountRows(intakeRaw);
