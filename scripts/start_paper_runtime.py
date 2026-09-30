@@ -56,6 +56,82 @@ def _alive(pid: int) -> bool:
         return False
 
 
+def _windows_process_started_at(pid: int) -> datetime | None:
+    """Return native Windows process creation time for this exact PID instance."""
+    if os.name != "nt" or pid <= 0:
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetProcessTimes.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+        ]
+        kernel32.GetProcessTimes.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        if not handle:
+            return None
+        try:
+            created = wintypes.FILETIME()
+            exited = wintypes.FILETIME()
+            kernel = wintypes.FILETIME()
+            user = wintypes.FILETIME()
+            if not kernel32.GetProcessTimes(
+                handle,
+                ctypes.byref(created),
+                ctypes.byref(exited),
+                ctypes.byref(kernel),
+                ctypes.byref(user),
+            ):
+                return None
+            ticks = (int(created.dwHighDateTime) << 32) | int(created.dwLowDateTime)
+            unix_seconds = (ticks - 116444736000000000) / 10_000_000
+            return datetime.fromtimestamp(unix_seconds, tz=timezone.utc)
+        finally:
+            kernel32.CloseHandle(handle)
+    except (AttributeError, OSError, OverflowError, ValueError):
+        return None
+
+
+def _legacy_supervisor_instance_identity(pid: int, name: str, logs: Path) -> bool:
+    """Prove a pre-token supervisor by PID + state + log + native creation time."""
+    if os.name != "nt" or pid <= 0 or name not in WORKERS:
+        return False
+    state_path = logs / f"runtime-state-{name}.json"
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+    if not isinstance(state, dict):
+        return False
+    if state.get("service") != name or int(state.get("supervisor_pid") or 0) != int(pid):
+        return False
+    recorded = _parse_utc(state.get("supervisor_started_at"))
+    actual = _windows_process_started_at(pid)
+    if recorded is None or actual is None:
+        return False
+    # run_genesis_service records whole-second UTC immediately after Python starts.
+    if abs((actual - recorded).total_seconds()) > 5.0:
+        return False
+    log_path = logs / f"{name}.log"
+    try:
+        log_text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    stamp = recorded.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return f"[{stamp}] start pid={int(pid)}" in log_text
+
+
 def _windows_supervisor_identity(pid: int, name: str) -> bool:
     """Prove a live Windows PID is this exact Genesis paper supervisor."""
     if os.name != "nt" or pid <= 0 or name not in WORKERS:

@@ -26,6 +26,7 @@ from scripts.start_paper_runtime import (  # noqa: E402
     WORKERS,
     _alive,
     _known_pids,
+    _legacy_supervisor_instance_identity,
     _owned_supervisor,
     _windows_supervisor_identity,
     _write_pids,
@@ -119,7 +120,9 @@ def _cleanup_proven_orphan(name: str, pid: int) -> None:
     """Remove only a live PID whose Windows command line proves exact Genesis ownership."""
     if not _alive(pid):
         return
-    if not _windows_supervisor_identity(pid, name):
+    command_identity = _windows_supervisor_identity(pid, name)
+    legacy_instance_identity = _legacy_supervisor_instance_identity(pid, name, LOGS)
+    if not (command_identity or legacy_instance_identity):
         raise RuntimeError(f"live_unowned_supervisor_identity_not_proven:{name}:{pid}")
     print(
         f"[recovery] cleaning proven orphaned Genesis supervisor {name} pid={pid}...",
