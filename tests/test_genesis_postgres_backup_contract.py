@@ -96,7 +96,7 @@ def test_local_backup_discovers_actual_container_network_and_ip():
     assert "def _discover_docker_endpoint" in source
     assert '"docker",' in source
     assert '"inspect",' in source
-    assert '"{{json .NetworkSettings.Networks}}"' in source
+    assert '"{{json .State}}|{{json .NetworkSettings.Networks}}"' in source
     assert "container_has_no_networks" in source
     assert "container_has_no_ipv4_endpoint" in source
     assert "self.network, self.db_host = selected" in source
