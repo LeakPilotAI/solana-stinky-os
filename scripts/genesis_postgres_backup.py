@@ -7,6 +7,7 @@ temporary database, compares deterministic evidence manifests, and drops it.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import json
 import os
@@ -23,6 +24,8 @@ ROOT = Path(__file__).resolve().parent.parent
 API_SRC = ROOT / "services" / "api" / "src"
 if str(API_SRC) not in sys.path:
     sys.path.insert(0, str(API_SRC))
+
+import asyncpg  # noqa: E402
 
 from stinky_api.paper_evidence_json import content_sha256  # noqa: E402
 from stinky_api.paper_policy_identity import validated_policy_identity  # noqa: E402
@@ -90,22 +93,16 @@ class PgTools:
         container: str = "stinky-postgres",
         host: str = "127.0.0.1",
         port: int = 5432,
+        password: str | None = None,
     ) -> None:
         self.mode = mode
         self.user = user
         self.container = container
         self.host = host
         self.port = int(port)
+        self.password = password or os.environ.get("PGPASSWORD") or user
         if mode not in {"docker", "direct"}:
             raise BackupError("unsupported_mode")
-
-    def _tool(self, tool: str, *, interactive: bool = False) -> list[str]:
-        if self.mode == "docker":
-            cmd = ["docker", "exec"]
-            if interactive:
-                cmd.append("-i")
-            return [*cmd, self.container, tool]
-        return [tool, "-h", self.host, "-p", str(self.port)]
 
     def run(
         self,
@@ -120,123 +117,143 @@ class PgTools:
         merged = os.environ.copy()
         if env:
             merged.update(env)
-        result = subprocess.run(
-            cmd,
-            stdin=stdin,
-            stdout=stdout if stdout is not None else (subprocess.PIPE if capture else None),
-            stderr=subprocess.PIPE,
-            text=False,
-            env=merged,
-            check=False,
-            timeout=timeout,
-        )
+        try:
+            result = subprocess.run(
+                cmd,
+                stdin=stdin,
+                stdout=stdout if stdout is not None else (subprocess.PIPE if capture else None),
+                stderr=subprocess.PIPE,
+                text=False,
+                env=merged,
+                check=False,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise BackupError(f"command_timeout:{cmd[0]}:{timeout}") from exc
         if result.returncode != 0:
             err = (result.stderr or b"").decode("utf-8", errors="replace")[-4000:]
             raise BackupError(f"command_failed:{cmd[0]}:{result.returncode}:{err}")
         return result
 
-    def psql(self, database: str, sql: str) -> str:
-        database = _safe_db_name(database)
-        cmd = [
-            *self._tool("psql"),
-            "-U", self.user,
-            "-d", database,
-            "-X", "-A", "-t",
-            "-v", "ON_ERROR_STOP=1",
-            "-c", sql,
-        ]
-        pgoptions = ((os.environ.get("PGOPTIONS") or "") + " -c timezone=UTC").strip()
-        result = self.run(
-            cmd,
-            capture=True,
-            env={"PGOPTIONS": pgoptions},
-            timeout=METADATA_TIMEOUT_SECONDS,
+    async def _connect(self, database: str):
+        return await asyncpg.connect(
+            host=self.host,
+            port=self.port,
+            user=self.user,
+            password=self.password,
+            database=_safe_db_name(database),
+            timeout=15,
+            command_timeout=METADATA_TIMEOUT_SECONDS,
+            server_settings={"timezone": "UTC"},
         )
-        return (result.stdout or b"").decode("utf-8", errors="strict").strip()
+
+    async def _fetch_text(self, database: str, sql: str) -> str:
+        conn = await self._connect(database)
+        try:
+            rows = await conn.fetch(sql)
+            values = []
+            for row in rows:
+                value = row[0] if len(row) else None
+                if value is not None:
+                    values.append(str(value))
+            return "\n".join(values).strip()
+        finally:
+            await conn.close()
+
+    def psql(self, database: str, sql: str) -> str:
+        try:
+            return asyncio.run(self._fetch_text(database, sql))
+        except (asyncpg.PostgresError, OSError, TimeoutError) as exc:
+            raise BackupError(f"database_query_failed:{database}:{type(exc).__name__}:{exc}") from exc
+
+    async def _execute(self, database: str, sql: str) -> None:
+        conn = await self._connect(database)
+        try:
+            await conn.execute(sql)
+        finally:
+            await conn.close()
 
     def create_database(self, database: str) -> None:
         database = _safe_db_name(database)
-        cmd = [*self._tool("createdb"), "-U", self.user, database]
-        self.run(cmd, timeout=METADATA_TIMEOUT_SECONDS)
+        try:
+            asyncio.run(self._execute("postgres", f"CREATE DATABASE {_quoted_ident(database)}"))
+        except (asyncpg.PostgresError, OSError, TimeoutError) as exc:
+            raise BackupError(f"create_database_failed:{database}:{exc}") from exc
 
     def drop_database(self, database: str) -> None:
         database = _safe_db_name(database)
-        cmd = [*self._tool("dropdb"), "-U", self.user, "--if-exists", database]
-        self.run(cmd, timeout=METADATA_TIMEOUT_SECONDS)
+        try:
+            asyncio.run(self._execute("postgres", f"DROP DATABASE IF EXISTS {_quoted_ident(database)} WITH (FORCE)"))
+        except (asyncpg.PostgresError, OSError, TimeoutError) as exc:
+            raise BackupError(f"drop_database_failed:{database}:{exc}") from exc
+
+    def _client_tool(self, tool: str) -> list[str]:
+        if self.mode == "direct":
+            return [tool, "-h", self.host, "-p", str(self.port)]
+        # Avoid docker exec into the live database container. A short-lived
+        # PostgreSQL client container connects to the host-mapped DB port.
+        return [
+            "docker", "run", "--rm", "-i",
+            "-e", f"PGPASSWORD={self.password}",
+            "postgres:16",
+            tool,
+            "-h", "host.docker.internal",
+            "-p", str(self.port),
+        ]
 
     def dump(self, database: str, path: Path) -> None:
         database = _safe_db_name(database)
         cmd = [
-            *self._tool("pg_dump"),
+            *self._client_tool("pg_dump"),
             "-U", self.user,
             "-d", database,
             "--format=custom",
             "--no-owner",
             "--no-privileges",
         ]
+        env = {"PGPASSWORD": self.password}
         with path.open("wb") as out:
-            self.run(cmd, stdout=out, timeout=BACKUP_COMMAND_TIMEOUT_SECONDS)
+            self.run(cmd, stdout=out, env=env, timeout=BACKUP_COMMAND_TIMEOUT_SECONDS)
 
     def restore(self, database: str, path: Path) -> None:
         database = _safe_db_name(database)
         cmd = [
-            *self._tool("pg_restore", interactive=self.mode == "docker"),
+            *self._client_tool("pg_restore"),
             "-U", self.user,
             "-d", database,
             "--exit-on-error",
             "--no-owner",
             "--no-privileges",
         ]
+        env = {"PGPASSWORD": self.password}
         with path.open("rb") as source:
-            self.run(cmd, stdin=source, timeout=BACKUP_COMMAND_TIMEOUT_SECONDS)
+            self.run(cmd, stdin=source, env=env, timeout=BACKUP_COMMAND_TIMEOUT_SECONDS)
 
-    def stream_digest(self, database: str, sql: str, *, label: str) -> tuple[int, str]:
-        """Hash query output incrementally so large evidence tables never fill RAM."""
-        database = _safe_db_name(database)
-        cmd = [
-            *self._tool("psql"),
-            "-U", self.user,
-            "-d", database,
-            "-X", "-A", "-t",
-            "-q",
-            "-v", "ON_ERROR_STOP=1",
-            "-c", sql,
-        ]
-        env = os.environ.copy()
-        env["PGOPTIONS"] = ((env.get("PGOPTIONS") or "") + " -c timezone=UTC").strip()
-        proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-        )
-        if proc.stdout is None:
-            proc.kill()
-            raise BackupError(f"stream_stdout_unavailable:{label}")
+    async def _stream_digest_async(self, database: str, sql: str, label: str) -> tuple[int, str]:
+        conn = await self._connect(database)
         digest = hashlib.sha256()
         row_count = 0
         try:
-            for raw in proc.stdout:
-                line = raw.rstrip(b"\r\n")
-                if not line:
-                    continue
-                digest.update(line)
-                digest.update(b"\n")
-                row_count += 1
-                if row_count % STREAM_PROGRESS_ROWS == 0:
-                    print(f"  [manifest] {label}: {row_count:,} rows hashed", flush=True)
-            stderr = proc.stderr.read() if proc.stderr is not None else b""
-            returncode = proc.wait()
-        except BaseException:
-            if proc.poll() is None:
-                proc.kill()
-                proc.wait()
-            raise
-        if returncode != 0:
-            err = (stderr or b"").decode("utf-8", errors="replace")[-4000:]
-            raise BackupError(f"stream_command_failed:{label}:{returncode}:{err}")
+            async with conn.transaction():
+                async for row in conn.cursor(sql, prefetch=2000):
+                    value = row[0] if len(row) else None
+                    if value is None:
+                        continue
+                    raw = str(value).encode("utf-8")
+                    digest.update(raw)
+                    digest.update(b"\n")
+                    row_count += 1
+                    if row_count % STREAM_PROGRESS_ROWS == 0:
+                        print(f"  [manifest] {label}: {row_count:,} rows hashed", flush=True)
+        finally:
+            await conn.close()
         return row_count, digest.hexdigest()
+
+    def stream_digest(self, database: str, sql: str, *, label: str) -> tuple[int, str]:
+        try:
+            return asyncio.run(self._stream_digest_async(database, sql, label))
+        except (asyncpg.PostgresError, OSError, TimeoutError) as exc:
+            raise BackupError(f"stream_query_failed:{label}:{type(exc).__name__}:{exc}") from exc
 
     def has_extension(self, database: str, extension: str) -> bool:
         if not re.fullmatch(r"[A-Za-z0-9_]+", extension):
@@ -244,18 +261,14 @@ class PgTools:
         return self.psql(
             database,
             f"SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname='{extension}');",
-        ) == "t"
+        ) == "True"
 
     def has_timescaledb(self, database: str) -> bool:
-        return self.psql(
-            database,
-            "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname='timescaledb');",
-        ) == "t"
-
+        return self.has_extension(database, "timescaledb")
 
 def _table_exists(pg: PgTools, database: str, table: str) -> bool:
     value = pg.psql(database, f"SELECT to_regclass('public.{table}') IS NOT NULL;")
-    return value == "t"
+    return value == "True"
 
 
 def _primary_key_columns(pg: PgTools, database: str, table: str) -> list[str]:
@@ -577,6 +590,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=5432)
     parser.add_argument("--user", default="stinky")
+    parser.add_argument("--password", default=None)
     parser.add_argument("--database", default="stinky")
     parser.add_argument("--output-dir", default=str(ROOT / "backups"))
     return parser
@@ -590,6 +604,7 @@ def main() -> int:
         container=args.container,
         host=args.host,
         port=args.port,
+        password=args.password,
     )
     try:
         result = certify(pg, database=args.database, output_dir=Path(args.output_dir))

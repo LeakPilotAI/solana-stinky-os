@@ -51,6 +51,8 @@ def test_backup_launcher_uses_canonical_container_and_database():
     assert "--container stinky-postgres" in source
     assert "--database stinky" in source
     assert "--mode docker" in source
+    assert "--host 127.0.0.1" in source
+    assert "--port 5433" in source
 
 
 def test_large_table_manifest_streams_instead_of_buffering_every_row():
@@ -63,3 +65,13 @@ def test_large_table_manifest_streams_instead_of_buffering_every_row():
     assert "[manifest]" in source
     assert "BACKUP_COMMAND_TIMEOUT_SECONDS" in source
     assert "ordered_row_sha256_v1" in source
+
+
+def test_local_backup_avoids_docker_exec_transport_for_database_queries():
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert "import asyncpg" in source
+    assert "asyncpg.connect(" in source
+    assert '"docker", "exec"' not in source
+    assert '"docker", "run", "--rm", "-i"' in source
+    assert '"host.docker.internal"' in source
+    assert "command_timeout=METADATA_TIMEOUT_SECONDS" in source
