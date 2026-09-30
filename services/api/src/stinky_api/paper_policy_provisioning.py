@@ -125,8 +125,46 @@ def _evidence_provenance(candidate: dict[str, Any], readiness: dict[str, Any]) -
         return None
     checks = readiness.get("checks")
     criteria = readiness.get("criteria")
-    if not isinstance(checks, dict) or not checks or not all(v is True for v in checks.values()) or not isinstance(criteria, dict) or not criteria:
+    comparison_evidence = readiness.get("comparison_evidence")
+    comparison_evidence_sha256 = str(readiness.get("comparison_evidence_sha256") or "").strip()
+    if (
+        not isinstance(checks, dict) or not checks or not all(v is True for v in checks.values())
+        or not isinstance(criteria, dict) or not criteria
+        or not isinstance(comparison_evidence, dict)
+        or len(comparison_evidence_sha256) != 64
+    ):
         return None
+    try:
+        if content_sha256(comparison_evidence) != comparison_evidence_sha256:
+            return None
+        from stinky_api.prospective_score_candidate_readiness import assess_post_candidate_readiness
+        recomputed = assess_post_candidate_readiness(comparison_evidence, **criteria)
+    except (TypeError, ValueError, OverflowError, RecursionError):
+        return None
+    if (
+        recomputed.get("readiness_status") != "READY_FOR_PAPER_POLICY_REVIEW"
+        or recomputed.get("checks") != checks
+        or recomputed.get("criteria") != criteria
+        or recomputed.get("comparison_evidence_sha256") != comparison_evidence_sha256
+    ):
+        return None
+    if (
+        comparison_evidence.get("candidate_version") != version
+        or comparison_evidence.get("evidence_sha256") != sha
+        or comparison_evidence.get("candidate_cutoff") != comparison_cutoff
+        or comparison_evidence.get("as_of") != comparison_as_of
+    ):
+        return None
+    for key in (
+        "sample_count", "runner_count", "negative_count",
+        "unknown_score_count", "unknown_score_rate",
+        "actionable_score_count", "actionable_score_rate",
+        "non_actionable_numeric_score_count", "non_actionable_numeric_score_rate",
+        "score_threshold_metrics", "actionable_score_threshold_metrics",
+        "actual_alert_admission_metrics",
+    ):
+        if readiness.get(key) != comparison_evidence.get(key):
+            return None
     frozen = {
         "mode": "EVIDENCE_BACKED_SCORE_CANDIDATE",
         "evidence_backed": True,
@@ -134,6 +172,7 @@ def _evidence_provenance(candidate: dict[str, Any], readiness: dict[str, Any]) -
         "candidate_evidence_sha256": sha,
         "candidate_cutoff": cutoff,
         "comparison_as_of": comparison_as_of,
+        "comparison_evidence_sha256": comparison_evidence_sha256,
         "readiness_criteria": criteria,
         "readiness_checks": checks,
     }
