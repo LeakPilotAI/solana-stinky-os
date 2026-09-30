@@ -405,3 +405,15 @@ def test_windows_runtime_installs_connection_reset_handlers():
         assert "_install_windows_connection_reset_handler()" in source
         assert "winerror == 10054" in source
         assert "default_exception_handler(context)" in source
+
+
+def test_command_center_surfaces_prospective_paper_evidence_without_inventing_policy():
+    root = Path(__file__).resolve().parents[1]
+    route = (root / "apps" / "web" / "src" / "app" / "api" / "paper-status" / "route.ts").read_text(encoding="utf-8")
+    panel = (root / "apps" / "web" / "src" / "components" / "command-center" / "PaperCalibrationPanel.tsx").read_text(encoding="utf-8")
+    assert "prospective_evidence" in route
+    assert "represented_outcome_classes" in route
+    assert "REQUIRES_EXPLICIT_SUFFICIENCY_CRITERIA" in route
+    assert "thresholds_invented: false" in route
+    assert "Prospective evidence" in panel
+    assert "Policy remains intentionally unset until explicit evidence-sufficiency criteria are supplied." in panel
