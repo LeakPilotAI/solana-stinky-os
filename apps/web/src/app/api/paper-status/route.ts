@@ -81,12 +81,11 @@ async function workerHealth() {
 
 async function policyStatus() {
   try {
-    const raw = await psql("SELECT r.policy_version,r.horizon,r.paper_notional_usd,r.policy_sha256,a.activated_at::text FROM paper_policy_active a JOIN paper_policy_registry r ON r.policy_version=a.policy_version WHERE a.singleton=TRUE LIMIT 1;");
-    if (!raw) return { status: "NOT_SET", version: null, horizon: null, notional_usd: null, policy_sha256: null, activated_at: null };
-    const [version, horizon, notional, sha, activatedAt] = raw.split("|", 5);
-    return { status: "ACTIVE", version: version || null, horizon: horizon || null, notional_usd: notional ? Number(notional) : null, policy_sha256: sha || null, activated_at: activatedAt || null };
+    const raw = await psql("SELECT json_build_object('status','ACTIVE','version',r.policy_version,'horizon',r.horizon,'notional_usd',r.paper_notional_usd,'policy_sha256',r.policy_sha256,'provenance',CASE WHEN r.policy_payload->'provenance'->>'evidence_backed'='true' THEN 'EVIDENCE_BACKED' WHEN r.policy_payload->'provenance'->>'evidence_backed'='false' THEN 'MANUAL' ELSE 'UNKNOWN' END,'provenance_mode',COALESCE(r.policy_payload->'provenance'->>'mode','UNKNOWN'),'activated_at',a.activated_at)::text FROM paper_policy_active a JOIN paper_policy_registry r ON r.policy_version=a.policy_version WHERE a.singleton=TRUE LIMIT 1;");
+    if (!raw) return { status: "NOT_SET", version: null, horizon: null, notional_usd: null, policy_sha256: null, provenance: null, provenance_mode: null, activated_at: null };
+    return JSON.parse(raw);
   } catch {
-    return { status: "UNKNOWN", version: null, horizon: null, notional_usd: null, policy_sha256: null, activated_at: null };
+    return { status: "UNKNOWN", version: null, horizon: null, notional_usd: null, policy_sha256: null, provenance: null, provenance_mode: null, activated_at: null };
   }
 }
 
