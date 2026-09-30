@@ -101,3 +101,17 @@ def test_local_backup_discovers_actual_container_network_and_ip():
     assert "container_has_no_ipv4_endpoint" in source
     assert "self.network, self.db_host = selected" in source
     assert "[backup] discovered Docker endpoint:" in source
+
+
+def test_postgres_service_restarts_after_docker_desktop_restart():
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    postgres = compose.split("  postgres:", 1)[1].split("\n  redis:", 1)[0]
+    assert "restart: unless-stopped" in postgres
+
+
+def test_stopped_source_container_fails_cleanly_before_endpoint_discovery():
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert "source_container_not_running:" in source
+    assert '"{{json .State}}|{{json .NetworkSettings.Networks}}"' in source
+    main = source.split("def main() -> int:", 1)[1]
+    assert main.index("try:") < main.index("pg = PgTools(")

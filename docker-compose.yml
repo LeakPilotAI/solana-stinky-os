@@ -10,6 +10,7 @@ services:
     container_name: stinky-postgres
     mem_limit: 1536m
     cpus: "1.0"
+    restart: unless-stopped
     environment:
       POSTGRES_USER: stinky
       POSTGRES_PASSWORD: stinky
