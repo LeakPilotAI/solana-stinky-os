@@ -1,3 +1,4 @@
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE TABLE events(event_id text PRIMARY KEY,event_type text,payload jsonb);
 CREATE TABLE market_snapshots(snapshot_id text PRIMARY KEY,mint text,captured_at timestamptz,price_usd numeric,source text);
 CREATE TABLE market_inspections(id text PRIMARY KEY,mint text,inspected_at timestamptz,stinky_score double precision,evidence jsonb);

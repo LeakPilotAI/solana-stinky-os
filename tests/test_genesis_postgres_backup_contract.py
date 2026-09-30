@@ -51,3 +51,15 @@ def test_backup_launcher_uses_canonical_container_and_database():
     assert "--container stinky-postgres" in source
     assert "--database stinky" in source
     assert "--mode docker" in source
+
+
+def test_large_table_manifest_streams_instead_of_buffering_every_row():
+    source = SCRIPT.read_text(encoding="utf-8")
+    build_manifest = source.split("def build_manifest", 1)[1].split("def _write_json", 1)[0]
+    assert "_table_digest(pg, database, table)" in build_manifest
+    assert "rows = _json_rows(pg, database, table)" not in build_manifest
+    assert "def stream_digest" in source
+    assert "STREAM_PROGRESS_ROWS = 100_000" in source
+    assert "[manifest]" in source
+    assert "BACKUP_COMMAND_TIMEOUT_SECONDS" in source
+    assert "ordered_row_sha256_v1" in source
