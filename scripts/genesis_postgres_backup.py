@@ -411,6 +411,9 @@ def certify(
     dump_sha = _sha_file(dump_path)
 
     restore_created = False
+    restored_manifest: dict[str, Any] | None = None
+    match = False
+    restore_error: BaseException | None = None
     try:
         pg.create_database(restore_db)
         restore_created = True
@@ -423,29 +426,40 @@ def certify(
         restored_manifest = build_manifest(pg, restore_db)
         _write_json(restored_manifest_path, restored_manifest)
         match = source_manifest == restored_manifest
-        certification = {
-            "status": "PASS" if match else "FAIL",
-            "format_version": FORMAT_VERSION,
-            "certified_at": _utc_stamp(),
-            "source_database": database,
-            "temporary_restore_database": restore_db,
-            "source_database_modified": False,
-            "restored_over_source": False,
-            "temporary_restore_dropped": True,
-            "dump_file": str(dump_path),
-            "dump_sha256": dump_sha,
-            "source_manifest": str(source_manifest_path),
-            "restored_manifest": str(restored_manifest_path),
-            "manifest_match": match,
-            "required_tables": list(REQUIRED_TABLES),
-        }
-        _write_json(certification_path, certification)
         if not match:
             raise BackupError("restored_manifest_mismatch")
-        return certification
+    except BaseException as exc:
+        restore_error = exc
     finally:
         if restore_created:
-            pg.drop_database(restore_db)
+            try:
+                pg.drop_database(restore_db)
+            except BaseException as drop_exc:
+                if restore_error is None:
+                    restore_error = drop_exc
+                else:
+                    restore_error = BackupError(f"{restore_error};drop_failed:{drop_exc}")
+
+    certification = {
+        "status": "PASS" if restore_error is None and match else "FAIL",
+        "format_version": FORMAT_VERSION,
+        "certified_at": _utc_stamp(),
+        "source_database": database,
+        "temporary_restore_database": restore_db,
+        "source_database_modified": False,
+        "restored_over_source": False,
+        "temporary_restore_dropped": restore_created and restore_error is None,
+        "dump_file": str(dump_path),
+        "dump_sha256": dump_sha,
+        "source_manifest": str(source_manifest_path),
+        "restored_manifest": str(restored_manifest_path),
+        "manifest_match": match,
+        "required_tables": list(REQUIRED_TABLES),
+    }
+    _write_json(certification_path, certification)
+    if restore_error is not None:
+        raise BackupError(str(restore_error))
+    return certification
 
 
 def _parser() -> argparse.ArgumentParser:
