@@ -157,16 +157,32 @@ class PgTools:
                 "inspect",
                 self.container,
                 "--format",
-                "{{json .NetworkSettings.Networks}}",
+                "{{json .State}}|{{json .NetworkSettings.Networks}}",
             ],
             capture=True,
             timeout=METADATA_TIMEOUT_SECONDS,
         )
         raw = (result.stdout or b"").decode("utf-8", errors="strict").strip()
         try:
-            networks = json.loads(raw)
-        except json.JSONDecodeError as exc:
+            state_raw, networks_raw = raw.split("|", 1)
+            state = json.loads(state_raw)
+            networks = json.loads(networks_raw)
+        except (ValueError, json.JSONDecodeError) as exc:
             raise BackupError("invalid_container_network_inspect") from exc
+        if not isinstance(state, dict):
+            raise BackupError("invalid_container_state_inspect")
+        if state.get("Running") is not True:
+            status = str(state.get("Status") or "unknown")
+            health = state.get("Health")
+            health_status = (
+                str(health.get("Status") or "unknown")
+                if isinstance(health, dict)
+                else "none"
+            )
+            raise BackupError(
+                f"source_container_not_running:{self.container}:"
+                f"status={status}:health={health_status}"
+            )
         if not isinstance(networks, dict) or not networks:
             raise BackupError("container_has_no_networks")
 
@@ -816,18 +832,18 @@ def _parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = _parser().parse_args()
-    pg = PgTools(
-        mode=args.mode,
-        user=args.user,
-        container=args.container,
-        host=args.host,
-        port=args.port,
-        password=args.password,
-        network=args.network,
-        db_host=args.db_host,
-        discover_container_endpoint=args.discover_container_endpoint,
-    )
     try:
+        pg = PgTools(
+            mode=args.mode,
+            user=args.user,
+            container=args.container,
+            host=args.host,
+            port=args.port,
+            password=args.password,
+            network=args.network,
+            db_host=args.db_host,
+            discover_container_endpoint=args.discover_container_endpoint,
+        )
         result = certify(pg, database=args.database, output_dir=Path(args.output_dir))
     except (BackupError, OSError, subprocess.SubprocessError) as exc:
         print(json.dumps({

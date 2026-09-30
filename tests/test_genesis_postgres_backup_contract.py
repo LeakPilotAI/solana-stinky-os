@@ -96,8 +96,35 @@ def test_local_backup_discovers_actual_container_network_and_ip():
     assert "def _discover_docker_endpoint" in source
     assert '"docker",' in source
     assert '"inspect",' in source
-    assert '"{{json .NetworkSettings.Networks}}"' in source
+    assert '"{{json .State}}|{{json .NetworkSettings.Networks}}"' in source
     assert "container_has_no_networks" in source
     assert "container_has_no_ipv4_endpoint" in source
     assert "self.network, self.db_host = selected" in source
     assert "[backup] discovered Docker endpoint:" in source
+
+
+def test_postgres_service_restarts_after_docker_desktop_restart():
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    postgres = compose.split("  postgres:", 1)[1].split("\n  redis:", 1)[0]
+    assert "restart: unless-stopped" in postgres
+
+
+def test_stopped_source_container_fails_cleanly_before_endpoint_discovery():
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert "source_container_not_running:" in source
+    assert '"{{json .State}}|{{json .NetworkSettings.Networks}}"' in source
+    main = source.split("def main() -> int:", 1)[1]
+    assert main.index("try:") < main.index("pg = PgTools(")
+
+
+def test_backup_launcher_self_starts_only_postgres_and_waits_for_health():
+    source = (ROOT / "Backup-Genesis.cmd").read_text(encoding="utf-8")
+    assert "docker version >nul 2>nul" in source
+    assert "docker compose -p project-genesis up -d postgres" in source
+    assert "docker compose -p project-genesis up -d" not in source.replace(
+        "docker compose -p project-genesis up -d postgres", ""
+    )
+    assert "waiting for stinky-postgres to become healthy" in source
+    assert ".State.Health.Status" in source
+    assert "postgres_not_healthy" in source
+    assert "docker logs --tail 80 stinky-postgres" in source
