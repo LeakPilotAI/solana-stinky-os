@@ -3273,6 +3273,58 @@ async def load_operator_snapshot(session: AsyncSession) -> dict[str, Any]:
     }
 
 
+async def load_observation_snapshot(session: AsyncSession) -> dict[str, Any]:
+    """Bounded hydration for the browser Investigations table.
+
+    The table only consumes investigations/decisions plus stored market ticks.
+    Keep unrelated research ledgers (including Discord delivery history) off
+    this interactive path, and cap the cohort/ticks so database growth cannot
+    turn tab navigation into a full-corpus hydration.
+    """
+    def _clean(row: Any) -> dict[str, Any]:
+        d = dict(row)
+        for k, v in list(d.items()):
+            if hasattr(v, "isoformat"):
+                d[k] = v.isoformat()
+        return d
+
+    failed_layers: list[str] = []
+
+    try:
+        investigations_raw = (await session.execute(text(
+            "SELECT * FROM (SELECT mint, gate1_at, discovered_at, protocol, volume_5m_at_gate, liquidity_at_gate, market_cap_at_gate, price_at_gate, pair_identifier, creator, gate_decision, investigation_status, correlation_id, row FROM intelligence_investigations ORDER BY discovered_at DESC NULLS LAST LIMIT 200) q ORDER BY discovered_at ASC NULLS FIRST"
+        ))).mappings().all()
+        investigations = [_clean(r) for r in investigations_raw]
+    except Exception:
+        failed_layers.append("investigations")
+        investigations = []
+
+    mints = [str(row.get("mint") or "") for row in investigations if row.get("mint")]
+    if not mints:
+        return {
+            "investigations": investigations,
+            "decisions": [],
+            "market_ticks": [],
+            "_hydration_failed_layers": failed_layers,
+        }
+
+    try:
+        ticks_raw = (await session.execute(text(
+            "SELECT mint, observed_at, source, volume_m5_usd, liquidity_usd, price_usd, market_cap_usd, fdv_usd, buy_sell_ratio, txns, pair_address, dex_id, row FROM (SELECT mo.*, row_number() OVER (PARTITION BY mint ORDER BY observed_at DESC) AS rn FROM market_observations mo WHERE mint = ANY(:mints)) q WHERE rn <= 50 ORDER BY observed_at ASC"
+        ), {"mints": mints})).mappings().all()
+        ticks = [_clean(r) for r in ticks_raw]
+    except Exception:
+        failed_layers.append("market_ticks")
+        ticks = []
+
+    return {
+        "investigations": investigations,
+        "decisions": [],
+        "market_ticks": ticks,
+        "_hydration_failed_layers": failed_layers,
+    }
+
+
 async def load_quality_snapshot(session: AsyncSession) -> dict[str, Any]:
     """Bounded hydration for the live quality-dip panel.
 
