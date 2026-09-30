@@ -4,10 +4,10 @@ import json
 from scripts import start_paper_runtime as starter
 
 
-def _state(tmp_path, *, name="paper-runtime", pid=123, phase="SUPERVISING", as_of=None):
+def _state(tmp_path, *, name="paper-runtime", state_service=None, pid=123, phase="SUPERVISING", as_of=None):
     logs = tmp_path
     payload = {
-        "service": name,
+        "service": state_service or name,
         "supervisor_pid": pid,
         "supervisor_phase": phase,
         "as_of": as_of or "2026-09-30T07:00:00Z",
@@ -25,7 +25,7 @@ def test_owned_supervisor_requires_matching_fresh_identity(monkeypatch, tmp_path
     wrong_pid = _state(tmp_path, pid=456)
     assert not starter._owned_supervisor(123, "paper-runtime", wrong_pid, now=now)
 
-    wrong_service = _state(tmp_path, name="paper-intake-producer", pid=123)
+    wrong_service = _state(tmp_path, name="paper-runtime", state_service="paper-intake-producer", pid=123)
     assert not starter._owned_supervisor(123, "paper-runtime", wrong_service, now=now)
 
 
