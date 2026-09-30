@@ -28,6 +28,8 @@ from scripts.start_paper_runtime import (  # noqa: E402
     _known_pids,
     _legacy_supervisor_instance_identity,
     _owned_supervisor,
+    _parse_utc,
+    _windows_process_started_at,
     _windows_supervisor_identity,
     _write_pids,
 )
@@ -153,6 +155,23 @@ def _cleanup_proven_orphan(name: str, pid: int) -> None:
     raise RuntimeError(f"proven_orphan_still_alive:{name}:{pid}")
 
 
+def _proven_reused_pid(name: str, pid: int) -> bool:
+    """Prove the recorded supervisor exited; never terminate its PID successor."""
+    state = _state(name)
+    if state.get("service") != name or state.get("supervisor_pid") != pid:
+        return False
+    recorded = _parse_utc(state.get("supervisor_started_at"))
+    actual = _windows_process_started_at(pid)
+    if recorded is None or actual is None or (actual - recorded).total_seconds() <= 5:
+        return False
+    try:
+        log = (LOGS / f"{name}.log").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    stamp = recorded.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return f"[{stamp}] start pid={pid}" in log.splitlines()
+
+
 def _reconcile_pid_file() -> dict[str, int]:
     known = _known_pids(PID_FILE)
     changed = False
@@ -170,6 +189,14 @@ def _reconcile_pid_file() -> dict[str, int]:
                 candidates.append(pid)
         for pid in candidates:
             if not _alive(pid):
+                continue
+            if _proven_reused_pid(name, pid):
+                # Native creation time proves this is a later process instance.
+                # Keep the historical state/log evidence; clear only its PID link.
+                if int(known.get(name, 0) or 0) == pid:
+                    known.pop(name, None)
+                    file_pid = 0
+                    changed = True
                 continue
             if _owned_supervisor(pid, name, LOGS):
                 if file_pid != pid:
