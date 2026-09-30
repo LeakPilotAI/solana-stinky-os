@@ -580,7 +580,7 @@ async def book_dips(
     snap = await queries.load_quality_snapshot(session)
     failed_layers = snap.pop("_hydration_failed_layers", [])
     loaded = mem.hydrate(snap)
-    source = "postgres_quality_partial" if failed_layers else "postgres_quality_bounded"
+    source = "postgres_partial" if failed_layers else "postgres"
     degraded = _degraded_book_response(source, loaded)
     if degraded is not None:
         return {
