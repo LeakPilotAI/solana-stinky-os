@@ -65,12 +65,29 @@ async def report_paper_cohort(session, *, policy_sha256: Any = None,
     Deliberately do not filter mismatched versions/provenance away in SQL: a
     conflicting identity under the selected SHA must invalidate the report.
     """
+    selection = _selection_report(policy_sha256, policy_version, evidence_backed,
+                                  as_of, record_limit, release_criteria)
+    if "reasons" in selection:
+        return selection
+    try:
+        rows = (await session.execute(COHORT_SQL, {
+            "policy_sha256": policy_sha256, "as_of": _time(selection["as_of"]),
+            "fetch_limit": record_limit + 1,
+        })).mappings().all()
+    except Exception:
+        return {**selection, "reasons": ["cohort_evidence_unavailable"]}
+    return evaluate_cohort_rows(rows, selection=selection, release_criteria=release_criteria)
+
+
+def _selection_report(policy_sha256, policy_version, evidence_backed,
+                      as_of, record_limit, release_criteria):
     result = {
         "status": "UNKNOWN", "scope": "SINGLE_IMMUTABLE_POLICY_COHORT",
         "selected_policy": {"policy_sha256": policy_sha256, "policy_version": policy_version,
                             "evidence_backed": evidence_backed},
         "release_criteria_supplied": release_criteria is not None,
         "walk_forward_evaluated": False, "walk_forward": None,
+        "evaluation_artifact_produced": False, "evaluation_artifact": None,
         "structurally_eligible": False, "counts": None, "deficits": None,
         **AUTHORITY,
     }
@@ -92,12 +109,21 @@ async def report_paper_cohort(session, *, policy_sha256: Any = None,
     if release_criteria is not None and not isinstance(release_criteria, dict):
         return unknown("release_criteria_must_be_object")
     result.update(as_of=cutoff.isoformat(), record_limit=record_limit)
-    try:
-        rows = (await session.execute(COHORT_SQL, {
-            "policy_sha256": policy_sha256, "as_of": cutoff, "fetch_limit": record_limit + 1,
-        })).mappings().all()
-    except Exception:
-        return unknown("cohort_evidence_unavailable")
+    return result
+
+
+def evaluate_cohort_rows(rows, *, selection, release_criteria, produce_artifact=True):
+    """Pure replay of stored evidence. No database, active policy, or wall clock."""
+    result = deepcopy(selection)
+    policy_sha256 = result["selected_policy"]["policy_sha256"]
+    policy_version = result["selected_policy"]["policy_version"]
+    evidence_backed = result["selected_policy"]["evidence_backed"]
+    cutoff = _time(result["as_of"])
+    record_limit = result["record_limit"]
+
+    def unknown(reason: str, **extra) -> dict:
+        return {**result, "reasons": [reason], **extra}
+
     if len(rows) > record_limit:
         return unknown("cohort_exceeds_record_limit", truncated=True)
     if not rows:
@@ -219,6 +245,15 @@ async def report_paper_cohort(session, *, policy_sha256: Any = None,
         result["walk_forward"] = evaluation
         result["walk_forward_evaluated"] = evaluation["status"] == "OBSERVED"
         result["reasons"] = evaluation.get("missing", [])
+        if result["walk_forward_evaluated"] and produce_artifact:
+            from stinky_api.paper_evaluation_artifact import build_evaluation_artifact
+            try:
+                result["evaluation_artifact"] = build_evaluation_artifact(rows, result, release_criteria)
+                result["evaluation_artifact_produced"] = True
+            except (TypeError, ValueError, OverflowError):
+                return unknown("invalid_evaluation_artifact_content", walk_forward=None,
+                               walk_forward_evaluated=False, evaluation_artifact=None,
+                               evaluation_artifact_produced=False)
         minimum = release_criteria.get("minimum_closed_trades")
         if type(minimum) is int and minimum > 0:
             result["deficits"] = {"closed_simulations_needed": max(0, minimum - len(closed))}

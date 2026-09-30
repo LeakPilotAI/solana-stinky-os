@@ -12,6 +12,9 @@ from math import isfinite
 from typing import Any
 from stinky_api.paper_policy_identity import validated_policy_identity
 
+# Bump when validation, ordering, metrics, or release-result semantics change.
+EVALUATOR_VERSION = "walk-forward-paper-v1"
+
 AUTHORITY = {
     "interpretation": "WALK_FORWARD_PAPER_VALIDATION_ONLY",
     "live_execution": False,
