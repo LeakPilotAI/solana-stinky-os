@@ -34,3 +34,17 @@ def test_live_quality_dips_use_bounded_hydration():
     assert "queries.load_quality_snapshot(session)" in main
     assert "async def load_quality_snapshot" in queries
     assert "rn <= 20" in queries
+
+
+def test_investigations_tab_uses_bounded_observation_hydration():
+    root = Path(__file__).resolve().parents[1]
+    main = (root / "src" / "stinky_api" / "main.py").read_text(encoding="utf-8")
+    queries = (root / "src" / "stinky_api" / "queries.py").read_text(encoding="utf-8")
+    block = main.split('@app.post("/v1/book/observations")', 1)[1].split('@app.post("/v1/book/insights")', 1)[0]
+    assert "queries.load_observation_snapshot(session)" in block
+    assert "_book_memory(payload, session)" not in block
+    assert "async def load_observation_snapshot" in queries
+    observation_loader = queries.split("async def load_observation_snapshot", 1)[1].split("async def load_quality_snapshot", 1)[0]
+    assert "LIMIT 200" in observation_loader
+    assert "rn <= 50" in observation_loader
+    assert "discord_deliveries" not in observation_loader
