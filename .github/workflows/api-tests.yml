@@ -51,4 +51,31 @@ jobs:
         run: python -m compileall -q services/api/src
 
       - name: Run API tests
-        run: python -m pytest -q services/api/tests
+        run: python -m pytest -q services/api/tests tests/test_genesis_postgres_backup_contract.py
+
+      - name: Install PostgreSQL client for isolated backup certification
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Certify full backup and isolated restore
+        env:
+          PGPASSWORD: postgres
+        run: |
+          dropdb --if-exists -h 127.0.0.1 -p 5432 -U postgres genesis_backup_fixture
+          createdb -h 127.0.0.1 -p 5432 -U postgres genesis_backup_fixture
+          psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 5432 -U postgres -d genesis_backup_fixture -f tests/fixtures/genesis_backup_restore_fixture.sql
+          python scripts/genesis_postgres_backup.py certify --mode direct --host 127.0.0.1 --port 5432 --user postgres --database genesis_backup_fixture --output-dir /tmp/genesis-backup-cert
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          files = list(Path("/tmp/genesis-backup-cert").glob("*.certification.json"))
+          assert len(files) == 1, files
+          result = json.loads(files[0].read_text())
+          assert result["status"] == "PASS"
+          assert result["manifest_match"] is True
+          assert result["source_database_modified"] is False
+          assert result["restored_over_source"] is False
+          assert result["temporary_restore_dropped"] is True
+          PY
+          dropdb --if-exists -h 127.0.0.1 -p 5432 -U postgres genesis_backup_fixture
