@@ -102,3 +102,24 @@ test("paper evaluation artifacts are exportable and verified through read-only A
   assert.ok(proxy.includes("automatic_activation: false"));
   assert.ok(proxy.includes("live_execution: false"));
 });
+
+
+test("paper release evaluation request actually sends only explicit criteria", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../src/components/command-center/PaperCohortReport.tsx"), "utf8");
+  assert.ok(source.includes("...(evaluate ? { release_criteria: releaseCriteria() } : {})"));
+  assert.ok(source.includes("onClick={() => load(false)}"));
+  assert.ok(source.includes("onClick={() => load(true)}"));
+});
+
+test("paper status distinguishes immutable provisioned registry from active pointer", () => {
+  const routeSource = fs.readFileSync(path.join(__dirname, "../src/app/api/paper-status/route.ts"), "utf8");
+  const panel = fs.readFileSync(path.join(__dirname, "../src/components/command-center/PaperCalibrationPanel.tsx"), "utf8");
+  assert.ok(routeSource.includes("paper_registry_scope") || routeSource.includes("policy_registry_scope"));
+  assert.ok(routeSource.includes("LATEST_50_IMMUTABLE_POLICIES"));
+  assert.ok(routeSource.includes("THEN 'ACTIVE' ELSE 'PROVISIONED' END"));
+  assert.ok(routeSource.includes("LIMIT 51"));
+  assert.ok(routeSource.includes("provenance_mode"));
+  assert.ok(panel.includes("Paper policy registry — provisioned vs active"));
+  assert.ok(panel.includes("PROVISIONED is immutable registry state only"));
+  assert.ok(panel.includes("Evaluation/review never activates a policy."));
+});
