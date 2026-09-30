@@ -192,6 +192,9 @@ async def load_active_paper_configuration(session) -> dict[str, Any]:
         return {"configured": False, "missing": ["active_paper_policy"], **AUTHORITY}
     payload = row["policy_payload"] if isinstance(row["policy_payload"], dict) else None
     checked = validate_paper_configuration(payload or {})
-    if checked.get("status") != "VALIDATED" or checked.get("policy_sha256") != row["policy_sha256"]:
+    if checked.get("status") != "VALIDATED" or not isinstance(payload, dict):
         return {"configured": False, "missing": ["active_paper_policy_integrity"], **AUTHORITY}
-    return {"configured": True, **checked["configuration"], "policy_sha256": row["policy_sha256"], "activated_at": row["activated_at"], **AUTHORITY}
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    if hashlib.sha256(raw).hexdigest() != row["policy_sha256"]:
+        return {"configured": False, "missing": ["active_paper_policy_integrity"], **AUTHORITY}
+    return {"configured": True, **payload, "policy_sha256": row["policy_sha256"], "activated_at": row["activated_at"], **AUTHORITY}
