@@ -62,6 +62,7 @@ def validate_paper_configuration(config: dict[str, Any]) -> dict[str, Any]:
     if missing:
         return {"status": "UNKNOWN", "missing": missing, **AUTHORITY}
     canonical = {
+        "provenance": {"mode": "MANUAL_OPERATOR_SUPPLIED", "evidence_backed": False},
         "paper_policy": {
             "policy_version": version,
             "horizon": horizon,
@@ -79,11 +80,73 @@ def validate_paper_configuration(config: dict[str, Any]) -> dict[str, Any]:
     return {"status": "VALIDATED", "configuration": canonical, "policy_sha256": hashlib.sha256(raw).hexdigest(), **AUTHORITY}
 
 
-async def provision_paper_policy(session, config: dict[str, Any], *, activate: bool = True) -> dict[str, Any]:
+def _evidence_provenance(candidate: dict[str, Any], readiness: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(candidate, dict) or candidate.get("status") != "PAPER_CANDIDATE_ARTIFACT":
+        return None
+    if not isinstance(readiness, dict) or readiness.get("readiness_status") != "READY_FOR_PAPER_POLICY_REVIEW":
+        return None
+    version = str(candidate.get("candidate_version") or "").strip()
+    sha = str(candidate.get("evidence_sha256") or "").strip()
+    payload = candidate.get("payload")
+    if not version or len(sha) != 64 or not isinstance(payload, dict):
+        return None
+    if readiness.get("candidate_version") != version or readiness.get("evidence_sha256") != sha:
+        return None
+    cutoff = str(payload.get("evaluation_as_of") or "").strip()
+    comparison_cutoff = str(readiness.get("candidate_cutoff") or "").strip()
+    comparison_as_of = str(readiness.get("comparison_as_of") or "").strip()
+    if not cutoff or comparison_cutoff != cutoff or not comparison_as_of:
+        return None
+    checks = readiness.get("checks")
+    criteria = readiness.get("criteria")
+    if not isinstance(checks, dict) or not checks or not all(v is True for v in checks.values()) or not isinstance(criteria, dict):
+        return None
+    frozen = {
+        "mode": "EVIDENCE_BACKED_SCORE_CANDIDATE",
+        "evidence_backed": True,
+        "candidate_version": version,
+        "candidate_evidence_sha256": sha,
+        "candidate_cutoff": cutoff,
+        "comparison_as_of": comparison_as_of,
+        "readiness_criteria": criteria,
+        "readiness_checks": checks,
+    }
+    raw = json.dumps(frozen, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
+    frozen["provenance_sha256"] = hashlib.sha256(raw).hexdigest()
+    return frozen
+
+
+async def provision_evidence_backed_paper_policy(
+    session, config: dict[str, Any], *, candidate: dict[str, Any],
+    readiness: dict[str, Any], activate: bool = False,
+) -> dict[str, Any]:
+    """Provision only when policy provenance is bound to the exact validated candidate chain.
+
+    Activation remains an explicit caller choice and defaults to False.
+    """
+    provenance = _evidence_provenance(candidate, readiness)
+    if provenance is None:
+        return {"status": "BLOCKED", "reason": "invalid_or_mismatched_evidence_provenance", **AUTHORITY}
+    checked = validate_paper_configuration(config)
+    if checked.get("status") != "VALIDATED":
+        return checked
+    bound = dict(checked["configuration"])
+    bound["provenance"] = provenance
+    return await provision_paper_policy(session, bound, activate=activate, _validated_bound=True)
+
+
+async def provision_paper_policy(session, config: dict[str, Any], *, activate: bool = True, _validated_bound: bool = False) -> dict[str, Any]:
     checked = validate_paper_configuration(config)
     if checked.get("status") != "VALIDATED":
         return checked
     canonical = checked["configuration"]
+    if _validated_bound:
+        provenance = config.get("provenance") if isinstance(config, dict) else None
+        if not isinstance(provenance, dict) or provenance.get("mode") != "EVIDENCE_BACKED_SCORE_CANDIDATE" or provenance.get("evidence_backed") is not True:
+            return {"status": "BLOCKED", "reason": "missing_evidence_provenance", **AUTHORITY}
+        canonical["provenance"] = provenance
+        raw = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        checked["policy_sha256"] = hashlib.sha256(raw).hexdigest()
     policy = canonical["paper_policy"]
     assumptions = canonical["execution_assumptions"]
     version = policy["policy_version"]
@@ -116,7 +179,7 @@ async def provision_paper_policy(session, config: dict[str, Any], *, activate: b
         """), {"v": version})
         await session.execute(text("INSERT INTO paper_policy_activation_audit(policy_version,policy_sha256) VALUES (:v,:sha)"), {"v": version, "sha": sha})
     await session.commit()
-    return {"status": "ACTIVE" if activate else "PROVISIONED", "policy_version": version, "policy_sha256": sha, **AUTHORITY}
+    return {"status": "ACTIVE" if activate else "PROVISIONED", "policy_version": version, "policy_sha256": sha, "provenance": canonical.get("provenance"), **AUTHORITY}
 
 
 async def load_active_paper_configuration(session) -> dict[str, Any]:
