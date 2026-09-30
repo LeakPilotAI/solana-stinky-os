@@ -17,7 +17,7 @@ DB_URL = os.getenv("API_TEST_DATABASE_URL")
 
 
 def valid_env():
-    return {
+    env = {
         "STINKY_PAPER_POLICY_VERSION": "paper-policy-explicit-v1",
         "STINKY_PAPER_HORIZON": "1h",
         "STINKY_PAPER_MIN_RUNNER_PROBABILITY": "0.50",
@@ -29,7 +29,14 @@ def valid_env():
         "STINKY_PAPER_EXIT_FEE_BPS": "50",
         "STINKY_PAPER_LATENCY_MS": "750",
         "STINKY_PAPER_NOTIONAL_USD": "20",
+        "STINKY_PAPER_POLICY_SHA256": "a" * 64,
+        "STINKY_PAPER_POLICY_PROVENANCE_JSON": '{"mode":"MANUAL_OPERATOR_SUPPLIED","evidence_backed":false}',
     }
+
+    from stinky_api.paper_policy_provisioning import validate_paper_configuration
+    config = paper_configuration_from_env(env)
+    env["STINKY_PAPER_POLICY_SHA256"] = validate_paper_configuration(config)["policy_sha256"]
+    return env
 
 
 def test_producer_has_no_hidden_policy_defaults():
@@ -45,6 +52,8 @@ def test_explicit_policy_is_accepted_but_hard_caps_notional_at_20():
     result = paper_configuration_from_env(valid_env())
     assert result["configured"] is True
     assert result["paper_notional_usd"] == 20.0
+    assert result["policy_sha256"] == valid_env()["STINKY_PAPER_POLICY_SHA256"]
+    assert result["provenance"]["evidence_backed"] is False
     too_large = valid_env(); too_large["STINKY_PAPER_NOTIONAL_USD"] = "20.01"
     assert paper_configuration_from_env(too_large)["configured"] is False
 
@@ -76,8 +85,11 @@ def test_source_enforces_prospective_epoch_and_separate_later_close_evidence():
 
 def test_launcher_starts_both_prospective_producer_and_paper_worker():
     starter = (ROOT / "scripts/start_paper_runtime.py").read_text(encoding="utf-8")
-    assert "stinky_api.prospective_paper_intake_producer" in starter
-    assert "stinky_api.paper_runtime_worker" in starter
+    supervisor = (ROOT / "scripts/run_genesis_service.py").read_text(encoding="utf-8")
+    assert '"paper-intake-producer"' in starter
+    assert '"paper-runtime"' in starter
+    assert "stinky_api.prospective_paper_policy_runtime" in supervisor
+    assert "stinky_api.paper_runtime_worker" in supervisor
     assert "paper-intake-producer" in starter
     forbidden = ("send_transaction", "sign_transaction", "private_key", "solana.rpc")
     corpus = (
@@ -187,3 +199,33 @@ async def test_canonical_outcome_and_close_link_are_single_assignment():
         row = (await session.execute(text("SELECT canonical_outcome,close_intake_id FROM paper_prospective_candidate WHERE candidate_id='c2'"))).one()
         assert tuple(row) == ("RUNNER", "prospective:e2:close")
     await engine.dispose()
+
+
+def test_prospective_outcomes_consume_later_measured_entity_classification_without_rewriting_t0():
+    src = (ROOT / "services/api/src/stinky_api/prospective_paper_intake_producer.py").read_text(encoding="utf-8")
+    start = src.index("async def _attach_canonical_outcomes")
+    end = src.index("async def _enqueue_due_closes", start)
+    block = src[start:end]
+    assert "entity_launches" in block
+    assert "outcome_meta->>'observed_at'" in block
+    assert "> c.decided_at" in block
+    assert "entity_launches:measured" in block
+    assert "WHERE c.canonical_outcome IS NULL" in block
+    assert "UPDATE paper_prospective_candidate" in block
+    assert "t0_evidence" not in block.split("UPDATE paper_prospective_candidate", 1)[1]
+    assert "frozen_bundle" not in block.split("UPDATE paper_prospective_candidate", 1)[1]
+
+
+def test_policy_identity_is_required_and_frozen_into_bundle_source():
+    env=valid_env(); env.pop("STINKY_PAPER_POLICY_SHA256")
+    result=paper_configuration_from_env(env)
+    assert result["configured"] is False
+    assert "STINKY_PAPER_POLICY_SHA256" in result["missing"]
+    env=valid_env(); env.pop("STINKY_PAPER_POLICY_PROVENANCE_JSON")
+    result=paper_configuration_from_env(env)
+    assert result["configured"] is False
+    assert "STINKY_PAPER_POLICY_PROVENANCE_JSON" in result["missing"]
+    src=(ROOT/"services/api/src/stinky_api/prospective_paper_intake_producer.py").read_text(encoding="utf-8")
+    assert '"policy_identity"' in src
+    assert '"policy_sha256": config["policy_sha256"]' in src
+    assert '"provenance": copy.deepcopy(config["provenance"])' in src

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { PaperCohortReport } from "./PaperCohortReport";
 
 type Status = {
   status?: string;
@@ -13,7 +14,14 @@ type Status = {
   decisions?: { WOULD_WATCH?: number; WOULD_SKIP?: number; WOULD_ENTER?: number; UNKNOWN?: number };
   paper?: { SIMULATED_OPEN?: number; SIMULATED_CLOSED?: number; UNKNOWN?: number };
   intake?: { processed?: number; unprocessed?: number };
-  policy?: { status?: string; version?: string | null; horizon?: string | null; notional_usd?: number | null };
+  policy?: { status?: string; version?: string | null; horizon?: string | null; notional_usd?: number | null; policy_sha256?: string | null; provenance?: string | null; provenance_mode?: string | null; activated_at?: string | null };
+  policy_registry?: { policy_version?: string; policy_sha256?: string; provenance?: string; provenance_mode?: string; state?: string; created_at?: string | null; activated_at?: string | null }[];
+  policy_registry_scope?: string;
+  policy_registry_truncated?: boolean;
+  policy_cohorts?: { policy_version?: string; policy_sha256?: string; provenance?: string; records?: number }[];
+  aggregate_scope?: string;
+  historical_identity_inference?: boolean;
+  prospective_evidence?: { status?: string; closed_outcomes?: number; pending_outcomes?: number; represented_outcome_classes?: number; first_candidate_at?: string | null; latest_candidate_at?: string | null; policy_threshold_proposal?: string; thresholds_invented?: boolean; readiness?: { status?: string; criteria?: { min_closed_outcomes?: number | null; min_market_cap_samples?: number | null; min_outcome_classes?: number | null }; deficits?: { closed_outcomes_needed?: number; market_cap_samples_needed?: number; outcome_classes_needed?: number } | null; observed_market_cap_samples?: number; policy_provisioned?: boolean; automatic_activation?: boolean } };
   live_trading?: string;
   error?: string;
 };
@@ -59,13 +67,17 @@ export function PaperCalibrationPanel() {
   const o = d.outcomes || {};
   const s = d.decisions || {};
   const p = d.paper || {};
+  const e = d.prospective_evidence || {};
+  const r = e.readiness || {};
+  const observed = String(d.status || "").toUpperCase() === "OBSERVED";
+  const metric = (value: number | undefined) => observed && value != null ? value : "—";
 
   return (
     <section className="shrink-0 border-b border-terminal-border bg-[#080a08] px-4 py-3">
       <div className="mb-2 flex items-start justify-between gap-3">
         <div>
           <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-terminal-dim">Paper / Calibration</div>
-          <div className="mt-1 text-[10px] text-terminal-muted">Prospective evidence only. T0 is frozen. UNKNOWN stays UNKNOWN. No live trading authority.</div>
+          <div className="mt-1 text-[10px] text-terminal-muted">All-policy observability. Aggregate counts are not single-policy release evidence. T0 is frozen. No live trading authority.</div>
         </div>
         <div className={`font-mono text-[10px] ${tone(d.live_trading)}`}>LIVE {d.live_trading || "LOCKED"}</div>
       </div>
@@ -73,21 +85,52 @@ export function PaperCalibrationPanel() {
       <div className="grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-8">
         <Stat label="Producer" value={d.producer || "UNKNOWN"} hint={d.producer_version || undefined} />
         <Stat label="Paper runtime" value={d.paper_runtime || "UNKNOWN"} />
-        <Stat label="Prospective candidates" value={d.candidates ?? 0} hint={d.prospective_started_at ? `since ${d.prospective_started_at.slice(0, 19)}` : "epoch not observed"} />
-        <Stat label="Closed outcomes" value={o.closed ?? 0} hint={`R/H/F/U ${o.RUNNER ?? 0}/${o.HELD ?? 0}/${o.FADE ?? 0}/${o.UNKNOWN ?? 0}`} />
-        <Stat label="WOULD_WATCH" value={s.WOULD_WATCH ?? 0} />
-        <Stat label="WOULD_SKIP" value={s.WOULD_SKIP ?? 0} />
-        <Stat label="WOULD_ENTER" value={s.WOULD_ENTER ?? 0} />
-        <Stat label="Paper policy" value={d.policy?.status || "NOT_SET"} hint={d.policy?.version || "explicit policy not provisioned"} />
+        <Stat label="Prospective candidates" value={metric(d.candidates)} hint={d.prospective_started_at ? `since ${d.prospective_started_at.slice(0, 19)}` : "epoch not observed"} />
+        <Stat label="Closed outcomes" value={metric(o.closed)} hint={observed ? `R/H/F/U ${o.RUNNER ?? 0}/${o.HELD ?? 0}/${o.FADE ?? 0}/${o.UNKNOWN ?? 0}` : "outcomes unavailable"} />
+        <Stat label="WOULD_WATCH" value={metric(s.WOULD_WATCH)} />
+        <Stat label="WOULD_SKIP" value={metric(s.WOULD_SKIP)} />
+        <Stat label="WOULD_ENTER" value={metric(s.WOULD_ENTER)} />
+        <Stat label="Paper policy" value={d.policy?.status || "NOT_SET"} hint={d.policy?.version ? `${d.policy.version} · ${d.policy.provenance || "UNKNOWN"}` : "no active policy"} />
       </div>
 
       <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-4">
-        <Stat label="Open paper" value={p.SIMULATED_OPEN ?? 0} />
-        <Stat label="Closed paper" value={p.SIMULATED_CLOSED ?? 0} />
-        <Stat label="Intake queue" value={d.intake?.unprocessed ?? 0} hint={`${d.intake?.processed ?? 0} processed`} />
+        <Stat label="Open paper" value={metric(p.SIMULATED_OPEN)} />
+        <Stat label="Closed paper" value={metric(p.SIMULATED_CLOSED)} />
+        <Stat label="Intake queue" value={metric(d.intake?.unprocessed)} hint={observed ? `${d.intake?.processed ?? 0} processed` : "intake unavailable"} />
         <Stat label="Policy horizon / notional" value={d.policy?.horizon || "UNKNOWN"} hint={d.policy?.notional_usd != null ? `$${d.policy.notional_usd} paper notional` : "not configured"} />
       </div>
 
+      {observed && (d.policy_registry?.length || 0) > 0 ? (
+        <div className="mt-2 rounded border border-terminal-border bg-[#0c0e0c] px-3 py-2 text-[10px] text-terminal-muted">
+          <div className="font-semibold uppercase tracking-[0.12em] text-terminal-dim">Paper policy registry — provisioned vs active</div>
+          {d.policy_registry?.map((item, index) => <div key={`${item.policy_sha256 || "unknown"}:${index}`} className="mt-1 break-all font-mono text-terminal-text">{item.state || "UNKNOWN"} · {item.provenance || "UNKNOWN"} · {item.policy_version || "UNKNOWN"} · {item.policy_sha256 || "UNKNOWN"}</div>)}
+          <div className="mt-1 text-terminal-dim">PROVISIONED is immutable registry state only; ACTIVE is the single runtime pointer. Evaluation/review never activates a policy.{d.policy_registry_truncated ? " Showing latest 50 only." : ""}</div>
+        </div>
+      ) : null}
+
+      {observed && (d.policy_cohorts?.length || 0) > 0 ? (
+        <div className="mt-2 rounded border border-terminal-border bg-[#0c0e0c] px-3 py-2 text-[10px] text-terminal-muted">
+          <span className="font-semibold uppercase tracking-[0.12em] text-terminal-dim">Immutable policy cohorts</span>
+          {d.policy_cohorts?.map((cohort, index) => <div key={`${cohort.policy_sha256 || "unknown"}:${index}`} className="mt-1 break-all font-mono text-terminal-text">{cohort.policy_version || "LEGACY_UNKNOWN"} · {cohort.provenance || "UNKNOWN"} · {cohort.records ?? 0} records · {cohort.policy_sha256 || "UNKNOWN"}</div>)}
+          <span className="ml-3 text-terminal-dim">Historical identity is never inferred from the active policy.</span>
+        </div>
+      ) : null}
+
+      <PaperCohortReport />
+
+      {observed ? (
+        <div className="mt-2 rounded border border-terminal-border bg-[#0c0e0c] px-3 py-2 text-[10px] text-terminal-muted">
+          <span className="font-semibold uppercase tracking-[0.12em] text-terminal-dim">Prospective evidence</span>
+          <span className="ml-3 font-mono text-terminal-text">{e.status || "AWAITING_CANDIDATES"}</span>
+          <span className="ml-3">closed {e.closed_outcomes ?? 0}</span>
+          <span className="ml-3">pending {e.pending_outcomes ?? 0}</span>
+          <span className="ml-3">outcome classes {e.represented_outcome_classes ?? 0}/3</span>
+          {d.policy?.status === "NOT_SET" && r.status === "CRITERIA_NOT_SET" ? <span className="ml-3 text-amber-300">Policy remains intentionally unset until explicit evidence-sufficiency criteria are supplied.</span> : null}
+          {d.policy?.status === "NOT_SET" && r.status === "CRITERIA_CONFIGURED" ? <span className="ml-3 text-amber-300">Evidence deficits: closed {r.deficits?.closed_outcomes_needed ?? "—"}, classes {r.deficits?.outcome_classes_needed ?? "—"}, market-cap {r.deficits?.market_cap_samples_needed ?? "—"}. Review only; no automatic policy activation.</span> : null}
+        </div>
+      ) : null}
+
+      {!observed ? <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-[10px] text-amber-300">PAPER EVIDENCE UNAVAILABLE — counts are not inferred as zero.</div> : null}
       {d.error ? <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-[10px] text-amber-300">Status surface: {d.error}</div> : null}
     </section>
   );

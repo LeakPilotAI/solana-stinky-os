@@ -25,3 +25,5 @@ jobs:
         run: npm ci
       - name: Build web
         run: npm run build
+      - name: Test paper status reporting
+        run: node --test tests/paper-status.test.cjs

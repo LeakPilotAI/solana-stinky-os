@@ -34,3 +34,15 @@ def test_candidate_rejects_out_of_domain_or_noncanonical_evidence():
     assert '"selected_threshold_score_domain"' in source
     assert "allow_nan=False" in source
     assert '"canonical_json_safe_finite_evidence"' in source
+
+
+def test_candidate_binds_readiness_to_cutoff_training_and_evaluation_configuration():
+    source=(API_ROOT/"src"/"stinky_api"/"prospective_score_paper_candidate.py").read_text(encoding="utf-8")
+    readiness=(API_ROOT/"src"/"stinky_api"/"prospective_score_readiness.py").read_text(encoding="utf-8")
+    assert '"evaluation_as_of":evaluation.get("as_of")' in readiness
+    assert '"training_window":evaluation.get("training_window")' in readiness
+    assert '"selected_training_metrics":evaluation.get("selected_training_metrics")' in readiness
+    assert '"evaluation_criteria":evaluation.get("criteria")' in readiness
+    assert '"readiness_evaluation_as_of_match"' in source
+    assert '"readiness_training_evidence_match"' in source
+    assert '"readiness_evaluation_criteria_match"' in source

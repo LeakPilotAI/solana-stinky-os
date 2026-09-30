@@ -11,6 +11,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from math import isfinite
 from typing import Any
+from stinky_api.paper_policy_identity import validated_policy_identity
 
 AUTHORITY = {
     "interpretation": "PAPER_WALK_FORWARD_SCHEMA_ADAPTER_ONLY",
@@ -28,7 +29,7 @@ def _number(value: Any) -> float | None:
         return None
     try:
         result = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return result if isfinite(result) else None
 
@@ -41,7 +42,7 @@ def _dt(value: Any) -> datetime | None:
         parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError:
         return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc) if parsed.tzinfo else None
 
 
 def _unknown(missing: list[str], **extra: Any) -> dict[str, Any]:
@@ -78,6 +79,24 @@ def adapt_simulated_execution_for_walk_forward(
         "rpc_contacted", "transaction_signed", "order_submitted",
     )):
         missing.append("non_executing_paper_record")
+    if any(simulated_execution.get(key, False) is not False for key in (
+        "wallet_mutated", "recommendation_authority", "automatic_activation",
+    )):
+        missing.append("non_executing_paper_record")
+
+    identity = validated_policy_identity(simulated_execution.get("policy_identity"))
+    if identity is None:
+        missing.append("policy_identity")
+        identity = {}
+    policy_version = str(identity.get("policy_version") or "").strip()
+    policy_sha256 = str(identity.get("policy_sha256") or "").strip()
+    provenance = identity.get("provenance")
+    if not policy_version:
+        missing.append("policy_version")
+    if len(policy_sha256) != 64:
+        missing.append("policy_sha256")
+    if not isinstance(provenance, dict) or type(provenance.get("evidence_backed")) is not bool:
+        missing.append("policy_provenance")
 
     close_time = _dt(closed_at)
     net_return = _number(simulated_execution.get("net_return_pct"))
@@ -104,6 +123,11 @@ def adapt_simulated_execution_for_walk_forward(
         "net_pnl": net_pnl,
         "paper_notional": notional,
         "mint": str(mint).strip() if mint is not None and str(mint).strip() else None,
+        "policy_identity": {
+            "policy_version": policy_version,
+            "policy_sha256": policy_sha256,
+            "provenance": deepcopy(provenance),
+        },
         "rpc_contacted": False,
         "transaction_signed": False,
         "order_submitted": False,

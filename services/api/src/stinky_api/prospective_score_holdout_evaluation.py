@@ -70,17 +70,17 @@ async def evaluate_score_threshold_out_of_sample(
     *,
     intelligence_model_version: str,
     score_model_version: str,
-    outcome_label_version: str = "outcome-v1.1.0",
-    candidate_thresholds: tuple[float, ...] = (45.0, 50.0, 55.0, 60.0, 65.0, 70.0),
-    evaluation_fraction: float = 0.25,
-    min_training_sample: int = 20,
-    min_holdout_sample: int = 8,
-    min_training_runners: int = 2,
-    min_training_negatives: int = 2,
-    min_holdout_runners: int = 2,
-    min_holdout_negatives: int = 2,
-    min_training_runner_precision: float = 0.50,
-    as_of: datetime | str | None = None,
+    outcome_label_version: str,
+    candidate_thresholds: tuple[float, ...],
+    evaluation_fraction: float,
+    min_training_sample: int,
+    min_holdout_sample: int,
+    min_training_runners: int,
+    min_training_negatives: int,
+    min_holdout_runners: int,
+    min_holdout_negatives: int,
+    min_training_runner_precision: float,
+    as_of: datetime | str,
 ) -> dict[str, Any]:
     intel = str(intelligence_model_version or "").strip()
     score_model = str(score_model_version or "").strip()
@@ -110,7 +110,8 @@ async def evaluate_score_threshold_out_of_sample(
         JOIN entity_launch_outcome_labels ol
           ON ol.mint = mi.mint
          AND ol.label_version = :label_version
-         AND ol.observed_at >= mi.inspected_at
+         AND ol.observed_at > mi.inspected_at
+         AND ol.ingested_at > mi.inspected_at
          AND ol.ingested_at <= :as_of
         WHERE mi.model_version = :intelligence_model_version
           AND mi.evidence->'score'->>'model_version' = :score_model_version

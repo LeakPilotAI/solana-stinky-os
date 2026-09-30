@@ -17,6 +17,7 @@ from stinky_api.db import SessionLocal
 from stinky_api.paper_execution_realism import simulate_paper_execution
 from stinky_api.shadow_paper_decision import build_shadow_paper_decision
 from stinky_api.shadow_paper_runtime_adapter import adapt_shadow_decision_for_paper
+from stinky_api.paper_policy_identity import validated_policy_identity, frozen_policy_matches_identity
 
 AUTHORITY = {
     "paper_only": True,
@@ -43,8 +44,15 @@ def process_frozen_bundle(payload: dict[str, Any]) -> dict[str, Any]:
     context = payload.get("decision_context")
     policy = payload.get("paper_policy")
     assumptions = payload.get("execution_assumptions")
-    if not all(isinstance(x, dict) for x in (probability, context, policy, assumptions)):
+    identity = payload.get("policy_identity")
+    if not all(isinstance(x, dict) for x in (probability, context, policy, assumptions, identity)):
         return {"status": "UNKNOWN", "missing": ["complete_frozen_bundle"], **AUTHORITY}
+    policy_sha = str(identity.get("policy_sha256") or "").strip()
+    provenance = identity.get("provenance")
+    if validated_policy_identity({"policy_version": policy.get("policy_version"), "policy_sha256": policy_sha, "provenance": provenance}) is None:
+        return {"status": "UNKNOWN", "missing": ["valid_policy_identity"], **AUTHORITY}
+    if not frozen_policy_matches_identity(payload):
+        return {"status": "UNKNOWN", "missing": ["frozen_policy_hash_mismatch"], **AUTHORITY}
 
     shadow = build_shadow_paper_decision(probability, context, policy)
     adapted = adapt_shadow_decision_for_paper(shadow)
@@ -64,6 +72,7 @@ def process_frozen_bundle(payload: dict[str, Any]) -> dict[str, Any]:
         "shadow": shadow,
         "paper": paper,
         "processed_at": datetime.now(timezone.utc).isoformat(),
+        "policy_identity": {"policy_version": policy.get("policy_version"), "policy_sha256": policy_sha, "provenance": provenance},
         **AUTHORITY,
     }
 
@@ -89,18 +98,23 @@ async def process_one() -> bool:
         paper = result.get("paper") if isinstance(result.get("paper"), dict) else {}
         await session.execute(text("""
             INSERT INTO paper_runtime_record(
-              intake_id, mint, decided_at, shadow_status, shadow_action, paper_status, record
+              intake_id, mint, decided_at, shadow_status, shadow_action, paper_status,
+              policy_version, policy_sha256, policy_evidence_backed, record
             ) VALUES (
               :intake_id, :mint, CAST(:decided_at AS timestamptz), :shadow_status,
-              :shadow_action, :paper_status, CAST(:record AS jsonb)
+              :shadow_action, :paper_status, :policy_version, :policy_sha256,
+              :policy_evidence_backed, CAST(:record AS jsonb)
             )
             ON CONFLICT (intake_id) DO NOTHING
         """), {
             "intake_id": row["intake_id"], "mint": row["mint"],
-            "decided_at": shadow.get("decided_at"),
+            "decided_at": datetime.fromisoformat(shadow["decided_at"]) if shadow.get("decided_at") else None,
             "shadow_status": str(shadow.get("status") or result.get("status") or "UNKNOWN"),
             "shadow_action": shadow.get("action"),
             "paper_status": str(paper.get("status") or "NOT_SIMULATED"),
+            "policy_version": (result.get("policy_identity") or {}).get("policy_version"),
+            "policy_sha256": (result.get("policy_identity") or {}).get("policy_sha256"),
+            "policy_evidence_backed": ((result.get("policy_identity") or {}).get("provenance") or {}).get("evidence_backed"),
             "record": json.dumps(result, sort_keys=True, default=str),
         })
         await session.execute(text("UPDATE paper_runtime_intake SET processed_at=now() WHERE intake_id=:id"), {"id": row["intake_id"]})

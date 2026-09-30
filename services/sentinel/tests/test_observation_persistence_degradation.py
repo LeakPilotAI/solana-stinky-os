@@ -777,3 +777,97 @@ def test_watch_completion_is_blocked_by_watch_state_degradation():
     assert '"watch_state"' in block
     assert 'stop_reason=f"PERSISTENCE_ERROR:{blocker}"' in block
     assert block.index('"watch_state"') < block.index('status="COMPLETED"')
+
+
+class _CapturingHealthySession(_HealthySession):
+    def __init__(self):
+        self.calls = []
+
+    async def execute(self, statement, params=None, **_kwargs):
+        self.calls.append((str(statement), params or {}))
+        return None
+
+
+def _capturing_sessions(session):
+    def sessions():
+        return _SessionContextForCapture(session)
+    return sessions
+
+
+class _SessionContextForCapture:
+    def __init__(self, session):
+        self.session = session
+
+    async def __aenter__(self):
+        return self.session
+
+    async def __aexit__(self, *_args):
+        return False
+
+
+@pytest.mark.asyncio
+async def test_runtime_iso_timestamps_are_bound_as_datetimes_for_watch_probe_and_market():
+    from datetime import datetime
+
+    session = _CapturingHealthySession()
+    monitor = _monitor()
+    monitor._memory = None
+    monitor._sessions = _capturing_sessions(session)
+
+    await monitor._upsert_watch(
+        mint="mint-a",
+        started_at="2026-09-29T02:31:45.599591+00:00",
+        status="WATCHING",
+        last_observation_at="2026-09-29T02:34:37.683101+00:00",
+        next_due_at="2026-09-29T02:35:37.683101+00:00",
+    )
+    await monitor._record_probe({
+        "provider": "dexscreener",
+        "at": "2026-09-29T02:34:37.680591+00:00",
+        "status": "OK",
+        "ok": True,
+    })
+    migration = type("Migration", (), {"mint": "mint-a"})()
+    await monitor._record_market_snapshot(migration, _market_tick_snap())
+
+    watch_params = next(params for sql, params in session.calls if "watch_states" in sql)
+    probe_params = next(params for sql, params in session.calls if "provider_probes" in sql)
+    market_params = next(params for sql, params in session.calls if "market_observations" in sql)
+
+    assert isinstance(watch_params["started_at"], datetime)
+    assert isinstance(watch_params["last_observation_at"], datetime)
+    assert isinstance(watch_params["next_due_at"], datetime)
+    assert isinstance(probe_params["at"], datetime)
+    assert isinstance(probe_params["last_success_at"], datetime)
+    assert isinstance(market_params["observed_at"], datetime)
+
+
+def test_fee_observation_hot_path_does_not_run_schema_ddl():
+    from pathlib import Path
+    source = (Path(__file__).parents[1] / "src" / "sentinel" / "volume.py").read_text(encoding="utf-8")
+    start = source.index("    async def _persist_fee_observation(")
+    end = source.index("    async def _persist_market_snapshot(", start)
+    block = source[start:end]
+    assert "FEE_OBSERVATIONS_INSERT" in block
+    assert "FEE_OBSERVATIONS_DDL" not in block
+    assert "FEE_OBSERVATIONS_INDEXES" not in block
+
+
+def test_probe_and_depth_retry_only_transient_database_disconnects_once():
+    from pathlib import Path
+    source = (Path(__file__).parents[1] / "src" / "sentinel" / "volume.py").read_text(encoding="utf-8")
+    assert "winerror in {64, 10054}" in source
+    assert "async def _record_probe(self, probe: dict[str, Any], *, _retry: bool = True)" in source
+    assert "await self._record_probe(probe, _retry=False)" in source
+    assert "async def _persist_depth_observation(self, obs: Any, *, _retry: bool = True)" in source
+    assert "await self._persist_depth_observation(obs, _retry=False)" in source
+    assert source.count("await self._engine.dispose()") >= 2
+
+
+def test_filter_and_market_snapshot_retry_transient_database_disconnects_once():
+    from pathlib import Path
+    source = (Path(__file__).parents[1] / "src" / "sentinel" / "volume.py").read_text(encoding="utf-8")
+    assert "fees_source: str | None = None,\n        _retry: bool = True," in source
+    assert "_retry=False,\n                )\n                return\n            self._mark_observation_persistence_degraded(\"filter_evaluation\"" in source
+    assert 'async def _persist_market_snapshot(self, mint: str, snap: "VolumeSnapshot", *, _retry: bool = True)' in source
+    assert "await self._persist_market_snapshot(mint, snap, _retry=False)" in source

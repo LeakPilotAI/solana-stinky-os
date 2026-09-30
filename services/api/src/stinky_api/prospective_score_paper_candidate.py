@@ -70,6 +70,12 @@ def build_score_paper_candidate(evaluation: dict[str,Any], readiness: dict[str,A
             missing.append(f"readiness_{key}_match")
     if readiness.get("selected_threshold")!=evaluation.get("selected_threshold"):
         missing.append("readiness_selected_threshold_match")
+    if readiness.get("evaluation_as_of")!=evaluation.get("as_of"):
+        missing.append("readiness_evaluation_as_of_match")
+    if readiness.get("training_window")!=training or readiness.get("selected_training_metrics")!=evaluation.get("selected_training_metrics"):
+        missing.append("readiness_training_evidence_match")
+    if readiness.get("evaluation_criteria")!=evaluation.get("criteria"):
+        missing.append("readiness_evaluation_criteria_match")
     if readiness.get("holdout_window")!=holdout or readiness.get("holdout_metrics")!=metrics:
         missing.append("readiness_holdout_evidence_match")
     if missing:

@@ -64,7 +64,7 @@ def _metrics(rows:list[dict[str,Any]],positive_key:str,*,universe:str)->dict[str
 
 async def compare_score_paper_candidate(
     session, *, candidate:dict[str,Any], as_of:datetime|str,
-    min_sample:int=8,min_runners:int=2,min_negatives:int=2,
+    min_sample:int,min_runners:int,min_negatives:int,
 )->dict[str,Any]:
     required_counts=[_positive_count(x) for x in (min_sample,min_runners,min_negatives)]
     if any(x is None for x in required_counts):
@@ -111,7 +111,8 @@ async def compare_score_paper_candidate(
         JOIN entity_launch_outcome_labels ol
           ON ol.mint=mi.mint
          AND ol.label_version=:label_version
-         AND ol.observed_at>=mi.inspected_at
+         AND ol.observed_at>mi.inspected_at
+         AND ol.ingested_at>mi.inspected_at
          AND ol.ingested_at<=:as_of
         WHERE mi.model_version=:intelligence_model_version
           AND mi.evidence->'score'->>'model_version'=:score_model_version

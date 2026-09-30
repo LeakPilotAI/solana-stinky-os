@@ -8,10 +8,7 @@ from pathlib import Path
 
 # The policy runtime is the registry-authoritative wrapper around
 # stinky_api.prospective_paper_intake_producer; the underlying producer remains unchanged.
-WORKERS = (
-    ("paper-intake-producer", "stinky_api.prospective_paper_policy_runtime"),
-    ("paper-runtime", "stinky_api.paper_runtime_worker"),
-)
+WORKERS = ("paper-intake-producer", "paper-runtime")
 
 
 def _alive(pid: int) -> bool:
@@ -53,13 +50,14 @@ def main() -> int:
     env["PYTHONUNBUFFERED"] = "1"
     flags = 0x08000000 | 0x00000200 | 0x01000000 if os.name == "nt" else 0
     started: list[tuple[str, int]] = []
-    for name, module in WORKERS:
+    supervisor = root / "scripts" / "run_genesis_service.py"
+    for name in WORKERS:
         old = known.get(name, 0)
         if _alive(old):
             print(f"  {name} already running pid {old}")
             continue
         log = open(logs / (name + ".log"), "a", encoding="utf-8", errors="replace")
-        proc = subprocess.Popen([exe, "-m", module], cwd=str(root), env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, creationflags=flags)
+        proc = subprocess.Popen([exe, str(supervisor), "--name", name], cwd=str(root), env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, creationflags=flags)
         started.append((name, proc.pid))
         print(f"  {name} PID {proc.pid} (paper only; no RPC/signing/orders)")
     if started:

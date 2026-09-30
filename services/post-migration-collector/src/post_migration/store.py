@@ -148,7 +148,7 @@ class Store:
                     """
                     UPDATE migration_tracks
                     SET meta = COALESCE(meta, '{}'::jsonb)
-                               || jsonb_build_object('buyer_capture_complete', :complete)
+                               || jsonb_build_object('buyer_capture_complete', CAST(:complete AS boolean))
                     WHERE mint = :mint
                     """
                 ),

@@ -26,12 +26,14 @@ _KEYS = {
     "STINKY_PAPER_EXIT_FEE_BPS": ("execution_assumptions", "exit_fee_bps"),
     "STINKY_PAPER_LATENCY_MS": ("execution_assumptions", "latency_ms"),
     "STINKY_PAPER_NOTIONAL_USD": (None, "paper_notional_usd"),
+    "STINKY_PAPER_POLICY_SHA256": (None, "policy_sha256"),
 }
 
 
 def _clear_policy_env() -> None:
     for key in _KEYS:
         os.environ.pop(key, None)
+    os.environ.pop("STINKY_PAPER_POLICY_PROVENANCE_JSON", None)
 
 
 def _apply(config: dict) -> None:
@@ -42,6 +44,11 @@ def _apply(config: dict) -> None:
         value = config.get(key) if section is None else (config.get(section) or {}).get(key)
         if value is not None:
             os.environ[env_key] = str(value)
+    provenance = config.get("provenance")
+    if isinstance(provenance, dict):
+        os.environ["STINKY_PAPER_POLICY_PROVENANCE_JSON"] = json.dumps(provenance, sort_keys=True, separators=(",", ":"))
+    else:
+        os.environ.pop("STINKY_PAPER_POLICY_PROVENANCE_JSON", None)
 
 
 async def sync_active_policy() -> dict:

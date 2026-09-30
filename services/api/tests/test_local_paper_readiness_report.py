@@ -71,3 +71,16 @@ def test_cli_requires_explicit_criteria_and_contains_no_policy_writes():
         "solana.rpc",
     )
     assert not any(token in lowered for token in forbidden)
+
+
+def test_command_center_groups_runtime_by_frozen_policy_identity_without_backfill():
+    route=(ROOT/"apps/web/src/app/api/paper-status/route.ts").read_text(encoding="utf-8")
+    panel=(ROOT/"apps/web/src/components/command-center/PaperCalibrationPanel.tsx").read_text(encoding="utf-8")
+    assert "policy_cohorts" in route
+    assert "LEGACY_UNKNOWN" in route
+    assert "policy_evidence_backed" in route
+    assert 'historical_identity_inference: false' in route
+    cohort_query=next(line for line in route.splitlines() if "LEGACY_UNKNOWN" in line and "paper_runtime_record" in line)
+    assert "paper_policy_active" not in cohort_query
+    assert "Immutable policy cohorts" in panel
+    assert "Historical identity is never inferred from the active policy." in panel

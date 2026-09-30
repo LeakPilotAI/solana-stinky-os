@@ -13,12 +13,16 @@ def read(rel: str) -> str:
     return (ROOT / rel).read_text(encoding="utf-8", errors="replace")
 
 
-def test_api_supervisor_recycles_sustained_dead_listener():
+def test_core_http_supervisors_recycle_sustained_dead_listener():
     t = read("scripts/run_genesis_service.py")
     assert "API_HEALTH_FAILURE_GRACE_SECONDS = 30.0" in t
     assert "API_STARTUP_GRACE_SECONDS = 60.0" in t
     assert "API_HEALTH_RECYCLE_EXIT = 86" in t
-    assert 'watched_url = healthy_url if name == "api" else None' in t
+    assert "watched_url = healthy_url" in t
+    assert 'watched_url = healthy_url if name == "api" else None' not in t
+    assert '("event-log", 8002, "http://127.0.0.1:8002/health")' in t
+    assert '("api", 8010, "http://127.0.0.1:8010/health")' in t
+    assert '("web", 3000, "http://127.0.0.1:3000/operator")' in t
     assert "seen_healthy" in t
     assert "unhealthy_since" in t
     assert "terminate_owned_child(proc, reason)" in t
@@ -62,3 +66,41 @@ def test_stop_never_kills_docker_daemon_and_stops_supervisors_first():
     compose_at = t.index("down --remove-orphans")
     process_at = t.index("Get-CimInstance Win32_Process")
     assert process_at < compose_at
+
+
+def test_supervisor_failure_state_is_durable_per_service():
+    t = read("scripts/run_genesis_service.py")
+    assert 'write_state(log_dir / "runtime-state.json", payload)' in t
+    assert 'write_state(log_dir / ("runtime-state-" + name + ".json"), service_payload)' in t
+    assert 'service_payload["service"] = name' in t
+    assert 'service_payload["supervisor_phase"] = phase or "RUNNING"' in t
+    failed_at = t.index('dump_runtime("FAILED")')
+    durable_at = t.index('write_state(log_dir / ("runtime-state-" + name + ".json"), service_payload)')
+    assert failed_at < durable_at
+
+
+def test_healthy_core_supervisor_heartbeats_runtime_state():
+    t = read("scripts/run_genesis_service.py")
+    assert "last_heartbeat = 0.0" in t
+    assert "if now - last_heartbeat >= 60:" in t
+    assert 'dump_runtime("RUNNING")' in t
+    assert "last_heartbeat = now" in t
+
+
+def test_paper_workers_use_capped_genesis_supervisor():
+    runtime = read("scripts/run_genesis_service.py")
+    starter = read("scripts/start_paper_runtime.py")
+    assert '"paper-intake-producer"' in runtime
+    assert '"paper-runtime"' in runtime
+    assert 'run_supervised([py, "-m", "stinky_api.prospective_paper_policy_runtime"])' in runtime
+    assert 'run_supervised([py, "-m", "stinky_api.paper_runtime_worker"])' in runtime
+    assert '[exe, str(supervisor), "--name", name]' in starter
+    assert 'subprocess.Popen([exe, "-m", module]' not in starter
+
+
+def test_non_http_supervisor_heartbeat_proves_supervision_not_application_health():
+    t = read("scripts/run_genesis_service.py")
+    assert 'dump_runtime("SUPERVISING")' in t
+    assert "while proc.poll() is None:" in t
+    assert "heartbeat is not an assertion that the application is healthy" in t
+    assert 'dump_runtime("RUNNING")' in t

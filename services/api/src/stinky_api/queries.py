@@ -3242,6 +3242,146 @@ async def alert_precision_summary(session: AsyncSession) -> dict[str, Any]:
             return {"available": False, "error": str(exc)}
 
 
+async def load_operator_snapshot(session: AsyncSession) -> dict[str, Any]:
+    """Bounded operational hydration for the live Operator desk."""
+    def _clean(row: Any) -> dict[str, Any]:
+        d = dict(row)
+        for k, v in list(d.items()):
+            if hasattr(v, "isoformat"):
+                d[k] = v.isoformat()
+        return d
+
+    failed_layers: list[str] = []
+    async def rows(layer: str, sql: str) -> list[dict[str, Any]]:
+        try:
+            found = (await session.execute(text(sql))).mappings().all()
+            return [_clean(r) for r in found]
+        except Exception:
+            failed_layers.append(layer)
+            return []
+
+    # The live desk needs recent operational state, not the complete research corpus.
+    # Inner DESC limits bound database work; outer ASC preserves hydration chronology.
+    return {
+        "investigations": await rows("investigations", "SELECT * FROM (SELECT mint, gate1_at, discovered_at, protocol, volume_5m_at_gate, liquidity_at_gate, market_cap_at_gate, price_at_gate, pair_identifier, creator, gate_decision, investigation_status, correlation_id, row FROM intelligence_investigations ORDER BY discovered_at DESC NULLS LAST LIMIT 500) q ORDER BY discovered_at ASC NULLS FIRST"),
+        "quality_states": await rows("quality_states", "SELECT * FROM (SELECT mint, as_of, state, previous_state, severity, row FROM quality_state_transitions ORDER BY as_of DESC NULLS LAST LIMIT 500) q ORDER BY as_of ASC NULLS FIRST"),
+        "operator_events": await rows("operator_events", "SELECT * FROM (SELECT mint, at, kind, message, evidence_label, row FROM operator_events ORDER BY at DESC NULLS LAST LIMIT 500) q ORDER BY at ASC NULLS FIRST"),
+        "watch_states": await rows("watch_states", "SELECT mint, started_at, last_observation_at, observation_count, next_due_at, status, resumed, interrupted, persistence_status, stop_reason, row FROM watch_states ORDER BY last_observation_at DESC NULLS LAST LIMIT 500"),
+        "provider_probes": await rows("provider_probes", "SELECT * FROM (SELECT provider, at, status, latency_ms, last_success_at, last_failure_at, error, row FROM provider_probes ORDER BY at DESC NULLS LAST LIMIT 100) q ORDER BY at ASC NULLS FIRST"),
+        "discord_deliveries": await rows("discord_deliveries", "SELECT * FROM (SELECT mint, at, policy, category, delivery, error, row FROM discord_deliveries ORDER BY at DESC NULLS LAST LIMIT 200) q ORDER BY at ASC NULLS FIRST"),
+        "_hydration_failed_layers": failed_layers,
+    }
+
+
+async def load_observation_snapshot(session: AsyncSession) -> dict[str, Any]:
+    """Bounded hydration for the browser Investigations table.
+
+    The table only consumes investigations/decisions plus stored market ticks.
+    Keep unrelated research ledgers (including Discord delivery history) off
+    this interactive path, and cap the cohort/ticks so database growth cannot
+    turn tab navigation into a full-corpus hydration.
+    """
+    def _clean(row: Any) -> dict[str, Any]:
+        d = dict(row)
+        for k, v in list(d.items()):
+            if hasattr(v, "isoformat"):
+                d[k] = v.isoformat()
+        return d
+
+    failed_layers: list[str] = []
+
+    try:
+        investigations_raw = (await session.execute(text(
+            "SELECT * FROM (SELECT mint, gate1_at, discovered_at, protocol, volume_5m_at_gate, liquidity_at_gate, market_cap_at_gate, price_at_gate, pair_identifier, creator, gate_decision, investigation_status, correlation_id, row FROM intelligence_investigations ORDER BY discovered_at DESC NULLS LAST LIMIT 200) q ORDER BY discovered_at ASC NULLS FIRST"
+        ))).mappings().all()
+        investigations = [_clean(r) for r in investigations_raw]
+    except Exception:
+        failed_layers.append("investigations")
+        investigations = []
+
+    mints = [str(row.get("mint") or "") for row in investigations if row.get("mint")]
+    if not mints:
+        return {
+            "investigations": investigations,
+            "decisions": [],
+            "market_ticks": [],
+            "_hydration_failed_layers": failed_layers,
+        }
+
+    try:
+        ticks_raw = (await session.execute(text(
+            "SELECT mint, observed_at, source, volume_m5_usd, liquidity_usd, price_usd, market_cap_usd, fdv_usd, buy_sell_ratio, txns, pair_address, dex_id, row FROM (SELECT mo.*, row_number() OVER (PARTITION BY mint ORDER BY observed_at DESC) AS rn FROM market_observations mo WHERE mint = ANY(:mints)) q WHERE rn <= 50 ORDER BY observed_at ASC"
+        ), {"mints": mints})).mappings().all()
+        ticks = [_clean(r) for r in ticks_raw]
+    except Exception:
+        failed_layers.append("market_ticks")
+        ticks = []
+
+    return {
+        "investigations": investigations,
+        "decisions": [],
+        "market_ticks": ticks,
+        "_hydration_failed_layers": failed_layers,
+    }
+
+
+async def load_quality_snapshot(session: AsyncSession) -> dict[str, Any]:
+    """Bounded hydration for the live quality-dip panel.
+
+    The panel only needs recent investigations, quality transitions, and market
+    observations. It must never hydrate the complete research corpus.
+    """
+    def _clean(row: Any) -> dict[str, Any]:
+        d = dict(row)
+        for k, v in list(d.items()):
+            if hasattr(v, "isoformat"):
+                d[k] = v.isoformat()
+        return d
+
+    failed_layers: list[str] = []
+
+    async def rows(layer: str, sql: str) -> list[dict[str, Any]]:
+        try:
+            found = (await session.execute(text(sql))).mappings().all()
+            return [_clean(r) for r in found]
+        except Exception:
+            failed_layers.append(layer)
+            return []
+
+    investigations = await rows(
+        "investigations",
+        "SELECT * FROM (SELECT mint, gate1_at, discovered_at, protocol, volume_5m_at_gate, liquidity_at_gate, market_cap_at_gate, price_at_gate, pair_identifier, creator, gate_decision, investigation_status, correlation_id, row FROM intelligence_investigations ORDER BY discovered_at DESC NULLS LAST LIMIT 200) q ORDER BY discovered_at ASC NULLS FIRST",
+    )
+    mints = [str(row.get("mint") or "") for row in investigations if row.get("mint")]
+    if not mints:
+        return {"investigations": [], "quality_states": [], "market_ticks": [], "_hydration_failed_layers": failed_layers}
+
+    try:
+        quality = (await session.execute(text(
+            "SELECT mint, as_of, state, previous_state, severity, row FROM quality_state_transitions WHERE mint = ANY(:mints) ORDER BY as_of ASC"
+        ), {"mints": mints})).mappings().all()
+        quality_rows = [_clean(r) for r in quality]
+    except Exception:
+        failed_layers.append("quality_states")
+        quality_rows = []
+
+    try:
+        ticks = (await session.execute(text(
+            "SELECT mint, observed_at, source, volume_m5_usd, liquidity_usd, price_usd, market_cap_usd, fdv_usd, buy_sell_ratio, txns, pair_address, dex_id, row FROM (SELECT mo.*, row_number() OVER (PARTITION BY mint ORDER BY observed_at DESC) AS rn FROM market_observations mo WHERE mint = ANY(:mints)) q WHERE rn <= 20 ORDER BY observed_at ASC"
+        ), {"mints": mints})).mappings().all()
+        tick_rows = [_clean(r) for r in ticks]
+    except Exception:
+        failed_layers.append("market_ticks")
+        tick_rows = []
+
+    return {
+        "investigations": investigations,
+        "quality_states": quality_rows,
+        "market_ticks": tick_rows,
+        "_hydration_failed_layers": failed_layers,
+    }
+
+
 async def load_memory_snapshot(session: AsyncSession) -> dict[str, Any]:
     """Hydrate IntelligenceMemory from Postgres. Missing tables stay empty. Never invented."""
     from stinky_core.memory import (
@@ -3268,26 +3408,30 @@ async def load_memory_snapshot(session: AsyncSession) -> dict[str, Any]:
                 d[k] = v.isoformat()
         return d
 
-    async def rows(sql: str) -> list[dict[str, Any]]:
+    failed_layers: list[str] = []
+
+    async def rows(layer: str, sql: str) -> list[dict[str, Any]]:
         try:
             found = (await session.execute(text(sql))).mappings().all()
             return [_clean(r) for r in found]
         except Exception:
+            failed_layers.append(layer)
             return []
 
     return {
-        "wallet_obs": await rows(MEMORY_SELECT_WALLET_OBS),
-        "wallet_outcomes": await rows(MEMORY_SELECT_WALLET_OUTCOME),
-        "creator_obs": await rows(MEMORY_SELECT_CREATOR_OBS),
-        "creator_outcomes": await rows(MEMORY_SELECT_CREATOR_OUTCOME),
-        "fingerprints": await rows(MEMORY_SELECT_FINGERPRINT),
-        "fingerprint_outcomes": await rows(MEMORY_SELECT_FINGERPRINT_OUTCOME),
-        "decisions": await rows(MEMORY_SELECT_DECISION),
-        "market_ticks": await rows(MEMORY_SELECT_MARKET_OBS),
-        "investigations": await rows(MEMORY_SELECT_INVESTIGATION),
-        "quality_states": await rows(MEMORY_SELECT_QUALITY),
-        "operator_events": await rows(MEMORY_SELECT_OPERATOR_EVENT),
-        "watch_states": await rows(MEMORY_SELECT_WATCH_STATE),
-        "provider_probes": await rows(MEMORY_SELECT_PROVIDER_PROBE),
-        "discord_deliveries": await rows(MEMORY_SELECT_DISCORD_DELIVERY),
+        "wallet_obs": await rows("wallet_obs", MEMORY_SELECT_WALLET_OBS),
+        "wallet_outcomes": await rows("wallet_outcomes", MEMORY_SELECT_WALLET_OUTCOME),
+        "creator_obs": await rows("creator_obs", MEMORY_SELECT_CREATOR_OBS),
+        "creator_outcomes": await rows("creator_outcomes", MEMORY_SELECT_CREATOR_OUTCOME),
+        "fingerprints": await rows("fingerprints", MEMORY_SELECT_FINGERPRINT),
+        "fingerprint_outcomes": await rows("fingerprint_outcomes", MEMORY_SELECT_FINGERPRINT_OUTCOME),
+        "decisions": await rows("decisions", MEMORY_SELECT_DECISION),
+        "market_ticks": await rows("market_ticks", MEMORY_SELECT_MARKET_OBS),
+        "investigations": await rows("investigations", MEMORY_SELECT_INVESTIGATION),
+        "quality_states": await rows("quality_states", MEMORY_SELECT_QUALITY),
+        "operator_events": await rows("operator_events", MEMORY_SELECT_OPERATOR_EVENT),
+        "watch_states": await rows("watch_states", MEMORY_SELECT_WATCH_STATE),
+        "provider_probes": await rows("provider_probes", MEMORY_SELECT_PROVIDER_PROBE),
+        "discord_deliveries": await rows("discord_deliveries", MEMORY_SELECT_DISCORD_DELIVERY),
+        "_hydration_failed_layers": failed_layers,
     }

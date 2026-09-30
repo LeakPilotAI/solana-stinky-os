@@ -1,4 +1,5 @@
 from pathlib import Path
+import pytest
 
 from stinky_api.paper_runtime_worker import canonical_sha256, process_frozen_bundle
 from stinky_api.shadow_paper_decision import build_shadow_paper_decision
@@ -13,7 +14,19 @@ def context():
 def policy():
     return {"policy_version":"shadow-v1","horizon":"1h","min_runner_probability":.5,"max_fade_probability":.3,"min_nonnegative_market_cap_probability":.6}
 def bundle():
-    return {"probability_distribution":distribution(),"decision_context":context(),"paper_policy":policy(),"execution_assumptions":{"entry_slippage_bps":100,"exit_slippage_bps":150,"entry_fee_bps":50,"exit_fee_bps":50,"latency_ms":750},"reference_entry_price":1.0,"reference_exit_price":1.5,"paper_notional_usd":20.0}
+    payload = {"probability_distribution":distribution(),"decision_context":context(),"paper_policy":policy(),"policy_identity":{"policy_sha256":"a"*64,"provenance":{"mode":"MANUAL_OPERATOR_SUPPLIED","evidence_backed":False}},"execution_assumptions":{"entry_slippage_bps":100,"exit_slippage_bps":150,"entry_fee_bps":50,"exit_fee_bps":50,"latency_ms":750},"reference_entry_price":1.0,"reference_exit_price":1.5,"paper_notional_usd":20.0}
+
+    bind_policy(payload)
+    return payload
+
+
+def bind_policy(payload):
+    from stinky_api.paper_policy_provisioning import validate_paper_configuration
+    config = validate_paper_configuration(payload)["configuration"]
+    config["provenance"] = payload["policy_identity"]["provenance"]
+    payload["policy_identity"]["policy_sha256"] = canonical_sha256(config)
+    return payload
+
 
 def test_actual_shadow_output_adapts_into_actual_paper_simulator():
     shadow=build_shadow_paper_decision(distribution(),context(),policy())
@@ -39,6 +52,7 @@ def test_unknown_is_preserved_instead_of_inventing_probability():
 
 def test_would_skip_is_persistable_but_never_simulated_as_entry():
     bad=bundle(); bad["paper_policy"]["min_runner_probability"]=.9
+    bind_policy(bad)
     result=process_frozen_bundle(bad)
     assert result["shadow"]["action"]=="WOULD_SKIP"
     assert result["paper"]["status"]=="NOT_SIMULATED"
@@ -54,7 +68,63 @@ def test_migration_is_immutable_and_launcher_wires_worker_after_main_start():
     assert "paper_runtime_intake" in migration and "paper_runtime_record" in migration
     assert "paper_runtime_record is immutable" in migration
     assert launcher.index("start_genesis.py") < launcher.index("start_paper_runtime.py")
-    assert "stinky_api.paper_runtime_worker" in starter
+    supervisor=(ROOT/"scripts/run_genesis_service.py").read_text()
+    assert '"paper-runtime"' in starter
+    assert "stinky_api.paper_runtime_worker" in supervisor
     forbidden=("solana.rpc","send_transaction","sign_transaction","private_key")
     corpus=(migration+starter+(ROOT/"services/api/src/stinky_api/paper_runtime_worker.py").read_text()).lower()
     assert not any(token in corpus for token in forbidden)
+
+
+def test_runtime_record_preserves_exact_policy_identity_and_manual_provenance():
+    result=process_frozen_bundle(bundle())
+    assert result["policy_identity"]["policy_version"]=="shadow-v1"
+    assert result["policy_identity"]["policy_sha256"]==bundle()["policy_identity"]["policy_sha256"]
+    assert result["policy_identity"]["provenance"]["mode"]=="MANUAL_OPERATOR_SUPPLIED"
+    assert result["policy_identity"]["provenance"]["evidence_backed"] is False
+
+
+def test_runtime_fails_closed_when_policy_identity_is_missing_or_malformed():
+    missing=bundle(); missing.pop("policy_identity")
+    assert process_frozen_bundle(missing)["status"]=="UNKNOWN"
+    malformed=bundle(); malformed["policy_identity"]["policy_sha256"]="short"
+    result=process_frozen_bundle(malformed)
+    assert result["status"]=="UNKNOWN"
+    assert "valid_policy_identity" in result["missing"]
+
+
+def test_runtime_schema_and_worker_persist_first_class_policy_identity():
+    migration=(ROOT/"services/api/migrations/013_paper_runtime_policy_identity.sql").read_text(encoding="utf-8")
+    worker=(ROOT/"services/api/src/stinky_api/paper_runtime_worker.py").read_text(encoding="utf-8")
+    for column in ("policy_version", "policy_sha256", "policy_evidence_backed"):
+        assert column in migration
+        assert column in worker
+    assert "idx_paper_runtime_record_policy_identity" in migration
+    assert "policy_evidence_backed" in worker
+
+
+@pytest.mark.parametrize("change", [{"policy_sha256": "z" * 64},
+    {"provenance": {"mode": "MANUAL_OPERATOR_SUPPLIED", "evidence_backed": 0}},
+    {"provenance": {"mode": "UNKNOWN", "evidence_backed": False}}])
+def test_runtime_cannot_persist_malformed_registry_identity(change):
+    payload = bundle(); payload["policy_identity"].update(change)
+    assert process_frozen_bundle(payload)["status"] == "UNKNOWN"
+
+
+@pytest.mark.asyncio
+async def test_worker_binds_decision_as_datetime_for_asyncpg(monkeypatch):
+    from datetime import datetime
+    from unittest.mock import AsyncMock, Mock
+    from stinky_api import paper_runtime_worker as worker
+    payload = bundle()
+    fetched = Mock()
+    fetched.mappings.return_value.first.return_value = {"intake_id": "i1", "mint": "mint-1",
+        "payload": payload, "payload_sha256": canonical_sha256(payload)}
+    db = Mock(execute=AsyncMock(side_effect=[fetched, Mock(), Mock()]), commit=AsyncMock())
+    context = AsyncMock(); context.__aenter__.return_value = db
+    monkeypatch.setattr(worker, "SessionLocal", lambda: context)
+    assert await worker.process_one()
+    bindings = db.execute.call_args_list[1].args[1]
+    assert isinstance(bindings["decided_at"], datetime)
+    assert bindings["decided_at"].utcoffset() is not None
+    db.commit.assert_awaited_once()

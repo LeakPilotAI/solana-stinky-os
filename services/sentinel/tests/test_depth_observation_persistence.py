@@ -34,3 +34,18 @@ def test_depth_table_is_append_only_contract():
     assert "ON CONFLICT" not in sql
     assert "UPDATE " not in sql
     assert "DELETE " not in sql
+
+
+def test_depth_hot_persistence_does_not_run_schema_or_index_ddl():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "sentinel" / "volume.py"
+    ).read_text(encoding="utf-8-sig")
+    start = source.index("    async def _persist_depth_observation")
+    end = source.index("    async def _sample_depth_observation", start)
+    block = source[start:end]
+    assert "DEPTH_OBSERVATIONS_INSERT" in block
+    assert "DEPTH_OBSERVATIONS_DDL" not in block
+    assert "DEPTH_OBSERVATIONS_INDEXES" not in block

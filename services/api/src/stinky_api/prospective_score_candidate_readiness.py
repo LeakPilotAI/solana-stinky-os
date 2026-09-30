@@ -4,8 +4,12 @@ Passing means only that the frozen paper candidate has enough later evidence for
 operator paper-policy review. This module cannot provision or activate policy.
 """
 from __future__ import annotations
+
+from copy import deepcopy
 import math
 from typing import Any
+
+from stinky_api.paper_evidence_json import content_sha256
 
 AUTHORITY={
     "interpretation":"POST_CANDIDATE_EVIDENCE_READINESS",
@@ -53,7 +57,12 @@ def assess_post_candidate_readiness(
         return {"status":"UNKNOWN","readiness_status":"NOT_READY","missing":["complete_post_candidate_comparison"],"criteria":criteria,**AUTHORITY}
     actionable=comparison.get("actionable_score_threshold_metrics")
     alerts=comparison.get("actual_alert_admission_metrics")
-    if not isinstance(actionable,dict) or actionable.get("universe")!="actionable_score" or not isinstance(alerts,dict) or alerts.get("universe")!="all_labeled":
+    score_metrics=comparison.get("score_threshold_metrics")
+    if (
+        not isinstance(actionable,dict) or actionable.get("universe")!="actionable_score"
+        or not isinstance(alerts,dict) or alerts.get("universe")!="all_labeled"
+        or not isinstance(score_metrics,dict) or score_metrics.get("universe")!="numeric_score"
+    ):
         return {"status":"UNKNOWN","readiness_status":"NOT_READY","missing":["explicit_metric_universes"],"criteria":criteria,**AUTHORITY}
 
     sample=_count(comparison.get("sample_count"))
@@ -79,14 +88,35 @@ def assess_post_candidate_readiness(
         "maximum_actionable_missed_runners":missed is not None and missed<=counts[4],
     }
     failed=[k for k,v in checks.items() if not v]
+    comparison_evidence=deepcopy(comparison)
+    try:
+        comparison_evidence_sha256=content_sha256(comparison_evidence)
+    except (TypeError,ValueError,OverflowError,RecursionError):
+        return {
+            "status":"UNKNOWN","readiness_status":"NOT_READY",
+            "missing":["canonical_post_candidate_comparison_evidence"],
+            "criteria":criteria,**AUTHORITY,
+        }
     return {
         "status":"OBSERVED",
         "readiness_status":"READY_FOR_PAPER_POLICY_REVIEW" if not failed else "NOT_READY",
         "candidate_version":comparison.get("candidate_version"),
         "evidence_sha256":comparison.get("evidence_sha256"),
+        "candidate_threshold":comparison.get("candidate_threshold"),
         "candidate_cutoff":comparison.get("candidate_cutoff"),"comparison_as_of":comparison.get("as_of"),
-        "checks":checks,"criteria":criteria,"missing":failed,
+        "sample_count":sample,"runner_count":runners,"negative_count":negatives,
+        "unknown_score_count":comparison.get("unknown_score_count"),
+        "unknown_score_rate":comparison.get("unknown_score_rate"),
+        "actionable_score_count":comparison.get("actionable_score_count"),
+        "actionable_score_rate":comparison.get("actionable_score_rate"),
+        "non_actionable_numeric_score_count":comparison.get("non_actionable_numeric_score_count"),
+        "non_actionable_numeric_score_rate":comparison.get("non_actionable_numeric_score_rate"),
+        "score_threshold_metrics":score_metrics,
+        "actionable_score_threshold_metrics":actionable,
         "actual_alert_admission_metrics":alerts,
+        "comparison_evidence":comparison_evidence,
+        "comparison_evidence_sha256":comparison_evidence_sha256,
+        "checks":checks,"criteria":criteria,"missing":failed,
         "requires_separate_operator_policy_provisioning":True,
         "requires_explicit_activation":True,
         **AUTHORITY,

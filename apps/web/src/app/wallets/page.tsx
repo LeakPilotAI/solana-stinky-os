@@ -222,12 +222,12 @@ export default function WalletsPage() {
 
         {/* Stats strip */}
         <div className="mt-3 flex flex-wrap gap-2">
-          <Stat label="Tracked" value={String(stats.total)} />
-          <Stat label="High tier" value={String(stats.high)} accent />
+          <Stat label="Tracked" value={error ? "—" : String(stats.total)} />
+          <Stat label="High tier" value={error ? "—" : String(stats.high)} accent />
           <Stat
             label="Avg hit"
             value={
-              stats.avgHit != null ? `${stats.avgHit.toFixed(0)}%` : "—"
+              !error && stats.avgHit != null ? `${stats.avgHit.toFixed(0)}%` : "—"
             }
           />
           {(["high", "medium", "emerging", "thin"] as const).map((t) => (
@@ -242,7 +242,7 @@ export default function WalletsPage() {
               }`}
             >
               {t}{" "}
-              <span className="text-terminal-dim">{stats.byTier[t] ?? 0}</span>
+              <span className="text-terminal-dim">{error ? "—" : (stats.byTier[t] ?? 0)}</span>
             </button>
           ))}
           <button
@@ -295,7 +295,14 @@ export default function WalletsPage() {
                 </td>
               </tr>
             )}
-            {!loading && filtered.length === 0 && (
+            {!loading && error && (
+              <tr>
+                <td colSpan={10} className="px-4 py-12 text-center text-amber-300">
+                  SMART WALLET EVIDENCE UNAVAILABLE
+                </td>
+              </tr>
+            )}
+            {!loading && !error && filtered.length === 0 && (
               <tr>
                 <td colSpan={10} className="px-4 py-12 text-center text-terminal-muted">
                   No rows for this filter. Collector fills wallets from live migrations

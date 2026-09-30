@@ -16,13 +16,40 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from stinky_api.config import settings
 from stinky_api.db import get_session
 from stinky_api import queries
+from stinky_api.command_center_readiness import router as command_center_readiness_router
 from stinky_api.entity_graph import router as entity_graph_router
+from stinky_api.paper_cohort_routes import router as paper_cohort_router
 
 logger = structlog.get_logger(__name__)
 
 
+def _install_windows_connection_reset_handler() -> None:
+    """Suppress only the benign Proactor callback reset; delegate every other asyncio error."""
+    loop = asyncio.get_running_loop()
+    previous = loop.get_exception_handler()
+
+    def _handler(active_loop: asyncio.AbstractEventLoop, context: dict) -> None:
+        exc = context.get("exception")
+        message = str(context.get("message") or "")
+        winerror = getattr(exc, "winerror", None)
+        benign_reset = (
+            isinstance(exc, ConnectionResetError)
+            and winerror == 10054
+            and "_call_connection_lost" in message
+        )
+        if benign_reset:
+            return
+        if previous is not None:
+            previous(active_loop, context)
+        else:
+            active_loop.default_exception_handler(context)
+
+    loop.set_exception_handler(_handler)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _install_windows_connection_reset_handler()
     logger.info("api.started", service=settings.service_name, port=settings.api_port)
     yield
     logger.info("api.stopped")
@@ -45,7 +72,9 @@ app.add_middleware(
 )
 
 
+app.include_router(command_center_readiness_router)
 app.include_router(entity_graph_router)
+app.include_router(paper_cohort_router)
 
 async def _book_memory(
     payload: dict | None,
@@ -62,10 +91,42 @@ async def _book_memory(
     if session is not None:
         try:
             db_snap = await queries.load_memory_snapshot(session)
-            return mem, mem.hydrate(db_snap), "postgres"
+            failed_layers = db_snap.pop("_hydration_failed_layers", [])
+            loaded = mem.hydrate(db_snap)
+            if failed_layers:
+                loaded["_failed_layers"] = failed_layers
+                return mem, loaded, "postgres_partial"
+            return mem, loaded, "postgres"
         except Exception:
             return mem, {}, "unavailable"
     return mem, {}, "empty"
+
+
+def _book_hydration_meta(source: str) -> dict[str, Any]:
+    """Truthful availability metadata shared by book endpoints."""
+    status = "UNKNOWN" if source == "unavailable" else ("PARTIAL" if source == "postgres_partial" else "COMPLETE")
+    return {
+        "hydration_status": status,
+        "available": status == "COMPLETE",
+        "partial": status == "PARTIAL",
+        "degradation_reason": (
+            "book_memory_unavailable" if status == "UNKNOWN"
+            else "book_memory_partial_hydration" if status == "PARTIAL"
+            else None
+        ),
+    }
+
+
+def _degraded_book_response(source: str, loaded: dict[str, Any]) -> dict[str, Any] | None:
+    meta = _book_hydration_meta(source)
+    if meta["available"]:
+        return None
+    return {
+        "source": source,
+        "hydrated": loaded,
+        **meta,
+        "calibrated_probability": False,
+    }
 
 
 @app.post("/v1/filter/evaluate")
@@ -232,6 +293,9 @@ async def book_time_machine(
     mint = str(payload.get("mint") or "").strip()
     if not mint:
         return {"error": "mint required", "calibrated_probability": False, "source": source, "hydrated": loaded}
+    degraded = _degraded_book_response(source, loaded)
+    if degraded is not None:
+        return {**degraded, "result": None}
     as_of = payload.get("as_of") or payload.get("decision_timestamp")
     bundle = payload.get("bundle") if isinstance(payload.get("bundle"), dict) else payload
     out = time_machine(mint=mint, as_of=as_of, bundle=bundle, memory=mem)
@@ -247,10 +311,14 @@ async def book_summary(
     from stinky_core.book import book_stats, creator_book, pattern_book, wallet_book
 
     mem, loaded, source = await _book_memory(payload, session)
+    degraded = _degraded_book_response(source, loaded)
+    if degraded is not None:
+        return {**degraded, "stats": None, "wallets": None, "creators": None, "patterns": None}
     as_of = (payload or {}).get("as_of")
     return {
         "hydrated": loaded,
         "source": source,
+        **_book_hydration_meta(source),
         "stats": book_stats(mem, as_of=as_of),
         "wallets": wallet_book(mem, as_of=as_of),
         "creators": creator_book(mem, as_of=as_of),
@@ -267,6 +335,9 @@ async def book_similarity(
     from stinky_core.similarity import historical_similarity
 
     mem, loaded, source = await _book_memory(payload, session)
+    degraded = _degraded_book_response(source, loaded)
+    if degraded is not None:
+        return {**degraded, "similarity": None}
     out = historical_similarity(
         mem,
         payload.get("fingerprint"),
@@ -290,6 +361,9 @@ async def book_life_slices(
     mint = str(payload.get("mint") or "").strip()
     if not mint:
         return {"error": "mint required", "calibrated_probability": False, "source": source}
+    degraded = _degraded_book_response(source, loaded)
+    if degraded is not None:
+        return {**degraded, "life_slices": None}
     out = life_slices(
         mem,
         mint=mint,
@@ -319,7 +393,18 @@ async def book_report(
             },
             "calibrated_probability": False,
         }
-    mem, _loaded, source = await _book_memory(payload, session)
+    mem, loaded, source = await _book_memory(payload, session)
+    degraded = _degraded_book_response(source, loaded)
+    if degraded is not None:
+        return {
+            **degraded,
+            "gate1_passed": True,
+            "report": None,
+            "similarity": None,
+            "stages": None,
+            "findings": None,
+            "would_change_conclusion": None,
+        }
     inv = investigate(payload, memory=mem)
     return {
         "gate1_passed": True,
@@ -342,18 +427,17 @@ async def book_health(
 
     mem, loaded, source = await _book_memory(payload, session)
     as_of = (payload or {}).get("as_of")
-    hydration_status = "UNKNOWN" if source == "unavailable" else "COMPLETE"
+    hydration = _book_hydration_meta(source)
+    hydration_status = hydration["hydration_status"]
     health = dataset_health(mem, as_of=as_of)
     desk = desk_snapshot(mem, as_of=as_of)
     return {
         "hydrated": loaded,
         "source": source,
-        "hydration_status": hydration_status,
-        "available": hydration_status == "COMPLETE",
+        **hydration,
         "health": health if hydration_status == "COMPLETE" else None,
         "desk": desk if hydration_status == "COMPLETE" else None,
         "calibrated_probability": False,
-        "degradation_reason": "book_memory_unavailable" if hydration_status == "UNKNOWN" else None,
     }
 
 
@@ -365,9 +449,13 @@ async def book_desk(
     from stinky_core.book import desk_snapshot
 
     mem, loaded, source = await _book_memory(payload, session)
+    degraded = _degraded_book_response(source, loaded)
+    if degraded is not None:
+        return {**degraded, "desk": None}
     out = desk_snapshot(mem, as_of=(payload or {}).get("as_of"))
     out["source"] = source
     out["hydrated"] = loaded
+    out.update(_book_hydration_meta(source))
     return out
 
 
@@ -382,6 +470,9 @@ async def book_what_happened(
     mint = str(payload.get("mint") or "").strip()
     if not mint:
         return {"error": "mint required", "calibrated_probability": False, "source": source}
+    degraded = _degraded_book_response(source, loaded)
+    if degraded is not None:
+        return {**degraded, "what_happened": None}
     out = what_happened_next(
         mem,
         mint=mint,
@@ -401,6 +492,9 @@ async def book_recipe(
     from stinky_core.book import recipe_for
 
     mem, loaded, source = await _book_memory(payload, session)
+    degraded = _degraded_book_response(source, loaded)
+    if degraded is not None:
+        return {**degraded, "recipe": None}
     out = recipe_for(
         mem,
         payload.get("fingerprint"),
@@ -419,7 +513,16 @@ async def book_observations(
 ) -> dict:
     from stinky_core.book import observation_book
 
-    mem, loaded, source = await _book_memory(payload, session)
+    from stinky_core.memory import IntelligenceMemory
+
+    mem = IntelligenceMemory()
+    snap = await queries.load_observation_snapshot(session)
+    failed_layers = snap.pop("_hydration_failed_layers", [])
+    loaded = mem.hydrate(snap)
+    source = "postgres_partial" if failed_layers else "postgres"
+    degraded = _degraded_book_response(source, loaded)
+    if degraded is not None:
+        return {**degraded, "observations": None, "count": None}
     rows = observation_book(mem, as_of=(payload or {}).get("as_of"))
     return {
         "observations": rows,
@@ -449,6 +552,14 @@ async def book_quality(
     from stinky_core.quality_state import evaluate_book, QUALITY_VERSION
 
     mem, loaded, source = await _book_memory(payload, session)
+    degraded = _degraded_book_response(source, loaded)
+    if degraded is not None:
+        return {
+            **degraded,
+            "version": QUALITY_VERSION,
+            "states": None,
+            "count": None,
+        }
     body = payload or {}
     rows = evaluate_book(mem, as_of=body.get("as_of"))
     mint = str(body.get("mint") or "").strip()
@@ -471,7 +582,22 @@ async def book_dips(
     """Active and resolved quality dips. Never invented."""
     from stinky_core.quality_state import evaluate_book, quality_dips, QUALITY_VERSION
 
-    mem, loaded, source = await _book_memory(payload, session)
+    from stinky_core.memory import IntelligenceMemory
+
+    mem = IntelligenceMemory()
+    snap = await queries.load_quality_snapshot(session)
+    failed_layers = snap.pop("_hydration_failed_layers", [])
+    loaded = mem.hydrate(snap)
+    source = "postgres_partial" if failed_layers else "postgres"
+    degraded = _degraded_book_response(source, loaded)
+    if degraded is not None:
+        return {
+            **degraded,
+            "version": QUALITY_VERSION,
+            "dips": None,
+            "count": None,
+            "empty_note": None,
+        }
     body = payload or {}
     cards = quality_dips(evaluate_book(mem, as_of=body.get("as_of")))
     return {
@@ -481,6 +607,7 @@ async def book_dips(
         "empty_note": "NO ACTIVE QUALITY DETERIORATION" if not cards else None,
         "source": source,
         "hydrated": loaded,
+        **_book_hydration_meta(source),
         "calibrated_probability": False,
     }
 
@@ -525,6 +652,56 @@ async def filter_stats_endpoint() -> dict:
     return {"filter_version": FILTER_VERSION, "stats": filter_stats.snapshot()}
 
 
+@app.get("/v1/system/runtime-supervisors")
+async def runtime_supervisors_endpoint() -> dict:
+    """Read durable launcher supervisor evidence. Missing/stale evidence is UNKNOWN, never healthy."""
+    import json
+    import os
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    root = Path(os.environ.get("STINKY_ROOT") or Path.cwd())
+    log_dir = root / "logs"
+    names = (
+        "event-log", "api", "sentinel", "collector", "entities",
+        "web", "maintain", "paper-intake-producer", "paper-runtime",
+    )
+    now = datetime.now(timezone.utc)
+    services: dict[str, dict] = {}
+    failed: list[str] = []
+    unknown: list[str] = []
+    for name in names:
+        p = log_dir / f"runtime-state-{name}.json"
+        item = {"service": name, "status": "UNKNOWN", "supervisor_phase": "UNKNOWN", "as_of": None}
+        try:
+            raw = json.loads(p.read_text(encoding="utf-8"))
+            phase = str(raw.get("supervisor_phase") or "UNKNOWN").upper()
+            as_of = raw.get("as_of")
+            age_seconds = None
+            if as_of:
+                stamp = datetime.fromisoformat(str(as_of).replace("Z", "+00:00"))
+                age_seconds = max(0, int((now - stamp).total_seconds()))
+            item.update({"status": phase, "supervisor_phase": phase, "as_of": as_of, "age_seconds": age_seconds})
+            if phase == "FAILED":
+                failed.append(name)
+            elif age_seconds is None or age_seconds > 180:
+                item["status"] = "UNKNOWN"
+                unknown.append(name)
+        except Exception as exc:
+            item["error"] = f"{type(exc).__name__}: {exc}"[:160]
+            unknown.append(name)
+        services[name] = item
+    return {
+        "available": bool(services) and not unknown,
+        "status": "FAILED" if failed else ("UNKNOWN" if unknown else "OBSERVED"),
+        "failed_services": failed,
+        "unknown_services": unknown,
+        "services": services,
+        "source": "runtime-state-per-service",
+        "disabled_services": ["discord"],
+    }
+
+
 def _probe_postgres(ok: bool, *, error: str | None = None, at: str | None = None) -> dict:
     return {
         "provider": "postgres",
@@ -557,7 +734,10 @@ async def operator_endpoint(session: Annotated[AsyncSession, Depends(get_session
         await session.execute(text("SELECT 1"))
         db_ok = True
         last_read = now
-        mem, _loaded, source = await _book_memory(None, session)
+        db_snap = await queries.load_operator_snapshot(session)
+        failed_layers = db_snap.pop("_hydration_failed_layers", [])
+        mem.hydrate(db_snap)
+        source = "postgres_partial" if failed_layers else "postgres_operator_bounded"
         mem.record_provider_probe(_probe_postgres(True, at=now.isoformat()))
     except Exception as exc:
         db_ok = False
@@ -654,21 +834,19 @@ async def health() -> dict:
                 event_log = "degraded"
             else:
                 body = r.json() if r.content else {}
-                event_log = (
-                    "ok"
-                    if body.get("status") in ("ok", "degraded")
-                    else "degraded"
-                )
+                upstream_status = str(body.get("status") or "").lower()
+                event_log = "ok" if upstream_status == "ok" else "degraded"
     except Exception:
         event_log = "down"
 
-    status = "ok" if db_ok else "degraded"
+    dependencies_ok = db_ok and event_log == "ok"
+    status = "ok" if dependencies_ok else "degraded"
     out = {
         "status": status,
         "service": settings.service_name,
         "database": db_ok,
         "event_log": event_log,
-        "live": db_ok,
+        "live": dependencies_ok,
         "pool_checkedout": pool_checkedout,
     }
     _HEALTH_CACHE["at"] = _time.monotonic()
@@ -698,36 +876,26 @@ async def _trending_m5(
                 await session.execute(
                     text(
                         """
-                        WITH high AS (
-                          SELECT
-                            ms.mint,
-                            ms.volume_m5_usd,
-                            ms.liquidity_usd,
-                            ms.price_usd,
-                            ms.market_cap_usd,
-                            ms.fdv_usd,
-                            ms.pair_address,
-                            ms.dex_id,
-                            ms.captured_at,
-                            ROW_NUMBER() OVER (
-                              PARTITION BY ms.mint
-                              ORDER BY ms.captured_at DESC
-                            ) AS rn
-                          FROM market_snapshots ms
-                          WHERE ms.volume_m5_usd IS NOT NULL
-                            AND ms.volume_m5_usd >= :min_vol
-                            AND lower(ms.mint) LIKE '%pump'
+                        WITH candidate_tracks AS (
+                          SELECT mint
+                          FROM migration_tracks
+                          WHERE lower(mint) LIKE '%pump'
+                          ORDER BY migration_at DESC NULLS LAST
+                          LIMIT 500
                         ),
-                        fees AS (
-                          SELECT DISTINCT ON (mint)
-                            mint,
-                            global_fees_sol,
-                            global_fees_verified,
-                            global_fees_source,
-                            accepted,
-                            rejection_reason
-                          FROM filter_evaluations
-                          ORDER BY mint, evaluated_at DESC
+                        latest AS (
+                          SELECT ct.mint, ms.volume_m5_usd, ms.liquidity_usd,
+                                 ms.price_usd, ms.market_cap_usd, ms.fdv_usd,
+                                 ms.pair_address, ms.dex_id, ms.captured_at
+                          FROM candidate_tracks ct
+                          LEFT JOIN LATERAL (
+                            SELECT volume_m5_usd, liquidity_usd, price_usd,
+                                   market_cap_usd, fdv_usd, pair_address, dex_id, captured_at
+                            FROM market_snapshots
+                            WHERE mint = ct.mint
+                            ORDER BY captured_at DESC
+                            LIMIT 1
+                          ) ms ON TRUE
                         )
                         SELECT
                           h.mint,
@@ -750,10 +918,22 @@ async def _trending_m5(
                           mt.status AS track_status,
                           NULL::text AS name,
                           NULL::text AS symbol
-                        FROM high h
+                        FROM latest h
                         LEFT JOIN migration_tracks mt ON mt.mint = h.mint
-                        LEFT JOIN fees f ON f.mint = h.mint
-                        WHERE h.rn = 1
+                        LEFT JOIN LATERAL (
+                          SELECT
+                            fe.global_fees_sol,
+                            fe.global_fees_verified,
+                            fe.global_fees_source,
+                            fe.accepted,
+                            fe.rejection_reason
+                          FROM filter_evaluations fe
+                          WHERE fe.mint = h.mint
+                          ORDER BY fe.evaluated_at DESC
+                          LIMIT 1
+                        ) f ON TRUE
+                        WHERE h.volume_m5_usd IS NOT NULL
+                          AND h.volume_m5_usd >= :min_vol
                         ORDER BY h.volume_m5_usd DESC NULLS LAST
                         LIMIT :lim
                         """
@@ -772,8 +952,8 @@ async def _trending_m5(
                     await session.execute(
                         text(
                             """
-                            WITH high AS (
-                              SELECT
+                            WITH latest AS (
+                              SELECT DISTINCT ON (ms.mint)
                                 ms.mint,
                                 ms.volume_m5_usd,
                                 ms.liquidity_usd,
@@ -782,15 +962,10 @@ async def _trending_m5(
                                 ms.fdv_usd,
                                 ms.pair_address,
                                 ms.dex_id,
-                                ms.captured_at,
-                                ROW_NUMBER() OVER (
-                                  PARTITION BY ms.mint
-                                  ORDER BY ms.captured_at DESC
-                                ) AS rn
+                                ms.captured_at
                               FROM market_snapshots ms
-                              WHERE ms.volume_m5_usd IS NOT NULL
-                                AND ms.volume_m5_usd >= :min_vol
-                                AND lower(ms.mint) LIKE '%pump'
+                              WHERE ms.mint LIKE '%pump'
+                              ORDER BY ms.mint, ms.captured_at DESC
                             )
                             SELECT
                               h.mint,
@@ -813,9 +988,10 @@ async def _trending_m5(
                               mt.status AS track_status,
                               NULL::text AS name,
                               NULL::text AS symbol
-                            FROM high h
+                            FROM latest h
                             LEFT JOIN migration_tracks mt ON mt.mint = h.mint
-                            WHERE h.rn = 1
+                            WHERE h.volume_m5_usd IS NOT NULL
+                              AND h.volume_m5_usd >= :min_vol
                             ORDER BY h.volume_m5_usd DESC NULLS LAST
                             LIMIT :lim
                             """
@@ -896,16 +1072,20 @@ async def command_center() -> dict:
     if _CC_LOCK.locked() and cached:
         return cached
 
+    section_failures: dict[str, str] = {}
+
     async def _safe(label: str, coro_factory, default, timeout: float = 4.0):
         # Do not wait_for-cancel a session-holding coroutine.
         # statement_timeout inside the session fails the query instead.
         try:
             return await coro_factory()
         except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"[:240]
+            section_failures[label] = error
             logger.warning(
                 "command_center.section_failed",
                 section=label,
-                error=f"{type(exc).__name__}: {exc}"[:240],
+                error=error,
             )
             return default
 
@@ -930,8 +1110,9 @@ async def command_center() -> dict:
             ):
                 try:
                     out[key] = (await session.execute(text(sql))).scalar() or 0
-                except Exception:
-                    out[key] = 0
+                except Exception as exc:
+                    out[key] = None
+                    section_failures[f"counts.{key}"] = f"{type(exc).__name__}: {exc}"[:240]
             return out
 
     async def _runners():
@@ -1094,9 +1275,14 @@ async def command_center() -> dict:
             ):
                 try:
                     stats[key] = (await session.execute(text(sql))).scalar() or 0
-                except Exception:
+                except Exception as exc:
                     stats[key] = None
-            return {"available": True, "tables": stats, "maintain_last_utc": None}
+                    section_failures[f"pipeline.{key}"] = f"{type(exc).__name__}: {exc}"[:240]
+            return {
+                "available": not any(k.startswith("pipeline.") for k in section_failures),
+                "tables": stats,
+                "maintain_last_utc": None,
+            }
 
     async def _precision():
         async with SessionLocal() as session:
@@ -1113,8 +1299,9 @@ async def command_center() -> dict:
                         )
                     )
                 ).mappings().all()
-            except Exception:
-                return {"available": False, "counts": {}, "message": "no alert_outcomes"}
+            except Exception as exc:
+                section_failures["alert_precision"] = f"{type(exc).__name__}: {exc}"[:240]
+                return {"available": False, "counts": {}, "message": "alert outcomes unavailable"}
             counts = {r["label"]: r["n"] for r in rows}
             total = sum(counts.values()) or 0
             runners = counts.get("runner", 0) + counts.get("mega_runner", 0)
@@ -1165,8 +1352,13 @@ async def command_center() -> dict:
                 }
             )
 
+        degraded_sections = sorted(section_failures)
+        command_center_available = not degraded_sections
         body = {
-            "status": "live",
+            "status": "live" if command_center_available else "degraded",
+            "available": command_center_available,
+            "degraded_sections": degraded_sections,
+            "section_failures": section_failures,
             "counts": c or {},
             "pipeline": pipeline,
             "runners": runners or [],
@@ -1176,7 +1368,7 @@ async def command_center() -> dict:
             "launches": [],
             "opportunity_queue": opportunity[:12],
             "trending": {
-                "available": True,
+                "available": "trending" not in section_failures,
                 "min_volume_m5_usd": 33000,
                 "engine": "trending-v1.0.0-volume-first",
                 "message": "Gate 1: latest measured 5m volume >= $33k. Investigation trigger, not a buy signal. Fees optional evidence.",
@@ -1207,9 +1399,10 @@ async def command_center() -> dict:
                 ],
                 "empty_note": (
                     None
-                    if any(a.get("mint") for a in (alerts or []))
+                    if "alerts" in section_failures or any(a.get("mint") for a in (alerts or []))
                     else "NO ACTIVE INVESTIGATIONS"
                 ),
+                "available": "alerts" not in section_failures,
                 "note": "Desk synthesis from stored alerts. Full case file on the token page. Not a buy.",
                 "calibrated_probability": False,
             },

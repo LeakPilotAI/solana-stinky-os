@@ -275,7 +275,7 @@ def test_static_service_runner_is_allowlisted():
     assert (ROOT / "scripts/run_genesis_service.py").exists()
     assert (ROOT / "scripts/start-genesis-svc.cmd").exists()
     t = read("scripts/run_genesis_service.py")
-    for name in ("event-log", "api", "sentinel", "discord", "collector", "entities", "web", "maintain"):
+    for name in ("event-log", "api", "sentinel", "discord", "collector", "entities", "web", "maintain", "paper-intake-producer", "paper-runtime"):
         assert name in t
     assert "run_supervised" in t
     assert "MAX_RESTARTS" in t
@@ -338,3 +338,117 @@ def test_stop_restores_path_for_docker():
     assert "Restore-SearchPath" in t
     assert "Docker\\Docker\\resources\\bin" in t
     assert "Test-GenesisOwned" in t
+
+
+def test_canonical_launcher_preserves_failure_exit_code():
+    t = read("Start-Stinky-OS.cmd")
+    assert "endlocal & exit /b %ERR%" in t
+    assert "endlocal\\nexit /b 0" not in t.replace("\\r\\n", "\\n")
+
+
+def test_runtime_evidence_capture_checks_health_supervisors_and_owned_processes():
+    t = read("scripts/capture-runtime-evidence.ps1")
+    assert "http://127.0.0.1:8002/health" in t
+    assert "http://127.0.0.1:8010/health" in t
+    assert "http://127.0.0.1:8010/v1/system/runtime-supervisors" in t
+    assert "http://127.0.0.1:3000/operator" in t
+    assert "stinky-pids.txt" in t
+    assert "run_genesis_service.py" in t
+    assert 'runtime-state-*.json' in t
+    assert "DurationMinutes" in t
+    assert "Start-Sleep -Seconds 60" in t
+    assert "RECENT SERVICE LOG TAILS" in t
+    assert "Get-Content $p -Tail 80" in t
+    assert '"paper-runtime","startup"' in t
+
+
+def test_runtime_evidence_capture_fails_closed_on_observed_runtime_failure():
+    t = read("scripts/capture-runtime-evidence.ps1")
+    assert "$script:SnapshotFailed = $false" in t
+    assert '$script:SnapshotFailed = $true' in t
+    assert '"SUPERVISOR EVIDENCE"' in t
+    assert "'\"status\"\\s*:\\s*\"(FAILED|UNKNOWN)\"'" in t
+    assert "persist_failed" in t
+    assert "entity_service\\.loop_error" in t
+    assert "Traceback \\(most recent call last\\):" in t
+    assert "exit 1" in t
+    assert "Runtime evidence captured cleanly" in t
+
+
+def test_runtime_supervisor_evidence_includes_canonical_paper_workers():
+    t = read("services/api/src/stinky_api/main.py")
+    start = t.index('@app.get("/v1/system/runtime-supervisors")')
+    end = t.index("def _probe_postgres", start)
+    block = t[start:end]
+    assert '"paper-intake-producer"' in block
+    assert '"paper-runtime"' in block
+
+
+def test_windows_http_services_use_selector_event_loop_policy():
+    root = Path(__file__).resolve().parents[1]
+    runner = (root / "scripts" / "run_genesis_service.py").read_text(encoding="utf-8")
+    api_cli = (root / "services" / "api" / "src" / "stinky_api" / "cli.py").read_text(encoding="utf-8")
+    event_cli = (root / "services" / "event-log" / "src" / "event_log" / "cli.py").read_text(encoding="utf-8")
+
+    assert '[py, "-m", "event_log.cli"]' in runner
+    assert "WindowsSelectorEventLoopPolicy" in api_cli
+    assert "WindowsSelectorEventLoopPolicy" in event_cli
+    assert '"event_log.api:app"' in event_cli
+    assert "port=8002" in event_cli
+
+
+def test_windows_runtime_installs_connection_reset_handlers():
+    root = Path(__file__).resolve().parents[1]
+    api_main = (root / "services" / "api" / "src" / "stinky_api" / "main.py").read_text(encoding="utf-8")
+    event_main = (root / "services" / "event-log" / "src" / "event_log" / "api.py").read_text(encoding="utf-8")
+    for source in (api_main, event_main):
+        assert "_install_windows_connection_reset_handler()" in source
+        assert "winerror == 10054" in source
+        assert "default_exception_handler(context)" in source
+
+
+def test_command_center_surfaces_prospective_paper_evidence_without_inventing_policy():
+    root = Path(__file__).resolve().parents[1]
+    route = (root / "apps" / "web" / "src" / "app" / "api" / "paper-status" / "route.ts").read_text(encoding="utf-8")
+    panel = (root / "apps" / "web" / "src" / "components" / "command-center" / "PaperCalibrationPanel.tsx").read_text(encoding="utf-8")
+    assert "prospective_evidence" in route
+    assert "represented_outcome_classes" in route
+    assert "REQUIRES_EXPLICIT_SUFFICIENCY_CRITERIA" in route
+    assert "thresholds_invented: false" in route
+    assert "Prospective evidence" in panel
+    assert "Policy remains intentionally unset until explicit evidence-sufficiency criteria are supplied." in panel
+
+
+def test_discord_notifications_are_disabled_during_development():
+    launcher = read("start_genesis.py")
+    assert 'procs["discord"] = start_detached("discord")' not in launcher
+    assert 'HEALTH["DISCORD"] = "DISABLED"' in launcher
+    assert "no outbound notifications" in launcher
+    api = read("services/api/src/stinky_api/main.py")
+    start = api.index('@app.get("/v1/system/runtime-supervisors")')
+    end = api.index("def _probe_postgres", start)
+    block = api[start:end]
+    assert '"disabled_services": ["discord"]' in block
+    names_block = block[block.index("names = ("):block.index("now = datetime")]
+    assert '"discord"' not in names_block
+
+
+def test_command_center_surfaces_explicit_paper_evidence_deficits_without_policy_activation():
+    root = Path(__file__).resolve().parents[1]
+    route = (root / "apps/web/src/app/api/paper-status/route.ts").read_text(encoding="utf-8")
+    panel = (root / "apps/web/src/components/command-center/PaperCalibrationPanel.tsx").read_text(encoding="utf-8")
+    for name in (
+        "STINKY_PAPER_READINESS_MIN_CLOSED_OUTCOMES",
+        "STINKY_PAPER_READINESS_MIN_MARKET_CAP_SAMPLES",
+        "STINKY_PAPER_READINESS_MIN_OUTCOME_CLASSES",
+    ):
+        assert name in route
+    assert '"CRITERIA_NOT_SET"' in route
+    assert '"CRITERIA_CONFIGURED"' in route
+    assert "closed_outcomes_needed" in route
+    assert "outcome_classes_needed" in route
+    assert "market_cap_samples_needed" in route
+    assert "policy_provisioned: false" in route
+    assert "automatic_activation: false" in route
+    assert "Evidence deficits:" in panel
+    assert "no automatic policy activation" in panel

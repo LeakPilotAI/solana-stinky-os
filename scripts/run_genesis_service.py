@@ -34,6 +34,8 @@ NAMES = (
     "entities",
     "web",
     "maintain",
+    "paper-intake-producer",
+    "paper-runtime",
 )
 
 GENESIS_CONTAINERS = (
@@ -271,6 +273,16 @@ def main() -> int:
         reader.start()
 
         if not health_url:
+            # No application-level health endpoint exists for this worker. Poll
+            # the child only so the supervisor can prove its own liveness; this
+            # heartbeat is not an assertion that the application is healthy.
+            last_heartbeat = 0.0
+            while proc.poll() is None:
+                now = time.monotonic()
+                if now - last_heartbeat >= 60:
+                    dump_runtime("SUPERVISING")
+                    last_heartbeat = now
+                time.sleep(API_HEALTH_POLL_SECONDS)
             code = int(proc.wait())
             reader.join(timeout=3)
             return code
@@ -278,6 +290,7 @@ def main() -> int:
         started = time.monotonic()
         seen_healthy = False
         unhealthy_since: float | None = None
+        last_heartbeat = 0.0
         while proc.poll() is None:
             now = time.monotonic()
             healthy = http_ok(health_url, 2.5)
@@ -286,6 +299,9 @@ def main() -> int:
                     append_log("[%s] %s health watchdog armed pid=%s" % (utc_stamp(), name, proc.pid))
                 seen_healthy = True
                 unhealthy_since = None
+                if now - last_heartbeat >= 60:
+                    dump_runtime("RUNNING")
+                    last_heartbeat = now
             elif seen_healthy:
                 if unhealthy_since is None:
                     unhealthy_since = now
@@ -319,9 +335,9 @@ def main() -> int:
         last = 0
         history: list[float] = []
         healthy_url = core_url(name)
-        # The proven Windows dead-listener failure is API-specific. Keep this repair
-        # narrow; event-log/web retain their existing exit-based supervision.
-        watched_url = healthy_url if name == "api" else None
+        # All core HTTP services must recycle a child that remains alive while its
+        # listener is unavailable. Process-exists is not service health.
+        watched_url = healthy_url
         while True:
             last = run(cmd, cwd, health_url=watched_url)
             if healthy_url and http_ok(healthy_url):
@@ -404,7 +420,15 @@ def main() -> int:
             "note": "HTTP health only. UNKNOWN is not UP. Gate 1 is not here.",
         }
         try:
+            # Aggregate current-health snapshot remains convenient for the operator,
+            # but it is intentionally overwriteable by the maintain loop.
             write_state(log_dir / "runtime-state.json", payload)
+            # Preserve each supervisor's last durable phase independently so a
+            # capped FAILED state cannot be erased by another service's heartbeat.
+            service_payload = dict(payload)
+            service_payload["service"] = name
+            service_payload["supervisor_phase"] = phase or "RUNNING"
+            write_state(log_dir / ("runtime-state-" + name + ".json"), service_payload)
         except OSError:
             pass
 
@@ -466,7 +490,7 @@ def main() -> int:
     code = 0
     try:
         if name == "event-log":
-            code = run_supervised([py, "-m", "uvicorn", "event_log.api:app", "--port", "8002", "--host", "127.0.0.1"])
+            code = run_supervised([py, "-m", "event_log.cli"])
         elif name == "api":
             code = run_supervised([py, "-m", "stinky_api.cli"])
         elif name == "sentinel":
@@ -491,6 +515,10 @@ def main() -> int:
                     [npm, "run", "dev", "--", "-p", "3000", "-H", "127.0.0.1"],
                     cwd=root / "apps" / "web",
                 )
+        elif name == "paper-intake-producer":
+            code = run_supervised([py, "-m", "stinky_api.prospective_paper_policy_runtime"])
+        elif name == "paper-runtime":
+            code = run_supervised([py, "-m", "stinky_api.paper_runtime_worker"])
         elif name == "maintain":
             next_job = 0.0
             while True:

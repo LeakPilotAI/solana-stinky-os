@@ -73,7 +73,8 @@ export function CommandCenter() {
   const [loading, setLoading] = useState(true);
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
   const [now, setNow] = useState(() => Date.now());
-  const [dips, setDips] = useState<Array<Record<string, unknown>>>([]);
+  const [dips, setDips] = useState<Array<Record<string, unknown>> | null>(null);
+  const [dipsAvailable, setDipsAvailable] = useState(true);
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
@@ -89,11 +90,14 @@ export function CommandCenter() {
       try {
         const [d, dipRes] = await Promise.all([
           api.commandCenter(),
-          api.bookDips().catch(() => ({ dips: [] as Array<Record<string, unknown>> })),
+          api.bookDips().catch(() => ({ dips: null, available: false })),
         ]);
         if (!cancelled) {
           setData(d);
-          setDips((dipRes as { dips?: Array<Record<string, unknown>> }).dips || []);
+          const dipBody = dipRes as { dips?: Array<Record<string, unknown>> | null; available?: boolean };
+          const dipRows = Array.isArray(dipBody.dips) ? dipBody.dips : null;
+          setDips(dipRows);
+          setDipsAvailable(dipBody.available !== false && dipRows !== null);
           setError(null);
           setUpdatedAt(new Date());
         }
@@ -202,19 +206,29 @@ export function CommandCenter() {
 
   if (!data) return null;
   const c = data.counts;
+  const degraded = data.available === false || data.status === "degraded";
+  const failed = new Set(data.degraded_sections || []);
+  const countValue = (key: keyof typeof c) =>
+    c[key] == null ? "—" : Number(c[key]).toLocaleString();
 
   return (
     <div className="flex h-full flex-col gap-2.5 overflow-auto bg-[#050705] p-2.5 lg:p-3">
       {error ? (
         <div className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-[11px] text-amber-200">
-          Last refresh lagged ({error}). Showing last good data — still live.
+          Refresh failed ({error}). Showing last confirmed snapshot — CURRENT LIVENESS UNKNOWN.
+        </div>
+      ) : null}
+      {degraded ? (
+        <div className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-[11px] text-amber-200">
+          Command Center degraded. Unavailable sections are not being inferred as zero or empty.
+          {data.degraded_sections?.length ? ` Failed: ${data.degraded_sections.join(", ")}.` : ""}
         </div>
       ) : null}
       {/* ── KPI STRIP ── */}
       <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">
         <Kpi
           label="Migrations"
-          value={(c.migrations ?? 0).toLocaleString()}
+          value={countValue("migrations")}
           accent
         />
         <Kpi
@@ -223,20 +237,20 @@ export function CommandCenter() {
         />
         <Kpi
           label="Alerts (gated)"
-          value={(c.alerts ?? 0).toLocaleString()}
+          value={countValue("alerts")}
           accent
         />
         <Kpi
           label="Tracked wallets"
-          value={(c.wallets ?? c.wallets ?? c.wallets_perf ?? 0).toLocaleString()}
+          value={c.wallets ?? c.wallets_perf == null ? "—" : Number(c.wallets ?? c.wallets_perf).toLocaleString()}
         />
         <Kpi
           label="Entities"
-          value={(c.entities ?? 0).toLocaleString()}
+          value={countValue("entities")}
         />
         <Kpi
           label="Buyers captured"
-          value={(c.buyers ?? 0).toLocaleString()}
+          value={countValue("buyers")}
         />
       </div>
 
@@ -252,13 +266,17 @@ export function CommandCenter() {
         <p className="mb-1 text-[10px] text-terminal-dim">
           Setup deterioration after Gate 1. Not price-down. Not a buy.
         </p>
-        {dips.length === 0 ? (
+        {!dipsAvailable ? (
+          <p className="py-3 text-center text-[12px] text-amber-300">
+            QUALITY DETERIORATION EVIDENCE UNAVAILABLE
+          </p>
+        ) : (dips || []).length === 0 ? (
           <p className="py-3 text-center text-[12px] text-terminal-muted">
             NO ACTIVE QUALITY DETERIORATION
           </p>
         ) : (
           <ul className="divide-y divide-terminal-border">
-            {dips.slice(0, 6).map((d, i) => {
+            {(dips || []).slice(0, 6).map((d, i) => {
               const mint = String(d.mint || "");
               const why = Array.isArray(d.why) ? d.why : [];
               const first = why[0] as { explanation?: string } | string | undefined;
@@ -295,7 +313,7 @@ export function CommandCenter() {
         </p>
         {!(data.synthesis?.investigations || []).length ? (
           <p className="py-3 text-center text-[12px] text-terminal-muted">
-            {data.synthesis?.empty_note || "NO ACTIVE INVESTIGATIONS"}
+            {data.synthesis?.available === false ? "INVESTIGATION EVIDENCE UNAVAILABLE" : (data.synthesis?.empty_note || "NO ACTIVE INVESTIGATIONS")}
           </p>
         ) : (
           <ul className="divide-y divide-terminal-border">
@@ -317,7 +335,11 @@ export function CommandCenter() {
       </section>
 
       {/* ── ALERT PRECISION (measured outcomes) ── */}
-      {(data as any).pipeline?.available && (
+      {(data as any).pipeline?.available === false ? (
+        <div className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
+          PIPELINE EVIDENCE UNAVAILABLE
+        </div>
+      ) : (data as any).pipeline?.available ? (
         <div className="rounded border border-terminal-border bg-terminal-panel/80 px-3 py-2 text-2xs">
           <div className="mb-1 text-[9px] font-semibold uppercase tracking-wide text-terminal-dim">
             Pipeline
@@ -341,9 +363,13 @@ export function CommandCenter() {
             )}
           </div>
         </div>
-      )}
+      ) : null}
 
-      {data.alert_precision && data.alert_precision.available !== false && (
+      {data.alert_precision?.available === false ? (
+        <div className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
+          ALERT PRECISION EVIDENCE UNAVAILABLE
+        </div>
+      ) : data.alert_precision ? (
         <div className="flex flex-wrap items-center gap-3 rounded-xl border border-terminal-border bg-[#0a0e0a] px-3 py-2">
           <div className="text-[10px] font-semibold uppercase tracking-wider text-terminal-muted">
             Alert precision
@@ -401,7 +427,7 @@ export function CommandCenter() {
             </Link>
           </div>
         </div>
-      )}
+      ) : null}
 
       {/* ── MAIN BAND: Runners | Queue | Alerts ── */}
       <div className="grid min-h-[340px] flex-1 grid-cols-1 gap-2.5 lg:grid-cols-12">
@@ -448,7 +474,7 @@ export function CommandCenter() {
                       colSpan={9}
                       className="px-4 py-10 text-center text-terminal-muted"
                     >
-                      No runners in API payload. If pipeline shows migration_tracks, restart stinky-api (old query may have timed out).
+                      {failed.has("runners") ? "RUNNER EVIDENCE UNAVAILABLE" : "No runners in API payload."}
                     </td>
                   </tr>
                 )}
@@ -460,8 +486,8 @@ export function CommandCenter() {
           </div>
           <div className="flex items-center gap-3 border-t border-terminal-border px-3 py-1.5 text-[10px] text-terminal-muted">
             <span className="flex items-center gap-1.5">
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-terminal-accent" />
-              Live poll 4s
+              <span className={`h-1.5 w-1.5 rounded-full ${error ? "bg-amber-400" : "animate-pulse bg-terminal-accent"}`} />
+              {error ? "Snapshot stale" : "Live poll 6s"}
             </span>
             <span>
               Last updated{" "}
@@ -491,7 +517,7 @@ export function CommandCenter() {
           <div className="flex-1 space-y-1.5 overflow-auto p-2">
             {uniqueQueue.length === 0 && (
               <p className="py-8 text-center text-[12px] text-terminal-muted">
-                No gated candidates yet.
+                {failed.has("alerts") ? "OPPORTUNITY EVIDENCE UNAVAILABLE" : "No gated candidates yet."}
               </p>
             )}
             {uniqueQueue.map((o, i) => (
@@ -581,20 +607,20 @@ export function CommandCenter() {
             </div>
             <div className="flex gap-1 text-[9px] text-terminal-muted">
               <span className="rounded bg-terminal-accent/15 px-1.5 py-0.5 text-terminal-accent">
-                LIVE
+                {error ? "STALE" : degraded ? "DEGRADED" : "LIVE"}
               </span>
             </div>
           </div>
           <div className="grid grid-cols-2 gap-2 p-3">
-            <MiniStat label="Migrations" value={(c.migrations ?? 0).toLocaleString()} />
-            <MiniStat label="Tracks" value={(c.tracks ?? 0).toLocaleString()} />
-            <MiniStat label="Launches" value={(c.launches ?? 0).toLocaleString()} />
-            <MiniStat label="Entities" value={(c.entities ?? 0).toLocaleString()} />
+            <MiniStat label="Migrations" value={countValue("migrations")} />
+            <MiniStat label="Tracks" value={countValue("tracks")} />
+            <MiniStat label="Launches" value={countValue("launches")} />
+            <MiniStat label="Entities" value={countValue("entities")} />
             <MiniStat
               label="5m Vol (runners)"
               value={vol5mSum != null ? fmtUsd(vol5mSum) : "—"}
             />
-            <MiniStat label="Wallet perf" value={(c.wallets ?? c.wallets_perf ?? 0).toLocaleString()} />
+            <MiniStat label="Wallet perf" value={c.wallets ?? c.wallets_perf == null ? "—" : Number(c.wallets ?? c.wallets_perf).toLocaleString()} />
           </div>
         </section>
 
@@ -686,7 +712,7 @@ export function CommandCenter() {
           </div>
           <div className="flex items-center gap-2 text-[9px] text-terminal-muted">
             <span>
-              {(data.trending?.count ?? data.trending?.items?.length ?? 0)} hits
+              {data.trending?.available === false ? "unavailable" : `${data.trending?.count ?? data.trending?.items?.length ?? 0} hits`}
             </span>
             <span className="text-terminal-muted/60">pump · fees gate when known</span>
           </div>
@@ -706,7 +732,14 @@ export function CommandCenter() {
               </tr>
             </thead>
             <tbody>
-              {(data.trending?.items ?? []).length === 0 && (
+              {data.trending?.available === false && (
+                <tr>
+                  <td colSpan={8} className="px-3 py-8 text-center text-[12px] text-amber-300">
+                    TRENDING EVIDENCE UNAVAILABLE
+                  </td>
+                </tr>
+              )}
+              {data.trending?.available !== false && (data.trending?.items ?? []).length === 0 && (
                 <tr>
                   <td colSpan={8} className="px-3 py-8 text-center text-[12px] text-terminal-muted">
                     No measured coins at ≥ $150k 5m volume yet. Gate 1 is an investigation trigger, not a buy.
@@ -784,9 +817,9 @@ export function CommandCenter() {
       {/* ── EVENT STREAM FOOTER ── */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-terminal-border bg-[#0a0e0a] px-3 py-1.5 text-[10px]">
         <span className="flex items-center gap-1.5 font-semibold text-terminal-text">
-          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-terminal-accent" />
+          <span className={`h-1.5 w-1.5 rounded-full ${failed.has("alerts") ? "bg-amber-400" : "animate-pulse bg-terminal-accent"}`} />
           EVENT STREAM
-          <span className="text-terminal-accent">LIVE</span>
+          <span className="text-terminal-accent">{error ? "STALE" : failed.has("alerts") ? "UNAVAILABLE" : "LIVE"}</span>
         </span>
         <span className="text-terminal-border">|</span>
         {(data.alerts || []).slice(0, 4).map((a, i) => (

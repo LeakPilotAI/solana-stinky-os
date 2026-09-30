@@ -1,4 +1,5 @@
 from copy import deepcopy
+import pytest
 
 from stinky_api.paper_execution_realism import simulate_paper_execution
 from stinky_api.paper_walk_forward_adapter import adapt_simulated_execution_for_walk_forward
@@ -37,13 +38,15 @@ def policy():
 
 
 def closed_sim(exit_price: float):
-    return simulate_paper_execution(
+    result = simulate_paper_execution(
         decision(),
         assumptions(),
         reference_entry_price=1.0,
         reference_exit_price=exit_price,
         notional_usd=100.0,
     )
+    result["policy_identity"] = {"policy_version": "paper-v1", "policy_sha256": "a" * 64, "provenance": {"mode": "MANUAL_OPERATOR_SUPPLIED", "evidence_backed": False}}
+    return result
 
 
 def test_actual_159_output_adapts_directly_into_160_and_evaluates_chronologically():
@@ -59,6 +62,7 @@ def test_actual_159_output_adapts_directly_into_160_and_evaluates_chronologicall
     assert all(row["status"] == "CLOSED" for row in rows)
     assert rows[0]["net_pnl"] == first["net_pnl_usd"]
     assert rows[0]["paper_notional"] == first["notional_usd"]
+    assert rows[0]["policy_identity"] == first["policy_identity"]
 
     result = evaluate_walk_forward_paper(rows, policy())
     assert result["status"] == "OBSERVED"
@@ -116,3 +120,22 @@ def test_adapter_deep_copies_159_source_evidence():
     frozen = deepcopy(adapted["source_execution"])
     source["net_pnl_usd"] = 999999.0
     assert adapted["source_execution"] == frozen
+
+
+def test_adapter_rejects_closed_simulation_without_immutable_policy_identity():
+    source=closed_sim(1.2); source.pop("policy_identity")
+    result=adapt_simulated_execution_for_walk_forward(source,closed_at="2026-09-10T01:00:00+00:00")
+    assert result["status"]=="UNKNOWN"
+    assert "policy_identity" in result["missing"]
+
+
+@pytest.mark.parametrize("change", [{"policy_sha256": "z" * 64},
+    {"provenance": {"mode": "MANUAL_OPERATOR_SUPPLIED", "evidence_backed": 0}},
+    {"provenance": {"mode": "UNKNOWN", "evidence_backed": False}}])
+def test_adapter_rejects_malformed_identity(change):
+    source = closed_sim(1.2); source["policy_identity"].update(change)
+    assert adapt_simulated_execution_for_walk_forward(source, closed_at="2026-09-10T01:00:00Z")["status"] == "UNKNOWN"
+
+
+def test_adapter_does_not_assign_timezone_to_ambiguous_close():
+    assert adapt_simulated_execution_for_walk_forward(closed_sim(1.2), closed_at="2026-09-10T01:00:00")["status"] == "UNKNOWN"

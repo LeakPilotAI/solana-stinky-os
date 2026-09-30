@@ -1,4 +1,5 @@
 from stinky_api.walk_forward_paper_validation import evaluate_walk_forward_paper
+import pytest
 
 
 def _policy(**overrides):
@@ -20,6 +21,7 @@ def _row(at, ret, pnl, **overrides):
         "net_return_pct": ret,
         "net_pnl": pnl,
         "paper_notional": 100.0,
+        "policy_identity": {"policy_version": "paper-v1", "policy_sha256": "a" * 64, "provenance": {"mode": "MANUAL_OPERATOR_SUPPLIED", "evidence_backed": False}},
         "paper_only": True,
         "live_execution": False,
         "trading_authority": False,
@@ -120,3 +122,64 @@ def test_no_deployed_notional_fails_closed_for_drawdown_normalization():
     result = evaluate_walk_forward_paper(rows, _policy())
     assert result["status"] == "UNKNOWN"
     assert result["missing"] == ["paper_notional_for_drawdown_normalization"]
+
+
+def test_mixed_policy_sha_cohorts_fail_closed_instead_of_being_averaged():
+    rows=_passing_rows()
+    rows[1]["policy_identity"]["policy_sha256"]="b"*64
+    result=evaluate_walk_forward_paper(rows,_policy())
+    assert result["status"]=="UNKNOWN"
+    assert "single_immutable_policy_cohort" in result["missing"]
+
+
+def test_manual_and_evidence_backed_cohorts_cannot_mix():
+    rows=_passing_rows()
+    from test_paper_cohort_report import row
+    rows[2]["policy_identity"]["provenance"]=row(backed=True)["record"]["policy_identity"]["provenance"]
+    result=evaluate_walk_forward_paper(rows,_policy())
+    assert result["status"]=="UNKNOWN"
+    assert "single_immutable_policy_cohort" in result["missing"]
+
+
+def test_release_result_is_bound_to_exact_policy_identity():
+    result=evaluate_walk_forward_paper(_passing_rows(),_policy())
+    assert result["evaluated_policy_identity"]["policy_version"]=="paper-v1"
+    assert result["evaluated_policy_identity"]["policy_sha256"]=="a"*64
+    assert result["evaluated_policy_identity"]["provenance"]["evidence_backed"] is False
+    assert result["mixed_policy_cohorts"] is False
+
+
+def test_legacy_unknown_policy_identity_cannot_enter_release_evidence():
+    rows=_passing_rows(); rows[0].pop("policy_identity")
+    result=evaluate_walk_forward_paper(rows,_policy())
+    assert result["status"]=="UNKNOWN"
+    assert "safe_closed_paper_execution_records" in result["missing"]
+
+
+@pytest.mark.parametrize("change", [
+    {"policy_sha256": "z" * 64},
+    {"provenance": {"mode": "MANUAL_OPERATOR_SUPPLIED", "evidence_backed": 0}},
+    {"provenance": {"mode": "UNKNOWN", "evidence_backed": False}},
+])
+def test_invalid_identity_is_not_release_evidence(change):
+    rows = _passing_rows()
+    for row in rows:
+        row["policy_identity"].update(change)
+    assert evaluate_walk_forward_paper(rows, _policy())["status"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize("field,value", [("net_pnl", True), ("paper_notional", -100),
+    ("paper_notional", None), ("live_execution", None), ("trading_authority", 1)])
+def test_invalid_closed_evidence_fails_closed(field, value):
+    rows = _passing_rows(); rows[0][field] = value
+    assert evaluate_walk_forward_paper(rows, _policy())["status"] == "UNKNOWN"
+
+
+def test_naive_chronology_does_not_crash_or_acquire_an_invented_timezone():
+    rows = _passing_rows(); rows[0]["closed_at"] = "2026-09-09T13:03:00"
+    assert evaluate_walk_forward_paper(rows, _policy())["status"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize("field", ["minimum_mean_net_return_pct", "maximum_drawdown_pct", "minimum_win_rate"])
+def test_boolean_release_threshold_is_invalid(field):
+    assert evaluate_walk_forward_paper(_passing_rows(), _policy(**{field: True}))["status"] == "UNKNOWN"
