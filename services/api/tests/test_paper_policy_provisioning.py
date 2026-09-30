@@ -102,3 +102,12 @@ def test_evidence_backed_provisioning_defaults_to_non_activation():
     import inspect
     params = inspect.signature(provision_evidence_backed_paper_policy).parameters
     assert params["activate"].default is False
+
+
+def test_operator_provisioning_cli_defaults_to_provision_only_and_requires_explicit_activation():
+    from pathlib import Path
+    source = (Path(__file__).resolve().parents[3] / "scripts" / "provision_paper_policy.py").read_text(encoding="utf-8")
+    assert 'mode.add_argument("--activate", action="store_true"' in source
+    assert 'activate=bool(args.activate)' in source
+    assert 'activate=not args.provision_only' not in source
+    assert "provision-only is already the safe default" in source
