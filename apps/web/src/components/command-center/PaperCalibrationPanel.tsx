@@ -14,7 +14,7 @@ type Status = {
   paper?: { SIMULATED_OPEN?: number; SIMULATED_CLOSED?: number; UNKNOWN?: number };
   intake?: { processed?: number; unprocessed?: number };
   policy?: { status?: string; version?: string | null; horizon?: string | null; notional_usd?: number | null };
-  prospective_evidence?: { status?: string; closed_outcomes?: number; pending_outcomes?: number; represented_outcome_classes?: number; first_candidate_at?: string | null; latest_candidate_at?: string | null; policy_threshold_proposal?: string; thresholds_invented?: boolean };
+  prospective_evidence?: { status?: string; closed_outcomes?: number; pending_outcomes?: number; represented_outcome_classes?: number; first_candidate_at?: string | null; latest_candidate_at?: string | null; policy_threshold_proposal?: string; thresholds_invented?: boolean; readiness?: { status?: string; criteria?: { min_closed_outcomes?: number | null; min_market_cap_samples?: number | null; min_outcome_classes?: number | null }; deficits?: { closed_outcomes_needed?: number; market_cap_samples_needed?: number; outcome_classes_needed?: number } | null; observed_market_cap_samples?: number; policy_provisioned?: boolean; automatic_activation?: boolean } };
   live_trading?: string;
   error?: string;
 };
@@ -61,6 +61,7 @@ export function PaperCalibrationPanel() {
   const s = d.decisions || {};
   const p = d.paper || {};
   const e = d.prospective_evidence || {};
+  const r = e.readiness || {};
   const observed = String(d.status || "").toUpperCase() === "OBSERVED";
   const metric = (value: number | undefined) => observed && value != null ? value : "—";
 
@@ -99,7 +100,8 @@ export function PaperCalibrationPanel() {
           <span className="ml-3">closed {e.closed_outcomes ?? 0}</span>
           <span className="ml-3">pending {e.pending_outcomes ?? 0}</span>
           <span className="ml-3">outcome classes {e.represented_outcome_classes ?? 0}/3</span>
-          {d.policy?.status === "NOT_SET" ? <span className="ml-3 text-amber-300">Policy remains intentionally unset until explicit evidence-sufficiency criteria are supplied.</span> : null}
+          {d.policy?.status === "NOT_SET" && r.status === "CRITERIA_NOT_SET" ? <span className="ml-3 text-amber-300">Policy remains intentionally unset; evidence-sufficiency criteria are not configured.</span> : null}
+          {d.policy?.status === "NOT_SET" && r.status === "CRITERIA_CONFIGURED" ? <span className="ml-3 text-amber-300">Evidence deficits: closed {r.deficits?.closed_outcomes_needed ?? "—"}, classes {r.deficits?.outcome_classes_needed ?? "—"}, market-cap {r.deficits?.market_cap_samples_needed ?? "—"}. Review only; no automatic policy activation.</span> : null}
         </div>
       ) : null}
 
