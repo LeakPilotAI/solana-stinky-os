@@ -181,6 +181,32 @@ def main() -> int:
     print("=== %s pid=%s" % (name, os.getpid()), flush=True)
     append_log(stamp)
 
+    def write_supervisor_ownership_state(
+        phase: str,
+        *,
+        services: dict[str, str] | None = None,
+    ) -> None:
+        """Persist supervisor identity immediately; never wait on unrelated HTTP health."""
+        service_map = dict(services or {})
+        payload = {
+            "as_of": utc_stamp(),
+            "system": phase if phase else system_state(service_map),
+            "services": service_map,
+            "watch": list(WATCH_CONTAINERS),
+            "note": (
+                "Supervisor ownership heartbeat. Service/app health is separate; "
+                "UNKNOWN is not UP. Gate 1 is not here."
+            ),
+            "service": name,
+            "supervisor_pid": os.getpid(),
+            "supervisor_started_at": supervisor_started_at,
+            "supervisor_phase": phase or "RUNNING",
+        }
+        try:
+            write_state(log_dir / ("runtime-state-" + name + ".json"), payload)
+        except OSError:
+            pass
+
     def http_ok(url: str, timeout: float = 2.5) -> bool:
         try:
             with urllib.request.urlopen(url, timeout=timeout) as resp:
@@ -424,16 +450,10 @@ def main() -> int:
             # Aggregate current-health snapshot remains convenient for the operator,
             # but it is intentionally overwriteable by the maintain loop.
             write_state(log_dir / "runtime-state.json", payload)
-            # Preserve each supervisor's last durable phase independently so a
-            # capped FAILED state cannot be erased by another service's heartbeat.
-            service_payload = dict(payload)
-            service_payload["service"] = name
-            service_payload["supervisor_pid"] = os.getpid()
-            service_payload["supervisor_started_at"] = supervisor_started_at
-            service_payload["supervisor_phase"] = phase or "RUNNING"
-            write_state(log_dir / ("runtime-state-" + name + ".json"), service_payload)
         except OSError:
             pass
+        # Preserve each supervisor's last durable ownership/phase independently.
+        write_supervisor_ownership_state(phase or "RUNNING", services=core)
 
     def listen_pid(port: int) -> int:
         try:
@@ -478,6 +498,10 @@ def main() -> int:
         if not docker:
             return
         hidden_run([docker, "start", *WATCH_CONTAINERS], timeout=40)
+
+    # Ownership must be provable immediately, before any unrelated core HTTP
+    # probes can consume the paper starter's bounded proof window.
+    write_supervisor_ownership_state("SUPERVISING")
 
     url_now = core_url(name)
     if url_now and http_ok(url_now):

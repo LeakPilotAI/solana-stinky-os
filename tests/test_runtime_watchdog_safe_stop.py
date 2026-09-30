@@ -71,12 +71,13 @@ def test_stop_never_kills_docker_daemon_and_stops_supervisors_first():
 def test_supervisor_failure_state_is_durable_per_service():
     t = read("scripts/run_genesis_service.py")
     assert 'write_state(log_dir / "runtime-state.json", payload)' in t
-    assert 'write_state(log_dir / ("runtime-state-" + name + ".json"), service_payload)' in t
-    assert 'service_payload["service"] = name' in t
-    assert 'service_payload["supervisor_phase"] = phase or "RUNNING"' in t
-    failed_at = t.index('dump_runtime("FAILED")')
-    durable_at = t.index('write_state(log_dir / ("runtime-state-" + name + ".json"), service_payload)')
-    assert failed_at < durable_at
+    assert 'write_state(log_dir / ("runtime-state-" + name + ".json"), payload)' in t
+    assert '"service": name' in t
+    assert '"supervisor_pid": os.getpid()' in t
+    assert '"supervisor_started_at": supervisor_started_at' in t
+    assert '"supervisor_phase": phase or "RUNNING"' in t
+    assert 'write_supervisor_ownership_state(phase or "RUNNING", services=core)' in t
+    assert 'dump_runtime("FAILED")' in t
 
 
 def test_healthy_core_supervisor_heartbeats_runtime_state():
@@ -126,5 +127,5 @@ def test_paper_worker_startup_requires_supervisor_proof_and_canonicalizes_pid_fi
     assert "_terminate_started_tree(proc)" in starter
     assert "tmp.replace(pid_file)" in starter
     assert 'pid_file.open("a"' not in starter
-    assert 'service_payload["supervisor_pid"] = os.getpid()' in runtime
-    assert 'service_payload["supervisor_started_at"] = supervisor_started_at' in runtime
+    assert '"supervisor_pid": os.getpid()' in runtime
+    assert '"supervisor_started_at": supervisor_started_at' in runtime
