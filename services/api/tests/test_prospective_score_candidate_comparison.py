@@ -5,7 +5,10 @@ def test_candidate_comparison_is_strictly_post_evidence_and_version_pinned():
     source=(API_ROOT/"src"/"stinky_api"/"prospective_score_candidate_comparison.py").read_text(encoding="utf-8")
     assert "mi.inspected_at>:candidate_cutoff" in source
     assert "mi.inspected_at<=:as_of" in source
+    assert "ol.observed_at>mi.inspected_at" in source
+    assert "ol.ingested_at>mi.inspected_at" in source
     assert "ol.ingested_at<=:as_of" in source
+    assert "ol.observed_at>=mi.inspected_at" not in source
     assert "mi.model_version=:intelligence_model_version" in source
     assert "mi.evidence->'score'->>'model_version'=:score_model_version" in source
     assert "ol.label_version=:label_version" in source
