@@ -417,3 +417,17 @@ def test_command_center_surfaces_prospective_paper_evidence_without_inventing_po
     assert "thresholds_invented: false" in route
     assert "Prospective evidence" in panel
     assert "Policy remains intentionally unset until explicit evidence-sufficiency criteria are supplied." in panel
+
+
+def test_discord_notifications_are_disabled_during_development():
+    launcher = read("start_genesis.py")
+    assert 'procs["discord"] = start_detached("discord")' not in launcher
+    assert 'HEALTH["DISCORD"] = "DISABLED"' in launcher
+    assert "no outbound notifications" in launcher
+    api = read("services/api/src/stinky_api/main.py")
+    start = api.index('@app.get("/v1/system/runtime-supervisors")')
+    end = api.index("def _probe_postgres", start)
+    block = api[start:end]
+    assert '"disabled_services": ["discord"]' in block
+    names_block = block[block.index("names = ("):block.index("now = datetime")]
+    assert '"discord"' not in names_block
