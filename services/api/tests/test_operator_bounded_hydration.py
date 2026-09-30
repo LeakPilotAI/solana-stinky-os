@@ -25,3 +25,12 @@ def test_full_book_hydration_remains_available_for_research_endpoints():
     queries = (root / "src" / "stinky_api" / "queries.py").read_text(encoding="utf-8")
     assert "async def load_memory_snapshot" in queries
     assert "MEMORY_SELECT_WALLET_OBS" in queries
+
+
+def test_live_quality_dips_use_bounded_hydration():
+    root = Path(__file__).resolve().parents[1]
+    main = (root / "src" / "stinky_api" / "main.py").read_text(encoding="utf-8")
+    queries = (root / "src" / "stinky_api" / "queries.py").read_text(encoding="utf-8")
+    assert "queries.load_quality_snapshot(session)" in main
+    assert "async def load_quality_snapshot" in queries
+    assert "rn <= 20" in queries
