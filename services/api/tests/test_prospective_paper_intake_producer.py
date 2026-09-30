@@ -190,3 +190,18 @@ async def test_canonical_outcome_and_close_link_are_single_assignment():
         row = (await session.execute(text("SELECT canonical_outcome,close_intake_id FROM paper_prospective_candidate WHERE candidate_id='c2'"))).one()
         assert tuple(row) == ("RUNNER", "prospective:e2:close")
     await engine.dispose()
+
+
+def test_prospective_outcomes_consume_later_measured_entity_classification_without_rewriting_t0():
+    src = (ROOT / "services/api/src/stinky_api/prospective_paper_intake_producer.py").read_text(encoding="utf-8")
+    start = src.index("async def _attach_canonical_outcomes")
+    end = src.index("async def _enqueue_due_closes", start)
+    block = src[start:end]
+    assert "entity_launches" in block
+    assert "outcome_meta->>'observed_at'" in block
+    assert "> c.decided_at" in block
+    assert "entity_launches:measured" in block
+    assert "WHERE c.canonical_outcome IS NULL" in block
+    assert "UPDATE paper_prospective_candidate" in block
+    assert "t0_evidence" not in block.split("UPDATE paper_prospective_candidate", 1)[1]
+    assert "frozen_bundle" not in block.split("UPDATE paper_prospective_candidate", 1)[1]
