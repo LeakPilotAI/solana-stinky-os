@@ -27,7 +27,6 @@ SERVICES = (
     "event-log",
     "api",
     "sentinel",
-    "discord",
     "collector",
     "entities",
     "web",
@@ -1124,8 +1123,9 @@ def main() -> int:
         time.sleep(2)
         procs["sentinel"] = start_detached("sentinel")
         time.sleep(1)
-        procs["discord"] = start_detached("discord")
-        time.sleep(1)
+        HEALTH["DISCORD"] = "DISABLED"
+        ok("DISCORD disabled for development (no outbound notifications)")
+        log_line("discord", "DISABLED", reason="development default; re-enable only for notification validation")
         procs["collector"] = start_detached("collector")
         time.sleep(1)
         procs["entities"] = start_detached("entities")
