@@ -77,3 +77,13 @@ def test_local_backup_uses_compose_network_sidecars_not_exec_or_host_ports():
     assert '"--network", self.network' in source
     assert '"-h", self.db_host' in source
     assert "sha256sum" in source
+
+
+def test_backup_supports_pre_013_runtime_record_schema_without_inventing_identity():
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert "def _table_columns" in source
+    assert 'runtime_identity_schema = "legacy_embedded_only"' in source
+    assert "first_class_columns.issubset(runtime_columns)" in source
+    assert "first_class_columns.isdisjoint(runtime_columns)" in source
+    assert "runtime_policy_identity_partial_schema:" in source
+    assert "Never infer historical identity from the current active policy." in source

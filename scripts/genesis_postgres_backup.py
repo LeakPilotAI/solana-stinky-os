@@ -376,6 +376,19 @@ def _table_exists(pg: PgTools, database: str, table: str) -> bool:
     return value.lower() in {"t", "true", "1"}
 
 
+def _table_columns(pg: PgTools, database: str, table: str) -> set[str]:
+    raw = pg.psql(
+        database,
+        f"""
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='{table}'
+        ORDER BY ordinal_position;
+        """,
+    )
+    return {line.strip() for line in raw.splitlines() if line.strip()}
+
+
 def _primary_key_columns(pg: PgTools, database: str, table: str) -> list[str]:
     sql = f"""
     SELECT a.attname
@@ -536,15 +549,62 @@ def _integrity_report(pg: PgTools, database: str) -> dict[str, Any]:
         except (TypeError, ValueError, OverflowError, RecursionError):
             errors.append(f"intake_noncanonical:{intake_id}")
 
+    runtime_columns = _table_columns(pg, database, "paper_runtime_record")
+    first_class_columns = {
+        "policy_version",
+        "policy_sha256",
+        "policy_evidence_backed",
+    }
+    if first_class_columns.issubset(runtime_columns):
+        runtime_identity_schema = "first_class"
+        runtime_projection = (
+            "jsonb_build_object("
+            "'intake_id',t.intake_id,"
+            "'policy_version',t.policy_version,"
+            "'policy_sha256',t.policy_sha256,"
+            "'policy_evidence_backed',t.policy_evidence_backed,"
+            "'record',t.record)"
+        )
+    elif first_class_columns.isdisjoint(runtime_columns):
+        runtime_identity_schema = "legacy_embedded_only"
+        runtime_projection = (
+            "jsonb_build_object("
+            "'intake_id',t.intake_id,"
+            "'record',t.record)"
+        )
+    else:
+        missing = sorted(first_class_columns - runtime_columns)
+        errors.append("runtime_policy_identity_partial_schema:" + ",".join(missing))
+        runtime_identity_schema = "partial_invalid"
+        runtime_projection = (
+            "jsonb_build_object("
+            "'intake_id',t.intake_id,"
+            "'record',t.record)"
+        )
+
     records = _json_rows(
-        pg, database, "paper_runtime_record",
-        "jsonb_build_object('intake_id',t.intake_id,'policy_version',t.policy_version,'policy_sha256',t.policy_sha256,'policy_evidence_backed',t.policy_evidence_backed,'record',t.record)",
+        pg,
+        database,
+        "paper_runtime_record",
+        runtime_projection,
     )
     counts["paper_runtime_record"] = len(records)
     for row in records:
         intake_id = str(row.get("intake_id"))
         record = row.get("record")
         identity = record.get("policy_identity") if isinstance(record, dict) else None
+
+        if runtime_identity_schema == "legacy_embedded_only":
+            # Pre-013 databases legitimately have no first-class policy columns.
+            # Never infer historical identity from the current active policy.
+            # If a legacy record already embeds identity, it must still validate.
+            if identity is not None:
+                if not isinstance(identity, dict) or validated_policy_identity(identity) is None:
+                    errors.append(f"runtime_policy_identity:{intake_id}")
+            continue
+
+        if runtime_identity_schema != "first_class":
+            continue
         if row.get("policy_version") is None and identity is None:
             continue
         if not isinstance(identity, dict) or validated_policy_identity(identity) is None:
@@ -553,7 +613,8 @@ def _integrity_report(pg: PgTools, database: str) -> dict[str, Any]:
         if (
             identity.get("policy_version") != row.get("policy_version")
             or identity.get("policy_sha256") != row.get("policy_sha256")
-            or identity.get("provenance", {}).get("evidence_backed") is not row.get("policy_evidence_backed")
+            or identity.get("provenance", {}).get("evidence_backed")
+            is not row.get("policy_evidence_backed")
         ):
             errors.append(f"runtime_first_class_identity:{intake_id}")
 
@@ -570,6 +631,7 @@ def _integrity_report(pg: PgTools, database: str) -> dict[str, Any]:
     return {
         "status": "PASS" if not errors else "FAIL",
         "counts": counts,
+        "runtime_policy_identity_schema": runtime_identity_schema,
         "errors": sorted(errors),
     }
 
