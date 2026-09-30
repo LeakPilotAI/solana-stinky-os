@@ -122,7 +122,9 @@ def test_paper_worker_startup_requires_supervisor_proof_and_canonicalizes_pid_fi
     starter = read("scripts/start_paper_runtime.py")
     runtime = read("scripts/run_genesis_service.py")
     assert "STARTUP_PROOF_SECONDS" in starter
-    assert "_wait_for_owned_supervisor(proc, name, logs)" in starter
+    assert "_wait_for_owned_supervisor(proc, name, logs, launch_token)" in starter
+    assert 'known[name] = owned_pid' in starter
+    assert '"supervisor_launch_token"' in runtime
     assert "STARTUP FAILED: supervisor ownership/heartbeat was not proven" in starter
     assert "_terminate_started_tree(proc)" in starter
     assert "tmp.replace(pid_file)" in starter

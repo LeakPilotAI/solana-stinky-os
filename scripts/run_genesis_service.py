@@ -200,6 +200,7 @@ def main() -> int:
             "service": name,
             "supervisor_pid": os.getpid(),
             "supervisor_started_at": supervisor_started_at,
+            "supervisor_launch_token": os.environ.get("GENESIS_SUPERVISOR_LAUNCH_TOKEN"),
             "supervisor_phase": phase or "RUNNING",
         }
         try:

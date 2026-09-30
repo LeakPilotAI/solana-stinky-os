@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -229,15 +230,23 @@ def _tail_service_log(name: str, logs: Path, lines: int = 20) -> str:
     return "\n".join(content[-max(1, int(lines)):])
 
 
-def _wait_for_owned_supervisor(proc: subprocess.Popen, name: str, logs: Path) -> bool:
+def _wait_for_owned_supervisor(
+    proc: subprocess.Popen, name: str, logs: Path, launch_token: str
+) -> int:
     deadline = time.monotonic() + STARTUP_PROOF_SECONDS
     while time.monotonic() < deadline:
         if proc.poll() is not None:
-            return False
-        if _owned_supervisor(int(proc.pid), name, logs):
-            return True
+            return 0
+        try:
+            state = json.loads((logs / f"runtime-state-{name}.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            state = {}
+        if isinstance(state, dict) and launch_token and state.get("supervisor_launch_token") == launch_token:
+            pid = state.get("supervisor_pid")
+            if type(pid) is int and pid > 0 and _owned_supervisor(pid, name, logs):
+                return pid
         time.sleep(0.25)
-    return False
+    return 0
 
 
 def _terminate_started_tree(proc: subprocess.Popen) -> None:
@@ -291,11 +300,13 @@ def main() -> int:
         known.pop(name, None)
 
         log = open(logs / (name + ".log"), "a", encoding="utf-8", errors="replace")
+        launch_token = uuid.uuid4().hex
+        worker_env = {**env, "GENESIS_SUPERVISOR_LAUNCH_TOKEN": launch_token}
         try:
             proc = subprocess.Popen(
                 [exe, str(supervisor), "--name", name],
                 cwd=str(root),
-                env=env,
+                env=worker_env,
                 stdin=subprocess.DEVNULL,
                 stdout=log,
                 stderr=subprocess.STDOUT,
@@ -304,7 +315,8 @@ def main() -> int:
         finally:
             log.close()
 
-        if not _wait_for_owned_supervisor(proc, name, logs):
+        owned_pid = _wait_for_owned_supervisor(proc, name, logs, launch_token)
+        if not owned_pid:
             print(f"  {name} STARTUP FAILED: supervisor ownership/heartbeat was not proven")
             tail = _tail_service_log(name, logs)
             if tail:
@@ -322,9 +334,9 @@ def main() -> int:
             failed = True
             continue
 
-        known[name] = int(proc.pid)
+        known[name] = owned_pid
         _write_pids(pid_file, known)
-        print(f"  {name} PID {proc.pid} VERIFIED (paper only; no RPC/signing/orders)")
+        print(f"  {name} PID {owned_pid} VERIFIED (paper only; no RPC/signing/orders)")
 
     _write_pids(pid_file, known)
     return 1 if failed else 0
