@@ -52,6 +52,8 @@ def test_backup_launcher_uses_canonical_container_and_database():
     assert "--mode docker-network" in source
     assert "--network project-genesis_default" in source
     assert "--db-host postgres" in source
+    assert "--discover-container-endpoint" in source
+    assert "--container stinky-postgres" in source
     assert "--port 5432" in source
 
 
@@ -87,3 +89,15 @@ def test_backup_supports_pre_013_runtime_record_schema_without_inventing_identit
     assert "first_class_columns.isdisjoint(runtime_columns)" in source
     assert "runtime_policy_identity_partial_schema:" in source
     assert "Never infer historical identity from the current active policy." in source
+
+
+def test_local_backup_discovers_actual_container_network_and_ip():
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert "def _discover_docker_endpoint" in source
+    assert '"docker",' in source
+    assert '"inspect",' in source
+    assert '"{{json .NetworkSettings.Networks}}"' in source
+    assert "container_has_no_networks" in source
+    assert "container_has_no_ipv4_endpoint" in source
+    assert "self.network, self.db_host = selected" in source
+    assert "[backup] discovered Docker endpoint:" in source

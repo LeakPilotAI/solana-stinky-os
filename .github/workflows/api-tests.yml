@@ -161,3 +161,54 @@ jobs:
           assert manifest["integrity"]["runtime_policy_identity_schema"] == "legacy_embedded_only"
           PY
           dropdb --if-exists -h 127.0.0.1 -p 5432 -U postgres genesis_backup_legacy_fixture
+
+      - name: Certify discovered container endpoint backup transport
+        env:
+          PGPASSWORD: postgres
+        run: |
+          rm -rf /tmp/genesis-backup-discovery-cert
+          docker network create genesis-backup-discovery
+          docker run -d --rm --name genesis-backup-discovery-db --network genesis-backup-discovery \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD=postgres \
+            -e POSTGRES_DB=genesis_backup_fixture \
+            postgres:16
+          ready=0
+          for i in $(seq 1 30); do
+            if docker run --rm --network genesis-backup-discovery -e PGPASSWORD \
+              postgres:16 pg_isready -h genesis-backup-discovery-db -p 5432 -U postgres -d genesis_backup_fixture; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = "1"
+          docker run --rm -i --network genesis-backup-discovery -e PGPASSWORD \
+            -v "$PWD/tests/fixtures:/fixtures:ro" \
+            postgres:16 psql -h genesis-backup-discovery-db -p 5432 -U postgres -d genesis_backup_fixture \
+            -X -v ON_ERROR_STOP=1 -f /fixtures/genesis_backup_restore_fixture.sql
+          python scripts/genesis_postgres_backup.py certify \
+            --mode docker-network \
+            --container genesis-backup-discovery-db \
+            --discover-container-endpoint \
+            --network intentionally-wrong-network-name \
+            --db-host intentionally-wrong-host-name \
+            --port 5432 \
+            --user postgres \
+            --password postgres \
+            --database genesis_backup_fixture \
+            --output-dir /tmp/genesis-backup-discovery-cert
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          files = list(Path("/tmp/genesis-backup-discovery-cert").glob("*.certification.json"))
+          assert len(files) == 1, files
+          result = json.loads(files[0].read_text())
+          assert result["status"] == "PASS"
+          assert result["manifest_match"] is True
+          assert result["source_database_modified"] is False
+          assert result["restored_over_source"] is False
+          assert result["temporary_restore_dropped"] is True
+          PY
+          docker rm -f genesis-backup-discovery-db
+          docker network rm genesis-backup-discovery

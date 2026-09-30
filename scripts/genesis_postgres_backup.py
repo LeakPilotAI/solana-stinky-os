@@ -97,6 +97,7 @@ class PgTools:
         password: str | None = None,
         network: str = "project-genesis_default",
         db_host: str = "postgres",
+        discover_container_endpoint: bool = False,
     ) -> None:
         self.mode = mode
         self.user = user
@@ -106,12 +107,17 @@ class PgTools:
         self.password = password or os.environ.get("PGPASSWORD") or user
         self.network = network
         self.db_host = db_host
+        self.discover_container_endpoint = bool(discover_container_endpoint)
         if mode not in {"docker-network", "direct"}:
             raise BackupError("unsupported_mode")
         if not _SAFE_TOKEN_RE.fullmatch(network):
             raise BackupError("unsafe_network_name")
         if not _SAFE_TOKEN_RE.fullmatch(db_host):
             raise BackupError("unsafe_database_host")
+        if not _SAFE_TOKEN_RE.fullmatch(container):
+            raise BackupError("unsafe_container_name")
+        if self.mode == "docker-network" and self.discover_container_endpoint:
+            self._discover_docker_endpoint()
 
     def run(
         self,
@@ -143,6 +149,47 @@ class PgTools:
             err = (result.stderr or b"").decode("utf-8", errors="replace")[-4000:]
             raise BackupError(f"command_failed:{cmd[0]}:{result.returncode}:{err}")
         return result
+
+    def _discover_docker_endpoint(self) -> None:
+        result = self.run(
+            [
+                "docker",
+                "inspect",
+                self.container,
+                "--format",
+                "{{json .NetworkSettings.Networks}}",
+            ],
+            capture=True,
+            timeout=METADATA_TIMEOUT_SECONDS,
+        )
+        raw = (result.stdout or b"").decode("utf-8", errors="strict").strip()
+        try:
+            networks = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise BackupError("invalid_container_network_inspect") from exc
+        if not isinstance(networks, dict) or not networks:
+            raise BackupError("container_has_no_networks")
+
+        candidates: list[tuple[str, str]] = []
+        for name, details in networks.items():
+            if not isinstance(name, str) or not _SAFE_TOKEN_RE.fullmatch(name):
+                continue
+            if not isinstance(details, dict):
+                continue
+            address = str(details.get("IPAddress") or "").strip()
+            if re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", address):
+                candidates.append((name, address))
+        if not candidates:
+            raise BackupError("container_has_no_ipv4_endpoint")
+
+        preferred = next((item for item in candidates if item[0] == self.network), None)
+        selected = preferred or sorted(candidates, key=lambda item: item[0])[0]
+        self.network, self.db_host = selected
+        print(
+            f"[backup] discovered Docker endpoint: "
+            f"{self.container} on {self.network} at {self.db_host}:{self.port}",
+            flush=True,
+        )
 
     async def _connect(self, database: str):
         return await asyncpg.connect(
@@ -757,6 +804,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--container", default="stinky-postgres")
     parser.add_argument("--network", default="project-genesis_default")
     parser.add_argument("--db-host", default="postgres")
+    parser.add_argument("--discover-container-endpoint", action="store_true")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=5432)
     parser.add_argument("--user", default="stinky")
@@ -777,6 +825,7 @@ def main() -> int:
         password=args.password,
         network=args.network,
         db_host=args.db_host,
+        discover_container_endpoint=args.discover_container_endpoint,
     )
     try:
         result = certify(pg, database=args.database, output_dir=Path(args.output_dir))
