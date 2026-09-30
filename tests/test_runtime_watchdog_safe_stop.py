@@ -104,3 +104,27 @@ def test_non_http_supervisor_heartbeat_proves_supervision_not_application_health
     assert "while proc.poll() is None:" in t
     assert "heartbeat is not an assertion that the application is healthy" in t
     assert 'dump_runtime("RUNNING")' in t
+
+
+def test_paper_worker_starter_rejects_pid_existence_without_fresh_owned_heartbeat():
+    t = read("scripts/start_paper_runtime.py")
+    assert "def _owned_supervisor" in t
+    assert 'state.get("service") != name' in t
+    assert 'state.get("supervisor_pid") != pid' in t
+    assert "STATE_MAX_AGE_SECONDS" in t
+    assert 'supervisor_phase") or "").upper() == "FAILED"' in t
+    assert "if _alive(old):" not in t
+    assert "if _owned_supervisor(old, name, logs):" in t
+
+
+def test_paper_worker_startup_requires_supervisor_proof_and_canonicalizes_pid_file():
+    starter = read("scripts/start_paper_runtime.py")
+    runtime = read("scripts/run_genesis_service.py")
+    assert "STARTUP_PROOF_SECONDS" in starter
+    assert "_wait_for_owned_supervisor(proc, name, logs)" in starter
+    assert "STARTUP FAILED: supervisor ownership/heartbeat was not proven" in starter
+    assert "_terminate_started_tree(proc)" in starter
+    assert "tmp.replace(pid_file)" in starter
+    assert 'pid_file.open("a"' not in starter
+    assert 'service_payload["supervisor_pid"] = os.getpid()' in runtime
+    assert 'service_payload["supervisor_started_at"] = supervisor_started_at' in runtime
