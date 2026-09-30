@@ -1,4 +1,4 @@
-from stinky_api.paper_policy_provisioning import validate_paper_configuration
+from stinky_api.paper_policy_provisioning import validate_paper_configuration, _evidence_provenance
 
 
 def valid_config():
@@ -55,3 +55,36 @@ def test_unknown_horizon_is_rejected():
     result = validate_paper_configuration(config)
     assert result["status"] == "UNKNOWN"
     assert "horizon" in result["missing"]
+
+
+def test_manual_policy_is_explicitly_not_evidence_backed():
+    result = validate_paper_configuration(valid_config())
+    assert result["configuration"]["provenance"] == {"mode": "MANUAL_OPERATOR_SUPPLIED", "evidence_backed": False}
+
+
+def test_evidence_provenance_requires_exact_candidate_readiness_identity():
+    candidate = {
+        "status": "PAPER_CANDIDATE_ARTIFACT",
+        "candidate_version": "score-paper-candidate-v1:abc",
+        "evidence_sha256": "a" * 64,
+        "payload": {"evaluation_as_of": "2026-09-30T00:00:00+00:00"},
+    }
+    readiness = {
+        "readiness_status": "READY_FOR_PAPER_POLICY_REVIEW",
+        "candidate_version": candidate["candidate_version"],
+        "evidence_sha256": candidate["evidence_sha256"],
+        "candidate_cutoff": candidate["payload"]["evaluation_as_of"],
+        "comparison_as_of": "2026-10-01T00:00:00+00:00",
+        "criteria": {"min_later_sample": 20},
+        "checks": {"sufficient_later_sample": True},
+    }
+    provenance = _evidence_provenance(candidate, readiness)
+    assert provenance is not None
+    assert provenance["evidence_backed"] is True
+    assert provenance["candidate_version"] == candidate["candidate_version"]
+    assert provenance["candidate_evidence_sha256"] == candidate["evidence_sha256"]
+    assert len(provenance["provenance_sha256"]) == 64
+    mismatched = dict(readiness, evidence_sha256="b" * 64)
+    assert _evidence_provenance(candidate, mismatched) is None
+    wrong_cutoff = dict(readiness, candidate_cutoff="2026-09-29T00:00:00+00:00")
+    assert _evidence_provenance(candidate, wrong_cutoff) is None
