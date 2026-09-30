@@ -10,7 +10,7 @@ type Counts = Record<string, number>;
 
 function positiveEnvInt(name: string): number | null {
   const raw = process.env[name];
-  if (!raw || !/^\\d+$/.test(raw.trim())) return null;
+  if (!raw || !/^\d+$/.test(raw.trim())) return null;
   const value = Number(raw);
   return Number.isSafeInteger(value) && value > 0 ? value : null;
 }
@@ -103,7 +103,7 @@ export async function GET() {
       psql("SELECT CASE WHEN processed_at IS NULL THEN 'UNPROCESSED' ELSE 'PROCESSED' END, count(*) FROM paper_runtime_intake GROUP BY 1 ORDER BY 1;"),
       psql("SELECT count(*) FILTER (WHERE canonical_outcome IN ('RUNNER','HELD','FADE'))::text || '|' || count(DISTINCT canonical_outcome) FILTER (WHERE canonical_outcome IN ('RUNNER','HELD','FADE'))::text || '|' || COALESCE(min(decided_at)::text,'') || '|' || COALESCE(max(decided_at)::text,'') FROM paper_prospective_candidate;"),
       psql("SELECT COALESCE(max(sample_count),0) FROM market_pattern_outcome_distributions WHERE status='CALIBRATED_EMPIRICAL';").catch(() => "0"),
-      psql("SELECT COALESCE(policy_version,'LEGACY_UNKNOWN'),COALESCE(policy_sha256,'UNKNOWN'),CASE WHEN policy_evidence_backed IS TRUE THEN 'EVIDENCE_BACKED' WHEN policy_evidence_backed IS FALSE THEN 'MANUAL' ELSE 'UNKNOWN' END,count(*) FROM paper_runtime_record GROUP BY policy_version,policy_sha256,policy_evidence_backed ORDER BY min(created_at);").catch(() => ""),
+      psql("SELECT json_build_object('policy_version',COALESCE(policy_version,'LEGACY_UNKNOWN'),'policy_sha256',COALESCE(policy_sha256,'UNKNOWN'),'provenance',CASE WHEN policy_evidence_backed IS TRUE THEN 'EVIDENCE_BACKED' WHEN policy_evidence_backed IS FALSE THEN 'MANUAL' ELSE 'UNKNOWN' END,'records',count(*))::text FROM paper_runtime_record GROUP BY policy_version,policy_sha256,policy_evidence_backed ORDER BY min(created_at);"),
     ]);
     const [producerVersion, prospectiveStartedAt] = epochRaw ? epochRaw.split("|", 2) : [null, null];
     const outcomes = parseCountRows(outcomeRaw), shadow = parseCountRows(shadowRaw), paper = parseCountRows(paperRaw), intake = parseCountRows(intakeRaw);
@@ -123,7 +123,7 @@ export async function GET() {
       policy_provisioned: false, automatic_activation: false,
     } : { status: "CRITERIA_NOT_SET", criteria, deficits: null, observed_market_cap_samples: marketCapSamples, policy_provisioned: false, automatic_activation: false };
     const closedOutcomes = (outcomes.RUNNER || 0) + (outcomes.HELD || 0) + (outcomes.FADE || 0);
-    const policyCohorts = cohortRaw.split(/\r?\n/).filter(Boolean).map((line) => { const [version, sha, provenance, count] = line.split("|", 4); return { policy_version: version || "LEGACY_UNKNOWN", policy_sha256: sha || "UNKNOWN", provenance: provenance || "UNKNOWN", records: Number(count || 0) || 0 }; });
+    const policyCohorts = cohortRaw.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
     return NextResponse.json({
       status: "OBSERVED", paper_only: true, live_trading: "LOCKED",
       producer: workers.producer, paper_runtime: workers.runtime,
