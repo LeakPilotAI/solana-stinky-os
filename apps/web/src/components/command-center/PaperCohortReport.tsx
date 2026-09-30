@@ -47,7 +47,8 @@ export function PaperCohortReport() {
       const response = await fetch("/api/paper-cohort-report", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ policy_version: version.trim(), policy_sha256: sha.trim(),
-          evidence_backed: provenance === "EVIDENCE_BACKED", as_of: new Date(asOf.trim()).toISOString() }),
+          evidence_backed: provenance === "EVIDENCE_BACKED", as_of: new Date(asOf.trim()).toISOString(),
+          ...(evaluate ? { release_criteria: releaseCriteria() } : {}) }),
         cache: "no-store", signal: AbortSignal.timeout(12_000),
       });
       if (!response.ok) throw new Error("unavailable");
