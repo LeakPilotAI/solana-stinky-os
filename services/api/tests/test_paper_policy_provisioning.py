@@ -1,4 +1,4 @@
-from stinky_api.paper_policy_provisioning import validate_paper_configuration, _evidence_provenance
+from stinky_api.paper_policy_provisioning import validate_paper_configuration, _evidence_provenance, provision_evidence_backed_paper_policy
 
 
 def valid_config():
@@ -88,3 +88,9 @@ def test_evidence_provenance_requires_exact_candidate_readiness_identity():
     assert _evidence_provenance(candidate, mismatched) is None
     wrong_cutoff = dict(readiness, candidate_cutoff="2026-09-29T00:00:00+00:00")
     assert _evidence_provenance(candidate, wrong_cutoff) is None
+
+
+def test_evidence_backed_provisioning_defaults_to_non_activation():
+    import inspect
+    params = inspect.signature(provision_evidence_backed_paper_policy).parameters
+    assert params["activate"].default is False
