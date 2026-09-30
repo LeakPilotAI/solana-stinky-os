@@ -76,3 +76,29 @@ test("invalid criteria remain unset rather than acquiring thresholds", async () 
     assert.equal(result.prospective_evidence.readiness.deficits, null);
   }
 });
+
+
+test("paper cohort operator workflow has no hidden cutoff or release criteria defaults", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../src/components/command-center/PaperCohortReport.tsx"), "utf8");
+  assert.ok(source.includes('const [asOf, setAsOf] = useState("")'));
+  assert.ok(source.includes('const [minimumClosed, setMinimumClosed] = useState("")'));
+  assert.ok(source.includes('const [minimumMean, setMinimumMean] = useState("")'));
+  assert.ok(source.includes('const [maximumDrawdown, setMaximumDrawdown] = useState("")'));
+  assert.ok(source.includes('const [minimumWinRate, setMinimumWinRate] = useState("")'));
+  assert.ok(!source.includes("new Date().toISOString()"));
+  assert.ok(source.includes("releaseCriteria() === null"));
+  assert.ok(source.includes("Evaluate explicit criteria"));
+});
+
+test("paper evaluation artifacts are exportable and verified through read-only API", () => {
+  const component = fs.readFileSync(path.join(__dirname, "../src/components/command-center/PaperCohortReport.tsx"), "utf8");
+  const proxy = fs.readFileSync(path.join(__dirname, "../src/app/api/paper-evaluation-artifact/verify/route.ts"), "utf8");
+  assert.ok(component.includes("IMMUTABLE EVALUATION ARTIFACT PRODUCED"));
+  assert.ok(component.includes("Export artifact JSON"));
+  assert.ok(component.includes("Verify artifact"));
+  assert.ok(component.includes("/api/paper-evaluation-artifact/verify"));
+  assert.ok(component.includes("it does not provision or activate a policy"));
+  assert.ok(proxy.includes("/v1/paper/evaluation-artifact/verify"));
+  assert.ok(proxy.includes("automatic_activation: false"));
+  assert.ok(proxy.includes("live_execution: false"));
+});
