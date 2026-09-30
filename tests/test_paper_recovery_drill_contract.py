@@ -126,3 +126,27 @@ def test_reconcile_removes_stale_state_only_after_proven_orphan_cleanup():
     assert "_cleanup_proven_orphan(name, pid)" in reconcile
     assert "state_path.unlink()" in reconcile
     assert reconcile.index("_cleanup_proven_orphan(name, pid)") < reconcile.index("state_path.unlink()")
+
+
+def test_legacy_orphan_identity_binds_pid_state_log_and_native_creation_time():
+    src = (ROOT / "scripts" / "start_paper_runtime.py").read_text(encoding="utf-8")
+    native = src.split("def _windows_process_started_at", 1)[1].split("def _legacy_supervisor_instance_identity", 1)[0]
+    assert "GetProcessTimes" in native
+    assert "PROCESS_QUERY_LIMITED_INFORMATION" in native
+
+    legacy = src.split("def _legacy_supervisor_instance_identity", 1)[1].split("def _windows_supervisor_identity", 1)[0]
+    assert 'state.get("service") != name' in legacy
+    assert 'state.get("supervisor_pid")' in legacy
+    assert 'state.get("supervisor_started_at")' in legacy
+    assert "_windows_process_started_at(pid)" in legacy
+    assert "total_seconds()) > 5.0" in legacy
+    assert 'f"[{stamp}] start pid={int(pid)}"' in legacy
+
+
+def test_orphan_cleanup_accepts_only_command_identity_or_legacy_process_instance_proof():
+    src = (ROOT / "scripts" / "paper_recovery_drill.py").read_text(encoding="utf-8")
+    cleanup = src.split("def _cleanup_proven_orphan", 1)[1].split("def _reconcile_pid_file", 1)[0]
+    assert "command_identity = _windows_supervisor_identity(pid, name)" in cleanup
+    assert "legacy_instance_identity = _legacy_supervisor_instance_identity(pid, name, LOGS)" in cleanup
+    assert "if not (command_identity or legacy_instance_identity)" in cleanup
+    assert cleanup.index("if not (command_identity or legacy_instance_identity)") < cleanup.index('["taskkill"')
