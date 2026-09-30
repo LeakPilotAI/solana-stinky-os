@@ -103,3 +103,26 @@ def test_windows_supervisor_liveness_uses_native_api_not_tasklist():
     assert "GetExitCodeProcess" in alive
     assert "STILL_ACTIVE = 259" in alive
     assert 'subprocess.run(["tasklist"' not in alive
+
+
+def test_stale_live_supervisor_requires_exact_windows_process_identity_before_cleanup():
+    starter = (ROOT / "scripts" / "start_paper_runtime.py").read_text(encoding="utf-8")
+    identity = starter.split("def _windows_supervisor_identity", 1)[1].split("def _known_pids", 1)[0]
+    assert "Get-CimInstance Win32_Process" in identity
+    assert "run_genesis_service.py" in identity
+    assert '"--name"' in identity
+    assert "name.lower()" in identity
+
+    drill = (ROOT / "scripts" / "paper_recovery_drill.py").read_text(encoding="utf-8")
+    cleanup = drill.split("def _cleanup_proven_orphan", 1)[1].split("def _reconcile_pid_file", 1)[0]
+    assert "_windows_supervisor_identity(pid, name)" in cleanup
+    assert '["taskkill", "/PID", str(pid), "/T", "/F"]' in cleanup
+    assert cleanup.index("_windows_supervisor_identity(pid, name)") < cleanup.index('["taskkill"')
+
+
+def test_reconcile_removes_stale_state_only_after_proven_orphan_cleanup():
+    drill = (ROOT / "scripts" / "paper_recovery_drill.py").read_text(encoding="utf-8")
+    reconcile = drill.split("def _reconcile_pid_file", 1)[1].split("def _start_workers", 1)[0]
+    assert "_cleanup_proven_orphan(name, pid)" in reconcile
+    assert "state_path.unlink()" in reconcile
+    assert reconcile.index("_cleanup_proven_orphan(name, pid)") < reconcile.index("state_path.unlink()")

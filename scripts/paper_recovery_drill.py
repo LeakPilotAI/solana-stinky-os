@@ -27,6 +27,7 @@ from scripts.start_paper_runtime import (  # noqa: E402
     _alive,
     _known_pids,
     _owned_supervisor,
+    _windows_supervisor_identity,
     _write_pids,
 )
 
@@ -114,6 +115,41 @@ def _owned_detail(name: str, pid: int) -> dict[str, Any]:
     }
 
 
+def _cleanup_proven_orphan(name: str, pid: int) -> None:
+    """Remove only a live PID whose Windows command line proves exact Genesis ownership."""
+    if not _alive(pid):
+        return
+    if not _windows_supervisor_identity(pid, name):
+        raise RuntimeError(f"live_unowned_supervisor_identity_not_proven:{name}:{pid}")
+    print(
+        f"[recovery] cleaning proven orphaned Genesis supervisor {name} pid={pid}...",
+        flush=True,
+    )
+    if os.name != "nt":
+        raise RuntimeError("orphan_cleanup_requires_windows")
+    result = subprocess.run(
+        ["taskkill", "/PID", str(pid), "/T", "/F"],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=15,
+        check=False,
+    )
+    if result.returncode != 0 and _alive(pid):
+        raise RuntimeError(
+            f"proven_orphan_cleanup_failed:{name}:{pid}:"
+            f"{(result.stderr or result.stdout or '')[-300:]}"
+        )
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        if not _alive(pid):
+            return
+        time.sleep(0.25)
+    raise RuntimeError(f"proven_orphan_still_alive:{name}:{pid}")
+
+
 def _reconcile_pid_file() -> dict[str, int]:
     known = _known_pids(PID_FILE)
     changed = False
@@ -121,15 +157,37 @@ def _reconcile_pid_file() -> dict[str, int]:
         file_pid = int(known.get(name, 0) or 0)
         state_pid = _state_pid(name)
 
-        if file_pid > 0 and _alive(file_pid) and not _owned_supervisor(file_pid, name, LOGS):
-            raise RuntimeError(f"live_unowned_pid_file_entry:{name}:{file_pid}")
-        if state_pid > 0 and _alive(state_pid):
-            if not _owned_supervisor(state_pid, name, LOGS):
-                raise RuntimeError(f"live_unowned_state_supervisor:{name}:{state_pid}")
-            if file_pid != state_pid:
-                known[name] = state_pid
+        # A fresh durable heartbeat is the normal ownership proof. A live PID
+        # with stale state can be a supervisor orphaned by a prior failed
+        # startup cleanup; never kill it from stale state alone. First prove
+        # the exact Windows command line belongs to this Genesis worker.
+        candidates = []
+        for pid in (file_pid, state_pid):
+            if pid > 0 and pid not in candidates:
+                candidates.append(pid)
+        for pid in candidates:
+            if not _alive(pid):
+                continue
+            if _owned_supervisor(pid, name, LOGS):
+                if file_pid != pid:
+                    known[name] = pid
+                    file_pid = pid
+                    changed = True
+                continue
+            _cleanup_proven_orphan(name, pid)
+            if int(known.get(name, 0) or 0) == pid:
+                known.pop(name, None)
+                file_pid = 0
                 changed = True
-        elif file_pid > 0 and not _alive(file_pid):
+            state_path = LOGS / f"runtime-state-{name}.json"
+            if _state_pid(name) == pid:
+                try:
+                    state_path.unlink()
+                except FileNotFoundError:
+                    pass
+
+        file_pid = int(known.get(name, 0) or 0)
+        if file_pid > 0 and not _alive(file_pid):
             known.pop(name, None)
             changed = True
 

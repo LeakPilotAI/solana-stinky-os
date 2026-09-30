@@ -56,6 +56,39 @@ def _alive(pid: int) -> bool:
         return False
 
 
+def _windows_supervisor_identity(pid: int, name: str) -> bool:
+    """Prove a live Windows PID is this exact Genesis paper supervisor."""
+    if os.name != "nt" or pid <= 0 or name not in WORKERS:
+        return False
+    escaped = str(int(pid))
+    ps = (
+        "$ErrorActionPreference='Stop'; "
+        f"$p=Get-CimInstance Win32_Process -Filter \"ProcessId={escaped}\"; "
+        "if ($null -eq $p) { exit 3 }; "
+        "[Console]::Out.Write($p.CommandLine)"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=8,
+            check=False,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return False
+    if result.returncode != 0:
+        return False
+    command = (result.stdout or "").replace("/", "\\").lower()
+    return (
+        "run_genesis_service.py" in command
+        and "--name" in command
+        and name.lower() in command
+    )
+
+
 def _known_pids(pid_file: Path) -> dict[str, int]:
     out: dict[str, int] = {}
     if not pid_file.is_file():
