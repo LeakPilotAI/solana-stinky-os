@@ -411,23 +411,46 @@ async def _freeze_new_candidates(session, limit: int = 25) -> int:
 
 
 async def _attach_canonical_outcomes(session, limit: int = 50) -> int:
+    """Attach the earliest provably post-T0 canonical measured outcome.
+
+    Prefer the immutable tracking-completed event when it already carries a
+    canonical label. The durable measured classifier may later promote the
+    entity launch to RUNNER/HELD/FADE without rewriting that original event;
+    consume that promotion only from its explicit outcome_meta.observed_at and
+    only when it is strictly later than the candidate T0.
+    """
     rows = (
         await session.execute(
             text(
                 """
                 SELECT c.candidate_id,c.mint,c.decided_at,
-                       e.event_id::text AS outcome_event_id,e.occurred_at,e.ingested_at,e.payload
+                       ev.outcome_event_id,ev.occurred_at AS event_occurred_at,
+                       ev.ingested_at AS event_ingested_at,ev.payload AS event_payload,
+                       el.outcome_status AS launch_outcome,
+                       el.outcome_meta AS launch_outcome_meta
                 FROM paper_prospective_candidate c
-                JOIN LATERAL (
-                    SELECT event_id,occurred_at,ingested_at,payload
+                LEFT JOIN LATERAL (
+                    SELECT event_id::text AS outcome_event_id,occurred_at,ingested_at,payload
                     FROM events
                     WHERE event_type='post_migration.tracking_completed'
                       AND payload->>'mint'=c.mint
                       AND occurred_at > c.decided_at
                       AND ingested_at > c.decided_at
-                    ORDER BY occurred_at ASC,ingested_at ASC LIMIT 1
-                ) e ON TRUE
+                      AND upper(COALESCE(payload->>'outcome_status',payload->>'outcome',payload->>'status',''))
+                          IN ('RUNNER','HELD','FADE')
+                    ORDER BY GREATEST(occurred_at,ingested_at) ASC,event_id ASC LIMIT 1
+                ) ev ON TRUE
+                LEFT JOIN LATERAL (
+                    SELECT outcome_status,outcome_meta
+                    FROM entity_launches
+                    WHERE mint=c.mint
+                      AND upper(COALESCE(outcome_status,'')) IN ('RUNNER','HELD','FADE')
+                      AND NULLIF(outcome_meta->>'observed_at','') IS NOT NULL
+                      AND (outcome_meta->>'observed_at')::timestamptz > c.decided_at
+                    ORDER BY (outcome_meta->>'observed_at')::timestamptz ASC,id ASC LIMIT 1
+                ) el ON TRUE
                 WHERE c.canonical_outcome IS NULL
+                  AND (ev.outcome_event_id IS NOT NULL OR el.outcome_status IS NOT NULL)
                 ORDER BY c.decided_at ASC LIMIT :limit
                 """
             ),
@@ -436,19 +459,34 @@ async def _attach_canonical_outcomes(session, limit: int = 50) -> int:
     ).mappings().all()
     changed = 0
     for row in rows:
-        payload = row["payload"] if isinstance(row["payload"], dict) else {}
-        raw = payload.get("outcome_status") or payload.get("outcome") or payload.get("status")
-        outcome = str(raw or "UNKNOWN").upper()
-        if outcome not in {"RUNNER", "HELD", "FADE"}:
-            continue
-        observed = _dt(row["occurred_at"])
-        ingested = _dt(row["ingested_at"])
         decided = _dt(row["decided_at"])
-        if observed is None or ingested is None or decided is None:
+        if decided is None:
             continue
-        known_at = max(observed, ingested)
-        if known_at <= decided:
+
+        payload = row["event_payload"] if isinstance(row["event_payload"], dict) else {}
+        raw_event = payload.get("outcome_status") or payload.get("outcome") or payload.get("status")
+        event_outcome = str(raw_event or "").upper()
+        event_observed = _dt(row["event_occurred_at"])
+        event_ingested = _dt(row["event_ingested_at"])
+        event_known_at = (
+            max(event_observed, event_ingested)
+            if event_observed is not None and event_ingested is not None
+            else None
+        )
+
+        meta = row["launch_outcome_meta"] if isinstance(row["launch_outcome_meta"], dict) else {}
+        launch_outcome = str(row["launch_outcome"] or "").upper()
+        launch_known_at = _dt(meta.get("observed_at"))
+
+        choices: list[tuple[datetime, str, str]] = []
+        if event_outcome in {"RUNNER", "HELD", "FADE"} and event_known_at is not None and event_known_at > decided:
+            choices.append((event_known_at, event_outcome, str(row["outcome_event_id"])))
+        if launch_outcome in {"RUNNER", "HELD", "FADE"} and launch_known_at is not None and launch_known_at > decided:
+            choices.append((launch_known_at, launch_outcome, "entity_launches:measured"))
+
+        if not choices:
             continue
+        known_at, outcome, evidence_id = min(choices, key=lambda item: (item[0], item[2]))
         result = await session.execute(
             text(
                 """
@@ -458,7 +496,7 @@ async def _attach_canonical_outcomes(session, limit: int = 50) -> int:
                 WHERE candidate_id=:candidate_id AND canonical_outcome IS NULL
                 """
             ),
-            {"outcome": outcome, "known_at": known_at, "event_id": row["outcome_event_id"], "candidate_id": row["candidate_id"]},
+            {"outcome": outcome, "known_at": known_at, "event_id": evidence_id, "candidate_id": row["candidate_id"]},
         )
         if result.rowcount:
             changed += 1
