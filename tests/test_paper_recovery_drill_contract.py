@@ -72,3 +72,24 @@ def test_recovery_launcher_is_one_command():
     launcher = (ROOT / "Run-Paper-Recovery-Drill.cmd").read_text(encoding="utf-8")
     assert "scripts\\paper_recovery_drill.py" in launcher
     assert "paper-worker recovery drill PASSED" in launcher
+
+
+def test_paper_supervisor_ownership_heartbeat_is_immediate_and_health_independent():
+    src = (ROOT / "scripts" / "run_genesis_service.py").read_text(encoding="utf-8")
+    helper = src.split("def write_supervisor_ownership_state", 1)[1].split("def http_ok", 1)[0]
+    assert "http_ok(" not in helper
+    assert '"supervisor_pid": os.getpid()' in helper
+    assert '"supervisor_started_at": supervisor_started_at' in helper
+    assert '"supervisor_phase": phase or "RUNNING"' in helper
+
+    initial = src.index('write_supervisor_ownership_state("SUPERVISING")')
+    first_core_probe = src.index("url_now = core_url(name)")
+    assert initial < first_core_probe
+
+
+def test_paper_starter_surfaces_log_and_state_when_ownership_proof_fails():
+    src = (ROOT / "scripts" / "start_paper_runtime.py").read_text(encoding="utf-8")
+    assert "def _tail_service_log" in src
+    assert "recent log tail:" in src
+    assert "runtime state:" in src
+    assert "_terminate_started_tree(proc)" in src

@@ -87,6 +87,15 @@ def _owned_supervisor(pid: int, name: str, logs: Path, *, now: datetime | None =
     return -5.0 <= age <= STATE_MAX_AGE_SECONDS
 
 
+def _tail_service_log(name: str, logs: Path, lines: int = 20) -> str:
+    path = logs / f"{name}.log"
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    return "\n".join(content[-max(1, int(lines)):])
+
+
 def _wait_for_owned_supervisor(proc: subprocess.Popen, name: str, logs: Path) -> bool:
     deadline = time.monotonic() + STARTUP_PROOF_SECONDS
     while time.monotonic() < deadline:
@@ -164,6 +173,18 @@ def main() -> int:
 
         if not _wait_for_owned_supervisor(proc, name, logs):
             print(f"  {name} STARTUP FAILED: supervisor ownership/heartbeat was not proven")
+            tail = _tail_service_log(name, logs)
+            if tail:
+                print(f"  {name} recent log tail:\n{tail}")
+            state_path = logs / f"runtime-state-{name}.json"
+            if state_path.is_file():
+                try:
+                    print(
+                        f"  {name} runtime state: "
+                        + state_path.read_text(encoding="utf-8", errors="replace")[-2000:]
+                    )
+                except OSError:
+                    pass
             _terminate_started_tree(proc)
             failed = True
             continue
