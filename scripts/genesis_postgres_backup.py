@@ -27,7 +27,10 @@ if str(API_SRC) not in sys.path:
 from stinky_api.paper_evidence_json import content_sha256  # noqa: E402
 from stinky_api.paper_policy_identity import validated_policy_identity  # noqa: E402
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
+STREAM_PROGRESS_ROWS = 100_000
+METADATA_TIMEOUT_SECONDS = 60
+BACKUP_COMMAND_TIMEOUT_SECONDS = 60 * 60
 REQUIRED_TABLES = (
     "events",
     "market_snapshots",
@@ -112,6 +115,7 @@ class PgTools:
         stdout=None,
         capture: bool = False,
         env: dict[str, str] | None = None,
+        timeout: float | None = None,
     ) -> subprocess.CompletedProcess:
         merged = os.environ.copy()
         if env:
@@ -124,6 +128,7 @@ class PgTools:
             text=False,
             env=merged,
             check=False,
+            timeout=timeout,
         )
         if result.returncode != 0:
             err = (result.stderr or b"").decode("utf-8", errors="replace")[-4000:]
@@ -141,18 +146,23 @@ class PgTools:
             "-c", sql,
         ]
         pgoptions = ((os.environ.get("PGOPTIONS") or "") + " -c timezone=UTC").strip()
-        result = self.run(cmd, capture=True, env={"PGOPTIONS": pgoptions})
+        result = self.run(
+            cmd,
+            capture=True,
+            env={"PGOPTIONS": pgoptions},
+            timeout=METADATA_TIMEOUT_SECONDS,
+        )
         return (result.stdout or b"").decode("utf-8", errors="strict").strip()
 
     def create_database(self, database: str) -> None:
         database = _safe_db_name(database)
         cmd = [*self._tool("createdb"), "-U", self.user, database]
-        self.run(cmd)
+        self.run(cmd, timeout=METADATA_TIMEOUT_SECONDS)
 
     def drop_database(self, database: str) -> None:
         database = _safe_db_name(database)
         cmd = [*self._tool("dropdb"), "-U", self.user, "--if-exists", database]
-        self.run(cmd)
+        self.run(cmd, timeout=METADATA_TIMEOUT_SECONDS)
 
     def dump(self, database: str, path: Path) -> None:
         database = _safe_db_name(database)
@@ -165,7 +175,7 @@ class PgTools:
             "--no-privileges",
         ]
         with path.open("wb") as out:
-            self.run(cmd, stdout=out)
+            self.run(cmd, stdout=out, timeout=BACKUP_COMMAND_TIMEOUT_SECONDS)
 
     def restore(self, database: str, path: Path) -> None:
         database = _safe_db_name(database)
@@ -178,7 +188,63 @@ class PgTools:
             "--no-privileges",
         ]
         with path.open("rb") as source:
-            self.run(cmd, stdin=source)
+            self.run(cmd, stdin=source, timeout=BACKUP_COMMAND_TIMEOUT_SECONDS)
+
+    def stream_digest(self, database: str, sql: str, *, label: str) -> tuple[int, str]:
+        """Hash query output incrementally so large evidence tables never fill RAM."""
+        database = _safe_db_name(database)
+        cmd = [
+            *self._tool("psql"),
+            "-U", self.user,
+            "-d", database,
+            "-X", "-A", "-t",
+            "-q",
+            "-v", "ON_ERROR_STOP=1",
+            "-c", sql,
+        ]
+        env = os.environ.copy()
+        env["PGOPTIONS"] = ((env.get("PGOPTIONS") or "") + " -c timezone=UTC").strip()
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+        if proc.stdout is None:
+            proc.kill()
+            raise BackupError(f"stream_stdout_unavailable:{label}")
+        digest = hashlib.sha256()
+        row_count = 0
+        try:
+            for raw in proc.stdout:
+                line = raw.rstrip(b"\r\n")
+                if not line:
+                    continue
+                digest.update(line)
+                digest.update(b"\n")
+                row_count += 1
+                if row_count % STREAM_PROGRESS_ROWS == 0:
+                    print(f"  [manifest] {label}: {row_count:,} rows hashed", flush=True)
+            stderr = proc.stderr.read() if proc.stderr is not None else b""
+            returncode = proc.wait()
+        except BaseException:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            raise
+        if returncode != 0:
+            err = (stderr or b"").decode("utf-8", errors="replace")[-4000:]
+            raise BackupError(f"stream_command_failed:{label}:{returncode}:{err}")
+        return row_count, digest.hexdigest()
+
+    def has_extension(self, database: str, extension: str) -> bool:
+        if not re.fullmatch(r"[A-Za-z0-9_]+", extension):
+            raise BackupError("unsafe_extension_name")
+        return self.psql(
+            database,
+            f"SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname='{extension}');",
+        ) == "t"
 
     def has_timescaledb(self, database: str) -> bool:
         return self.psql(
@@ -234,6 +300,37 @@ def _rows_sha256(rows: list[Any]) -> str:
         h.update(encoded)
         h.update(b"\n")
     return h.hexdigest()
+
+
+def _table_digest(pg: PgTools, database: str, table: str) -> dict[str, Any]:
+    pk = _primary_key_columns(pg, database, table)
+    if not pk:
+        raise BackupError(f"required_table_without_primary_key:{table}")
+    order = ",".join("t." + _quoted_ident(col) for col in pk)
+    if pg.has_extension(database, "pgcrypto"):
+        projection = (
+            "encode(digest(convert_to((to_jsonb(t))::text,'UTF8'),'sha256'),'hex')"
+        )
+        hash_mode = "ordered_row_sha256_v1"
+    else:
+        projection = "(to_jsonb(t))::text"
+        hash_mode = "ordered_raw_json_v1"
+    label = f"{database}.{table}"
+    print(f"  [manifest] {label}: hashing...", flush=True)
+    row_count, rows_sha256 = pg.stream_digest(
+        database,
+        f"SELECT {projection} FROM public.{_quoted_ident(table)} t ORDER BY {order};",
+        label=label,
+    )
+    print(
+        f"  [manifest] {label}: done ({row_count:,} rows, {rows_sha256[:16]}...)",
+        flush=True,
+    )
+    return {
+        "row_count": row_count,
+        "rows_sha256": rows_sha256,
+        "hash_mode": hash_mode,
+    }
 
 
 def _active_policy(pg: PgTools, database: str) -> dict[str, Any] | None:
@@ -365,12 +462,9 @@ def build_manifest(pg: PgTools, database: str) -> dict[str, Any]:
 
     tables: dict[str, Any] = {}
     for table in REQUIRED_TABLES:
-        rows = _json_rows(pg, database, table)
-        tables[table] = {
-            "row_count": len(rows),
-            "rows_sha256": _rows_sha256(rows),
-        }
+        tables[table] = _table_digest(pg, database, table)
 
+    print(f"[backup] {database}: validating semantic evidence hashes...", flush=True)
     integrity = _integrity_report(pg, database)
     if integrity["status"] != "PASS":
         raise BackupError("source_integrity_failed:" + ",".join(integrity["errors"]))
@@ -406,27 +500,38 @@ def certify(
     certification_path = output_dir / f"genesis-{database}-{stamp}.certification.json"
     restore_db = _safe_db_name(f"genesis_restore_{uuid.uuid4().hex[:12]}")
 
+    print(f"[backup] {database}: building source evidence manifest...", flush=True)
     source_manifest = build_manifest(pg, database)
     _write_json(source_manifest_path, source_manifest)
+    print(f"[backup] {database}: source manifest written", flush=True)
+    print(f"[backup] {database}: creating full pg_dump...", flush=True)
     pg.dump(database, dump_path)
     dump_sha = _sha_file(dump_path)
+    print(
+        f"[backup] {database}: dump complete ({dump_path.stat().st_size:,} bytes, {dump_sha[:16]}...)",
+        flush=True,
+    )
 
     restore_created = False
     restored_manifest: dict[str, Any] | None = None
     match = False
     restore_error: BaseException | None = None
     try:
+        print(f"[backup] creating isolated restore database {restore_db}...", flush=True)
         pg.create_database(restore_db)
         restore_created = True
         if pg.has_timescaledb(database):
             pg.psql(restore_db, "CREATE EXTENSION IF NOT EXISTS timescaledb;")
             pg.psql(restore_db, "SELECT timescaledb_pre_restore();")
+        print(f"[backup] restoring dump into {restore_db}...", flush=True)
         pg.restore(restore_db, dump_path)
+        print(f"[backup] restore complete; validating restored evidence...", flush=True)
         if pg.has_timescaledb(restore_db):
             pg.psql(restore_db, "SELECT timescaledb_post_restore();")
         restored_manifest = build_manifest(pg, restore_db)
         _write_json(restored_manifest_path, restored_manifest)
         match = source_manifest == restored_manifest
+        print(f"[backup] source/restored manifest match: {match}", flush=True)
         if not match:
             raise BackupError("restored_manifest_mismatch")
     except BaseException as exc:
@@ -434,6 +539,7 @@ def certify(
     finally:
         if restore_created:
             try:
+                print(f"[backup] dropping isolated restore database {restore_db}...", flush=True)
                 pg.drop_database(restore_db)
             except BaseException as drop_exc:
                 if restore_error is None:
