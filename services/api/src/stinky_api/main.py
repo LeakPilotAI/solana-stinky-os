@@ -574,7 +574,13 @@ async def book_dips(
     """Active and resolved quality dips. Never invented."""
     from stinky_core.quality_state import evaluate_book, quality_dips, QUALITY_VERSION
 
-    mem, loaded, source = await _book_memory(payload, session)
+    from stinky_core.memory import IntelligenceMemory
+
+    mem = IntelligenceMemory()
+    snap = await queries.load_quality_snapshot(session)
+    failed_layers = snap.pop("_hydration_failed_layers", [])
+    loaded = mem.hydrate(snap)
+    source = "postgres_quality_partial" if failed_layers else "postgres_quality_bounded"
     degraded = _degraded_book_response(source, loaded)
     if degraded is not None:
         return {
