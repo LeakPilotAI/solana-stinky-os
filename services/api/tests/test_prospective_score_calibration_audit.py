@@ -82,3 +82,48 @@ async def test_invalid_explicit_calibration_configuration_fails_closed_before_qu
     assert "valid_explicit_min_labeled_sample" in result["missing"]
     assert result["thresholds_changed"] is False
     assert result["trading_authority"] is False
+
+
+class _Rows:
+    def __init__(self, rows):
+        self._rows = rows
+    def mappings(self):
+        return self
+    def all(self):
+        return self._rows
+
+
+class _Session:
+    def __init__(self, rows):
+        self.rows = rows
+    async def execute(self, *_args, **_kwargs):
+        return _Rows(self.rows)
+
+
+@pytest.mark.asyncio
+async def test_invalid_scores_are_unknown_and_metric_universes_stay_consistent():
+    rows = [
+        {"mint": "runner-scored", "label": "RUNNER", "stinky_score": 60.0, "alert_ok": True},
+        {"mint": "runner-unknown", "label": "RUNNER", "stinky_score": float("nan"), "alert_ok": False},
+        {"mint": "negative", "label": "FADE", "stinky_score": 70.0, "alert_ok": False},
+    ]
+    result = await audit_prospective_score_calibration(
+        _Session(rows),
+        intelligence_model_version="intel-v1",
+        score_model_version="score-v1",
+        outcome_label_version="outcome-v1",
+        score_threshold=55,
+        as_of="2026-09-30T00:00:00+00:00",
+        min_labeled_sample=1,
+    )
+    assert result["status"] == "OBSERVED"
+    assert result["labeled_sample_count"] == 3
+    assert result["scored_count"] == 2
+    assert result["unknown_score_count"] == 1
+    assert result["runner_count"] == 2
+    assert result["scored_runner_count"] == 1
+    assert result["unknown_runner_count"] == 1
+    assert result["runner_recall"] == 1.0
+    assert result["missed_runner_count"] == 0
+    assert result["all_labeled_runner_capture_rate"] == 0.5
+    assert result["false_positive_rate"] == 1.0
