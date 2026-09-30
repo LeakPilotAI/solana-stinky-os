@@ -83,6 +83,7 @@ def evaluate_walk_forward_paper(
 
     rows: list[dict[str, Any]] = []
     unsafe: list[int] = []
+    cohort_identity: dict[str, Any] | None = None
     for index, execution in enumerate(executions):
         if execution.get("status") != "CLOSED":
             continue
@@ -95,6 +96,21 @@ def evaluate_walk_forward_paper(
         if execution.get("rpc_contacted") is not False or execution.get("transaction_signed") is not False or execution.get("order_submitted") is not False:
             unsafe.append(index)
             continue
+        identity = execution.get("policy_identity")
+        if not isinstance(identity, dict):
+            unsafe.append(index)
+            continue
+        version = str(identity.get("policy_version") or "").strip()
+        sha = str(identity.get("policy_sha256") or "").strip()
+        provenance = identity.get("provenance")
+        if not version or len(sha) != 64 or not isinstance(provenance, dict) or provenance.get("evidence_backed") not in {True, False}:
+            unsafe.append(index)
+            continue
+        normalized_identity = {"policy_version": version, "policy_sha256": sha, "provenance": deepcopy(provenance)}
+        if cohort_identity is None:
+            cohort_identity = normalized_identity
+        elif normalized_identity != cohort_identity:
+            return _unknown(["single_immutable_policy_cohort"], mixed_policy_record_index=index, expected_policy_identity=cohort_identity, observed_policy_identity=normalized_identity)
         closed_at = _dt(execution.get("closed_at") or execution.get("exit_time"))
         net_return = _number(execution.get("net_return_pct"))
         net_pnl = _number(execution.get("net_pnl"))
@@ -106,6 +122,8 @@ def evaluate_walk_forward_paper(
             "net_return_pct": net_return,
             "net_pnl": net_pnl,
             "mint": execution.get("mint"),
+            "policy_identity": normalized_identity,
+            "paper_notional": _number(execution.get("paper_notional")),
         })
 
     if unsafe:
@@ -132,7 +150,7 @@ def evaluate_walk_forward_paper(
         equity += pnl
         peak = max(peak, equity)
         max_drawdown = max(max_drawdown, peak - equity)
-    gross_deployed = sum(abs(_number(executions[i].get("paper_notional")) or 0.0) for i in range(len(executions)))
+    gross_deployed = sum(abs(row.get("paper_notional") or 0.0) for row in rows)
     max_drawdown_pct = (max_drawdown / gross_deployed * 100.0) if gross_deployed > 0 else None
     if max_drawdown_pct is None:
         return _unknown(["paper_notional_for_drawdown_normalization"])
@@ -156,6 +174,8 @@ def evaluate_walk_forward_paper(
         "maximum_drawdown_pct_of_deployed_notional": max_drawdown_pct,
         "checks": checks,
         "policy": deepcopy(policy),
+        "evaluated_policy_identity": deepcopy(cohort_identity),
+        "mixed_policy_cohorts": False,
         "evaluated_records": [
             {**row, "closed_at": row["closed_at"].isoformat()} for row in rows
         ],
