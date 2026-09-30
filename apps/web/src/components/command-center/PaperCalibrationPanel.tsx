@@ -100,7 +100,7 @@ export function PaperCalibrationPanel() {
           <span className="ml-3">closed {e.closed_outcomes ?? 0}</span>
           <span className="ml-3">pending {e.pending_outcomes ?? 0}</span>
           <span className="ml-3">outcome classes {e.represented_outcome_classes ?? 0}/3</span>
-          {d.policy?.status === "NOT_SET" && r.status === "CRITERIA_NOT_SET" ? <span className="ml-3 text-amber-300">Policy remains intentionally unset; evidence-sufficiency criteria are not configured.</span> : null}
+          {d.policy?.status === "NOT_SET" && r.status === "CRITERIA_NOT_SET" ? <span className="ml-3 text-amber-300">Policy remains intentionally unset until explicit evidence-sufficiency criteria are supplied.</span> : null}
           {d.policy?.status === "NOT_SET" && r.status === "CRITERIA_CONFIGURED" ? <span className="ml-3 text-amber-300">Evidence deficits: closed {r.deficits?.closed_outcomes_needed ?? "—"}, classes {r.deficits?.outcome_classes_needed ?? "—"}, market-cap {r.deficits?.market_cap_samples_needed ?? "—"}. Review only; no automatic policy activation.</span> : null}
         </div>
       ) : null}
