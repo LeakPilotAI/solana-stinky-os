@@ -431,3 +431,24 @@ def test_discord_notifications_are_disabled_during_development():
     assert '"disabled_services": ["discord"]' in block
     names_block = block[block.index("names = ("):block.index("now = datetime")]
     assert '"discord"' not in names_block
+
+
+def test_command_center_surfaces_explicit_paper_evidence_deficits_without_policy_activation():
+    root = Path(__file__).resolve().parents[1]
+    route = (root / "apps/web/src/app/api/paper-status/route.ts").read_text(encoding="utf-8")
+    panel = (root / "apps/web/src/components/command-center/PaperCalibrationPanel.tsx").read_text(encoding="utf-8")
+    for name in (
+        "STINKY_PAPER_READINESS_MIN_CLOSED_OUTCOMES",
+        "STINKY_PAPER_READINESS_MIN_MARKET_CAP_SAMPLES",
+        "STINKY_PAPER_READINESS_MIN_OUTCOME_CLASSES",
+    ):
+        assert name in route
+    assert '"CRITERIA_NOT_SET"' in route
+    assert '"CRITERIA_CONFIGURED"' in route
+    assert "closed_outcomes_needed" in route
+    assert "outcome_classes_needed" in route
+    assert "market_cap_samples_needed" in route
+    assert "policy_provisioned: false" in route
+    assert "automatic_activation: false" in route
+    assert "Evidence deficits:" in panel
+    assert "no automatic policy activation" in panel
