@@ -20,7 +20,10 @@ def test_holdout_reports_correct_discrimination_metrics_and_versions():
     assert "mi.model_version = :intelligence_model_version" in source
     assert "mi.evidence->'score'->>'model_version' = :score_model_version" in source
     assert "ol.label_version = :label_version" in source
+    assert "ol.observed_at > mi.inspected_at" in source
+    assert "ol.ingested_at > mi.inspected_at" in source
     assert "ol.ingested_at <= :as_of" in source
+    assert "ol.observed_at >= mi.inspected_at" not in source
     assert '"runner_precision"' in source
     assert '"false_discovery_rate"' in source
     assert '"false_positive_rate"' in source
@@ -51,3 +54,18 @@ def test_holdout_configuration_fails_closed_instead_of_clamping_or_defaulting_no
     assert "isinstance(value,float) and not value.is_integer()" in source
     assert "datetime.now(timezone.utc)" not in source
     assert "min(max(float(evaluation_fraction)" not in source
+
+
+def test_holdout_evaluation_has_no_hidden_configuration_defaults():
+    import inspect
+    from stinky_api.prospective_score_holdout_evaluation import evaluate_score_threshold_out_of_sample
+
+    params = inspect.signature(evaluate_score_threshold_out_of_sample).parameters
+    required = (
+        "outcome_label_version", "candidate_thresholds", "evaluation_fraction",
+        "min_training_sample", "min_holdout_sample", "min_training_runners",
+        "min_training_negatives", "min_holdout_runners", "min_holdout_negatives",
+        "min_training_runner_precision", "as_of",
+    )
+    for name in required:
+        assert params[name].default is inspect.Parameter.empty
