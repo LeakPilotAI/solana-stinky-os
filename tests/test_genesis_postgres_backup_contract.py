@@ -48,11 +48,11 @@ def test_backup_contract_is_isolated_and_fail_closed():
 def test_backup_launcher_uses_canonical_container_and_database():
     source = (ROOT / "Backup-Genesis.cmd").read_text(encoding="utf-8")
     assert "genesis_postgres_backup.py" in source
-    assert "--container stinky-postgres" in source
     assert "--database stinky" in source
-    assert "--mode docker" in source
-    assert "--host 127.0.0.1" in source
-    assert "--port 5433" in source
+    assert "--mode docker-network" in source
+    assert "--network project-genesis_default" in source
+    assert "--db-host postgres" in source
+    assert "--port 5432" in source
 
 
 def test_large_table_manifest_streams_instead_of_buffering_every_row():
@@ -67,11 +67,13 @@ def test_large_table_manifest_streams_instead_of_buffering_every_row():
     assert "ordered_row_sha256_v1" in source
 
 
-def test_local_backup_avoids_docker_exec_transport_for_database_queries():
+def test_local_backup_uses_compose_network_sidecars_not_exec_or_host_ports():
     source = SCRIPT.read_text(encoding="utf-8")
-    assert "import asyncpg" in source
-    assert "asyncpg.connect(" in source
+    launcher = (ROOT / "Backup-Genesis.cmd").read_text(encoding="utf-8")
     assert '"docker", "exec"' not in source
-    assert '"docker", "run", "--rm", "-i"' in source
-    assert '"host.docker.internal"' in source
-    assert "command_timeout=METADATA_TIMEOUT_SECONDS" in source
+    assert "host.docker.internal" not in source
+    assert "--host 127.0.0.1" not in launcher
+    assert "--port 5433" not in launcher
+    assert '"--network", self.network' in source
+    assert '"-h", self.db_host' in source
+    assert "sha256sum" in source
