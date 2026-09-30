@@ -77,7 +77,7 @@ async function policyStatus() {
 
 export async function GET() {
   try {
-    const [workers, policy, epochRaw, candidateRaw, outcomeRaw, shadowRaw, paperRaw, intakeRaw] = await Promise.all([
+    const [workers, policy, epochRaw, candidateRaw, outcomeRaw, shadowRaw, paperRaw, intakeRaw, evidenceRaw] = await Promise.all([
       workerHealth(), policyStatus(),
       psql("SELECT producer_version || '|' || prospective_started_at::text FROM paper_intake_producer_state WHERE singleton=TRUE LIMIT 1;"),
       psql("SELECT count(*) FROM paper_prospective_candidate;"),
@@ -85,10 +85,14 @@ export async function GET() {
       psql("SELECT COALESCE(shadow_action,'UNKNOWN'), count(*) FROM paper_runtime_record GROUP BY COALESCE(shadow_action,'UNKNOWN') ORDER BY 1;"),
       psql("SELECT paper_status, count(*) FROM paper_runtime_record GROUP BY paper_status ORDER BY paper_status;"),
       psql("SELECT CASE WHEN processed_at IS NULL THEN 'UNPROCESSED' ELSE 'PROCESSED' END, count(*) FROM paper_runtime_intake GROUP BY 1 ORDER BY 1;"),
+      psql("SELECT count(*) FILTER (WHERE canonical_outcome IN ('RUNNER','HELD','FADE'))::text || '|' || count(DISTINCT canonical_outcome) FILTER (WHERE canonical_outcome IN ('RUNNER','HELD','FADE'))::text || '|' || COALESCE(min(decided_at)::text,'') || '|' || COALESCE(max(decided_at)::text,'') FROM paper_prospective_candidate;"),
     ]);
     const [producerVersion, prospectiveStartedAt] = epochRaw ? epochRaw.split("|", 2) : [null, null];
     const outcomes = parseCountRows(outcomeRaw), shadow = parseCountRows(shadowRaw), paper = parseCountRows(paperRaw), intake = parseCountRows(intakeRaw);
     const candidates = Number(candidateRaw || 0) || 0;
+    const [evidenceClosedRaw, representedRaw, firstCandidateAt, latestCandidateAt] = evidenceRaw ? evidenceRaw.split("|", 4) : ["0", "0", "", ""];
+    const evidenceClosed = Number(evidenceClosedRaw || 0) || 0;
+    const representedOutcomeClasses = Number(representedRaw || 0) || 0;
     const closedOutcomes = (outcomes.RUNNER || 0) + (outcomes.HELD || 0) + (outcomes.FADE || 0);
     return NextResponse.json({
       status: "OBSERVED", paper_only: true, live_trading: "LOCKED",
@@ -100,6 +104,16 @@ export async function GET() {
       paper: { SIMULATED_OPEN: paper.SIMULATED_OPEN || 0, SIMULATED_CLOSED: paper.SIMULATED_CLOSED || 0, UNKNOWN: paper.UNKNOWN || 0 },
       intake: { processed: intake.PROCESSED || 0, unprocessed: intake.UNPROCESSED || 0 },
       policy,
+      prospective_evidence: {
+        status: candidates > 0 ? "ACCUMULATING" : "AWAITING_CANDIDATES",
+        closed_outcomes: evidenceClosed,
+        pending_outcomes: Math.max(0, candidates - evidenceClosed),
+        represented_outcome_classes: representedOutcomeClasses,
+        first_candidate_at: firstCandidateAt || null,
+        latest_candidate_at: latestCandidateAt || null,
+        policy_threshold_proposal: "REQUIRES_EXPLICIT_SUFFICIENCY_CRITERIA",
+        thresholds_invented: false,
+      },
       authority: { live_execution: false, trading_authority: false, rpc_contacted: false, transaction_signed: false, order_submitted: false, wallet_mutated: false },
     });
   } catch (error) {
