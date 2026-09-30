@@ -106,7 +106,7 @@ async def process_one() -> bool:
             ON CONFLICT (intake_id) DO NOTHING
         """), {
             "intake_id": row["intake_id"], "mint": row["mint"],
-            "decided_at": shadow.get("decided_at"),
+            "decided_at": datetime.fromisoformat(shadow["decided_at"]) if shadow.get("decided_at") else None,
             "shadow_status": str(shadow.get("status") or result.get("status") or "UNKNOWN"),
             "shadow_action": shadow.get("action"),
             "paper_status": str(paper.get("status") or "NOT_SIMULATED"),

@@ -96,3 +96,22 @@ def test_runtime_schema_and_worker_persist_first_class_policy_identity():
 def test_runtime_cannot_persist_malformed_registry_identity(change):
     payload = bundle(); payload["policy_identity"].update(change)
     assert process_frozen_bundle(payload)["status"] == "UNKNOWN"
+
+
+@pytest.mark.asyncio
+async def test_worker_binds_decision_as_datetime_for_asyncpg(monkeypatch):
+    from datetime import datetime
+    from unittest.mock import AsyncMock, Mock
+    from stinky_api import paper_runtime_worker as worker
+    payload = bundle()
+    fetched = Mock()
+    fetched.mappings.return_value.first.return_value = {"intake_id": "i1", "mint": "mint-1",
+        "payload": payload, "payload_sha256": canonical_sha256(payload)}
+    db = Mock(execute=AsyncMock(side_effect=[fetched, Mock(), Mock()]), commit=AsyncMock())
+    context = AsyncMock(); context.__aenter__.return_value = db
+    monkeypatch.setattr(worker, "SessionLocal", lambda: context)
+    assert await worker.process_one()
+    bindings = db.execute.call_args_list[1].args[1]
+    assert isinstance(bindings["decided_at"], datetime)
+    assert bindings["decided_at"].utcoffset() is not None
+    db.commit.assert_awaited_once()

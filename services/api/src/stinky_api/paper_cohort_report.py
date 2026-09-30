@@ -180,7 +180,8 @@ async def report_paper_cohort(session, *, policy_sha256: Any = None,
                     or evidence.get("t0_bundle_recomputed") is not False
                     or _time(evidence.get("captured_at")) != observed or observed <= decided):
                 return unknown("invalid_stored_close_chronology")
-            horizon = _ALLOWED_HORIZONS.get(frozen_policy.get("horizon"))
+            horizon_name = frozen_policy.get("horizon")
+            horizon = _ALLOWED_HORIZONS.get(horizon_name) if isinstance(horizon_name, str) else None
             if (horizon is None or (observed - decided) < timedelta(seconds=horizon)
                     or paper.get("reference_exit_price") != payload.get("reference_exit_price")):
                 return unknown("invalid_frozen_close_horizon_or_price")

@@ -1,5 +1,6 @@
 """Exercise the real migrations/query/adapter/evaluator against isolated PostgreSQL."""
 import json
+from datetime import datetime, timezone, timedelta
 import os
 from pathlib import Path
 from uuid import uuid4
@@ -17,10 +18,12 @@ pytestmark = pytest.mark.skipif(not DB_URL, reason="requires dedicated API_TEST_
 
 
 async def insert(session, value):
+    value = {**value, **{key: datetime.fromisoformat(value[key].replace("Z", "+00:00"))
+                        for key in ("observed_at", "intake_created_at", "decided_at", "created_at")}}
     await session.execute(text("""
-        INSERT INTO paper_runtime_intake(intake_id,mint,observed_at,created_at,payload,payload_sha256)
+        INSERT INTO paper_runtime_intake(intake_id,mint,observed_at,created_at,payload,payload_sha256,processed_at)
         VALUES (:intake_id,:mint,CAST(:observed_at AS timestamptz),CAST(:intake_created_at AS timestamptz),
-                CAST(:payload AS jsonb),:payload_sha256)
+                CAST(:payload AS jsonb),:payload_sha256,CAST(:intake_created_at AS timestamptz))
     """), {**value, "payload": json.dumps(value["payload"])})
     await session.execute(text("""
         INSERT INTO paper_runtime_record(intake_id,mint,decided_at,created_at,shadow_status,paper_status,
@@ -31,7 +34,7 @@ async def insert(session, value):
 
 
 @pytest.mark.asyncio
-async def test_database_selection_cutoff_identity_and_overflow_are_fail_closed():
+async def test_database_selection_cutoff_identity_and_overflow_are_fail_closed(monkeypatch):
     schema = "cohort_test_" + uuid4().hex
     conn = await asyncpg.connect(DB_URL)
     engine = None
@@ -73,6 +76,25 @@ async def test_database_selection_cutoff_identity_and_overflow_are_fail_closed()
             await session.rollback()
             index = (await session.execute(text("SELECT indexdef FROM pg_indexes WHERE schemaname=:schema AND indexname='idx_paper_runtime_record_cohort_report'"), {"schema": schema})).scalar_one()
             assert "(policy_sha256, created_at, intake_id)" in index
+            # Exercise the real worker, including asyncpg timestamp bindings,
+            # atomic intake acknowledgement, and duplicate-processing protection.
+            worker_row = row("worker", sha="c" * 64, version="worker-policy")
+            await session.execute(text("""
+                INSERT INTO paper_runtime_intake(intake_id,mint,observed_at,payload,payload_sha256)
+                VALUES ('worker','mint-1',:observed,CAST(:payload AS jsonb),:sha)
+            """), {"observed": datetime(2026, 9, 10, 7, tzinfo=timezone.utc),
+                    "payload": json.dumps(worker_row["payload"]), "sha": worker_row["payload_sha256"]})
+            await session.commit()
+        from stinky_api import paper_runtime_worker as worker
+        monkeypatch.setattr(worker, "SessionLocal", factory)
+        assert await worker.process_one() is True
+        assert await worker.process_one() is False
+        async with factory() as session:
+            persisted = await report_paper_cohort(session, **selection(policy_sha256="c" * 64,
+                policy_version="worker-policy", as_of=(datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat()),
+                release_criteria=criteria())
+            assert persisted["walk_forward_evaluated"] is True
+            assert persisted["counts"]["closed_simulations"] == 1
     finally:
         if engine is not None:
             await engine.dispose()
