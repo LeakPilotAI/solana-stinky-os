@@ -93,3 +93,13 @@ def test_paper_starter_surfaces_log_and_state_when_ownership_proof_fails():
     assert "recent log tail:" in src
     assert "runtime state:" in src
     assert "_terminate_started_tree(proc)" in src
+
+
+def test_windows_supervisor_liveness_uses_native_api_not_tasklist():
+    src = (ROOT / "scripts" / "start_paper_runtime.py").read_text(encoding="utf-8")
+    alive = src.split("def _alive", 1)[1].split("def _known_pids", 1)[0]
+    assert 'ctypes.WinDLL("kernel32"' in alive
+    assert "OpenProcess" in alive
+    assert "GetExitCodeProcess" in alive
+    assert "STILL_ACTIVE = 259" in alive
+    assert 'subprocess.run(["tasklist"' not in alive
