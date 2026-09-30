@@ -86,6 +86,7 @@ export function PaperCohortReport() {
         <label>Provenance <select aria-label="Cohort provenance" className={inputClass} value={provenance} onChange={e => { setProvenance(e.target.value); reset(); }}>
           <option value="">Select explicitly</option><option value="MANUAL">MANUAL</option><option value="EVIDENCE_BACKED">EVIDENCE_BACKED</option>
         </select></label>
+        <label>As-of cutoff <input aria-label="Cohort as-of cutoff" placeholder="2026-09-30T00:00:00Z" className={`${inputClass} w-52`} value={asOf} onChange={e => { setAsOf(e.target.value); reset(); }} /></label>
         <button type="button" disabled={!valid || busy} onClick={() => load(false)} className="rounded border border-terminal-border px-2 py-1 text-terminal-text disabled:opacity-40">{busy ? "Loading…" : "Inspect selected cohort"}</button>
       </div>
       <div className="mt-2 flex flex-wrap gap-2 rounded border border-terminal-border p-2">
@@ -105,7 +106,17 @@ export function PaperCohortReport() {
         {report.earliest_closed_record ? <p>Closed evidence: {report.earliest_closed_record} through {report.latest_closed_record}</p> : null}
         {report.as_of ? <p>As of {report.as_of}</p> : null}
         <p>Release criteria: {report.release_criteria_supplied ? "SUPPLIED" : "NOT SUPPLIED"} · Walk-forward: {report.walk_forward_evaluated ? "EVALUATED" : "NOT EVALUATED"}</p>
+        {report.walk_forward_evaluated ? <p className="font-semibold">Evaluation result: {report.walk_forward?.release_gate_result || "UNKNOWN"} — evidence result only; it does not provision or activate a policy.</p> : null}
         {report.reasons?.length ? <p className="text-amber-300">{report.reasons.join(", ")}</p> : null}
+        {report.evaluation_artifact ? <div className="rounded border border-terminal-border p-2">
+          <p>IMMUTABLE EVALUATION ARTIFACT PRODUCED</p>
+          <p className="break-all font-mono">{report.evaluation_artifact.artifact_sha256}</p>
+          <div className="mt-1 flex gap-2">
+            <button type="button" onClick={exportArtifact} className="rounded border border-terminal-border px-2 py-1 text-terminal-text">Export artifact JSON</button>
+            <button type="button" onClick={verifyArtifact} className="rounded border border-terminal-border px-2 py-1 text-terminal-text">Verify artifact</button>
+          </div>
+          {verification ? <p className={verification.valid ? "text-emerald-400" : "text-amber-300"}>Artifact verification: {verification.valid ? "VERIFIED" : "NOT VERIFIED"}{verification.reason ? ` · ${verification.reason}` : ""}</p> : null}
+        </div> : <p>Evaluation artifact: NOT PRODUCED</p>}
         <p>No automatic activation or live trading authority.</p>
       </div> : null}
     </details>
