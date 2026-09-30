@@ -17,6 +17,7 @@ from stinky_api.db import SessionLocal
 from stinky_api.paper_execution_realism import simulate_paper_execution
 from stinky_api.shadow_paper_decision import build_shadow_paper_decision
 from stinky_api.shadow_paper_runtime_adapter import adapt_shadow_decision_for_paper
+from stinky_api.paper_policy_identity import validated_policy_identity
 
 AUTHORITY = {
     "paper_only": True,
@@ -48,7 +49,7 @@ def process_frozen_bundle(payload: dict[str, Any]) -> dict[str, Any]:
         return {"status": "UNKNOWN", "missing": ["complete_frozen_bundle"], **AUTHORITY}
     policy_sha = str(identity.get("policy_sha256") or "").strip()
     provenance = identity.get("provenance")
-    if len(policy_sha) != 64 or not isinstance(provenance, dict) or provenance.get("evidence_backed") not in {True, False}:
+    if validated_policy_identity({"policy_version": policy.get("policy_version"), "policy_sha256": policy_sha, "provenance": provenance}) is None:
         return {"status": "UNKNOWN", "missing": ["valid_policy_identity"], **AUTHORITY}
 
     shadow = build_shadow_paper_decision(probability, context, policy)

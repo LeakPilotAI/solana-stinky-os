@@ -1,4 +1,5 @@
 from stinky_api.walk_forward_paper_validation import evaluate_walk_forward_paper
+import pytest
 
 
 def _policy(**overrides):
@@ -152,3 +153,32 @@ def test_legacy_unknown_policy_identity_cannot_enter_release_evidence():
     result=evaluate_walk_forward_paper(rows,_policy())
     assert result["status"]=="UNKNOWN"
     assert "safe_closed_paper_execution_records" in result["missing"]
+
+
+@pytest.mark.parametrize("change", [
+    {"policy_sha256": "z" * 64},
+    {"provenance": {"mode": "MANUAL_OPERATOR_SUPPLIED", "evidence_backed": 0}},
+    {"provenance": {"mode": "UNKNOWN", "evidence_backed": False}},
+])
+def test_invalid_identity_is_not_release_evidence(change):
+    rows = _passing_rows()
+    for row in rows:
+        row["policy_identity"].update(change)
+    assert evaluate_walk_forward_paper(rows, _policy())["status"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize("field,value", [("net_pnl", True), ("paper_notional", -100),
+    ("paper_notional", None), ("live_execution", None), ("trading_authority", 1)])
+def test_invalid_closed_evidence_fails_closed(field, value):
+    rows = _passing_rows(); rows[0][field] = value
+    assert evaluate_walk_forward_paper(rows, _policy())["status"] == "UNKNOWN"
+
+
+def test_naive_chronology_does_not_crash_or_acquire_an_invented_timezone():
+    rows = _passing_rows(); rows[0]["closed_at"] = "2026-09-09T13:03:00"
+    assert evaluate_walk_forward_paper(rows, _policy())["status"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize("field", ["minimum_mean_net_return_pct", "maximum_drawdown_pct", "minimum_win_rate"])
+def test_boolean_release_threshold_is_invalid(field):
+    assert evaluate_walk_forward_paper(_passing_rows(), _policy(**{field: True}))["status"] == "UNKNOWN"

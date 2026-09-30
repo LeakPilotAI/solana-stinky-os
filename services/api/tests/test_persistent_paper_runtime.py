@@ -1,4 +1,5 @@
 from pathlib import Path
+import pytest
 
 from stinky_api.paper_runtime_worker import canonical_sha256, process_frozen_bundle
 from stinky_api.shadow_paper_decision import build_shadow_paper_decision
@@ -87,3 +88,11 @@ def test_runtime_schema_and_worker_persist_first_class_policy_identity():
         assert column in worker
     assert "idx_paper_runtime_record_policy_identity" in migration
     assert "policy_evidence_backed" in worker
+
+
+@pytest.mark.parametrize("change", [{"policy_sha256": "z" * 64},
+    {"provenance": {"mode": "MANUAL_OPERATOR_SUPPLIED", "evidence_backed": 0}},
+    {"provenance": {"mode": "UNKNOWN", "evidence_backed": False}}])
+def test_runtime_cannot_persist_malformed_registry_identity(change):
+    payload = bundle(); payload["policy_identity"].update(change)
+    assert process_frozen_bundle(payload)["status"] == "UNKNOWN"

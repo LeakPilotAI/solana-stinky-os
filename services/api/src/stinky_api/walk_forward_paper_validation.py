@@ -7,9 +7,10 @@ or trading authority.
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timezone
 from math import isfinite
 from typing import Any
+from stinky_api.paper_policy_identity import validated_policy_identity
 
 AUTHORITY = {
     "interpretation": "WALK_FORWARD_PAPER_VALIDATION_ONLY",
@@ -30,9 +31,11 @@ _REQUIRED_POLICY = (
 
 
 def _number(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
     try:
         result = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return result if isfinite(result) else None
 
@@ -41,7 +44,8 @@ def _dt(value: Any) -> datetime | None:
     if not value:
         return None
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed.astimezone(timezone.utc) if parsed.tzinfo is not None else None
     except (TypeError, ValueError):
         return None
 
@@ -65,6 +69,8 @@ def evaluate_walk_forward_paper(
     Policy thresholds are caller supplied. Genesis does not invent a minimum
     sample size, expectancy target, drawdown ceiling, or win-rate target.
     """
+    if not isinstance(policy, dict) or not isinstance(executions, list):
+        return _unknown(["explicit_policy_and_execution_records"])
     missing = [key for key in _REQUIRED_POLICY if key not in policy]
     minimum_closed = policy.get("minimum_closed_trades")
     mean_floor = _number(policy.get("minimum_mean_net_return_pct"))
@@ -85,28 +91,24 @@ def evaluate_walk_forward_paper(
     unsafe: list[int] = []
     cohort_identity: dict[str, Any] | None = None
     for index, execution in enumerate(executions):
+        if not isinstance(execution, dict):
+            unsafe.append(index)
+            continue
         if execution.get("status") != "CLOSED":
             continue
         if execution.get("paper_only") is not True:
             unsafe.append(index)
             continue
-        if any(execution.get(key) is True for key in ("live_execution", "trading_authority", "trade_signal")):
+        if any(execution.get(key) is not False for key in ("live_execution", "trading_authority", "trade_signal")):
             unsafe.append(index)
             continue
         if execution.get("rpc_contacted") is not False or execution.get("transaction_signed") is not False or execution.get("order_submitted") is not False:
             unsafe.append(index)
             continue
-        identity = execution.get("policy_identity")
-        if not isinstance(identity, dict):
+        normalized_identity = validated_policy_identity(execution.get("policy_identity"))
+        if normalized_identity is None:
             unsafe.append(index)
             continue
-        version = str(identity.get("policy_version") or "").strip()
-        sha = str(identity.get("policy_sha256") or "").strip()
-        provenance = identity.get("provenance")
-        if not version or len(sha) != 64 or not isinstance(provenance, dict) or provenance.get("evidence_backed") not in {True, False}:
-            unsafe.append(index)
-            continue
-        normalized_identity = {"policy_version": version, "policy_sha256": sha, "provenance": deepcopy(provenance)}
         if cohort_identity is None:
             cohort_identity = normalized_identity
         elif normalized_identity != cohort_identity:
@@ -117,13 +119,17 @@ def evaluate_walk_forward_paper(
         if closed_at is None or net_return is None or net_pnl is None:
             unsafe.append(index)
             continue
+        notional = _number(execution.get("paper_notional"))
+        if notional is None or notional <= 0:
+            return _unknown(["paper_notional_for_drawdown_normalization"], unsafe_record_indexes=[index])
         rows.append({
             "closed_at": closed_at,
             "net_return_pct": net_return,
             "net_pnl": net_pnl,
             "mint": execution.get("mint"),
             "policy_identity": normalized_identity,
-            "paper_notional": _number(execution.get("paper_notional")),
+            "paper_notional": notional,
+            "intake_id": execution.get("intake_id"),
         })
 
     if unsafe:
@@ -133,6 +139,7 @@ def evaluate_walk_forward_paper(
             ["minimum_closed_paper_sample"],
             closed_trade_count=len(rows),
             required_closed_trade_count=minimum_closed,
+            evaluated_policy_identity=deepcopy(cohort_identity),
         )
 
     rows.sort(key=lambda row: row["closed_at"])
@@ -150,10 +157,12 @@ def evaluate_walk_forward_paper(
         equity += pnl
         peak = max(peak, equity)
         max_drawdown = max(max_drawdown, peak - equity)
-    gross_deployed = sum(abs(row.get("paper_notional") or 0.0) for row in rows)
+    gross_deployed = sum(row["paper_notional"] for row in rows)
     max_drawdown_pct = (max_drawdown / gross_deployed * 100.0) if gross_deployed > 0 else None
     if max_drawdown_pct is None:
         return _unknown(["paper_notional_for_drawdown_normalization"])
+    if not all(isfinite(value) for value in (mean_return, total_pnl, gross_deployed, max_drawdown, max_drawdown_pct)):
+        return _unknown(["finite_aggregate_metrics"])
 
     checks = {
         "minimum_closed_trades": len(rows) >= minimum_closed,

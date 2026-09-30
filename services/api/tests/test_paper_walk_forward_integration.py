@@ -1,4 +1,5 @@
 from copy import deepcopy
+import pytest
 
 from stinky_api.paper_execution_realism import simulate_paper_execution
 from stinky_api.paper_walk_forward_adapter import adapt_simulated_execution_for_walk_forward
@@ -126,3 +127,15 @@ def test_adapter_rejects_closed_simulation_without_immutable_policy_identity():
     result=adapt_simulated_execution_for_walk_forward(source,closed_at="2026-09-10T01:00:00+00:00")
     assert result["status"]=="UNKNOWN"
     assert "policy_identity" in result["missing"]
+
+
+@pytest.mark.parametrize("change", [{"policy_sha256": "z" * 64},
+    {"provenance": {"mode": "MANUAL_OPERATOR_SUPPLIED", "evidence_backed": 0}},
+    {"provenance": {"mode": "UNKNOWN", "evidence_backed": False}}])
+def test_adapter_rejects_malformed_identity(change):
+    source = closed_sim(1.2); source["policy_identity"].update(change)
+    assert adapt_simulated_execution_for_walk_forward(source, closed_at="2026-09-10T01:00:00Z")["status"] == "UNKNOWN"
+
+
+def test_adapter_does_not_assign_timezone_to_ambiguous_close():
+    assert adapt_simulated_execution_for_walk_forward(closed_sim(1.2), closed_at="2026-09-10T01:00:00")["status"] == "UNKNOWN"
