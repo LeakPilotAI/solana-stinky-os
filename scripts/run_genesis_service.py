@@ -176,7 +176,8 @@ def main() -> int:
                 f.write("\n")
             f.flush()
 
-    stamp = "[" + utc_stamp() + "] start pid=" + str(os.getpid())
+    supervisor_started_at = utc_stamp()
+    stamp = "[" + supervisor_started_at + "] start pid=" + str(os.getpid())
     print("=== %s pid=%s" % (name, os.getpid()), flush=True)
     append_log(stamp)
 
@@ -427,6 +428,8 @@ def main() -> int:
             # capped FAILED state cannot be erased by another service's heartbeat.
             service_payload = dict(payload)
             service_payload["service"] = name
+            service_payload["supervisor_pid"] = os.getpid()
+            service_payload["supervisor_started_at"] = supervisor_started_at
             service_payload["supervisor_phase"] = phase or "RUNNING"
             write_state(log_dir / ("runtime-state-" + name + ".json"), service_payload)
         except OSError:
