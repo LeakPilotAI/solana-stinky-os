@@ -95,10 +95,12 @@ async def process_one() -> bool:
         paper = result.get("paper") if isinstance(result.get("paper"), dict) else {}
         await session.execute(text("""
             INSERT INTO paper_runtime_record(
-              intake_id, mint, decided_at, shadow_status, shadow_action, paper_status, record
+              intake_id, mint, decided_at, shadow_status, shadow_action, paper_status,
+              policy_version, policy_sha256, policy_evidence_backed, record
             ) VALUES (
               :intake_id, :mint, CAST(:decided_at AS timestamptz), :shadow_status,
-              :shadow_action, :paper_status, CAST(:record AS jsonb)
+              :shadow_action, :paper_status, :policy_version, :policy_sha256,
+              :policy_evidence_backed, CAST(:record AS jsonb)
             )
             ON CONFLICT (intake_id) DO NOTHING
         """), {
@@ -107,6 +109,9 @@ async def process_one() -> bool:
             "shadow_status": str(shadow.get("status") or result.get("status") or "UNKNOWN"),
             "shadow_action": shadow.get("action"),
             "paper_status": str(paper.get("status") or "NOT_SIMULATED"),
+            "policy_version": (result.get("policy_identity") or {}).get("policy_version"),
+            "policy_sha256": (result.get("policy_identity") or {}).get("policy_sha256"),
+            "policy_evidence_backed": ((result.get("policy_identity") or {}).get("provenance") or {}).get("evidence_backed"),
             "record": json.dumps(result, sort_keys=True, default=str),
         })
         await session.execute(text("UPDATE paper_runtime_intake SET processed_at=now() WHERE intake_id=:id"), {"id": row["intake_id"]})
