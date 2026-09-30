@@ -111,7 +111,8 @@ async def compare_score_paper_candidate(
         JOIN entity_launch_outcome_labels ol
           ON ol.mint=mi.mint
          AND ol.label_version=:label_version
-         AND ol.observed_at>=mi.inspected_at
+         AND ol.observed_at>mi.inspected_at
+         AND ol.ingested_at>mi.inspected_at
          AND ol.ingested_at<=:as_of
         WHERE mi.model_version=:intelligence_model_version
           AND mi.evidence->'score'->>'model_version'=:score_model_version
