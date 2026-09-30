@@ -77,3 +77,13 @@ def test_runtime_fails_closed_when_policy_identity_is_missing_or_malformed():
     result=process_frozen_bundle(malformed)
     assert result["status"]=="UNKNOWN"
     assert "valid_policy_identity" in result["missing"]
+
+
+def test_runtime_schema_and_worker_persist_first_class_policy_identity():
+    migration=(ROOT/"services/api/migrations/013_paper_runtime_policy_identity.sql").read_text(encoding="utf-8")
+    worker=(ROOT/"services/api/src/stinky_api/paper_runtime_worker.py").read_text(encoding="utf-8")
+    for column in ("policy_version", "policy_sha256", "policy_evidence_backed"):
+        assert column in migration
+        assert column in worker
+    assert "idx_paper_runtime_record_policy_identity" in migration
+    assert "policy_evidence_backed" in worker
