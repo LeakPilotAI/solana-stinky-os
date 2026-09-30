@@ -19,16 +19,58 @@ def candidate_chain():
     sha = canonical_sha256(payload)
     candidate = {'status':'PAPER_CANDIDATE_ARTIFACT','candidate_version':'score-paper-candidate-v1:'+sha[:16],
                  'evidence_sha256':sha,'payload':payload}
-    readiness = {'readiness_status':'READY_FOR_PAPER_POLICY_REVIEW','candidate_version':candidate['candidate_version'],
-        'evidence_sha256':sha, 'candidate_cutoff':payload['evaluation_as_of'],
-        'comparison_as_of':'2026-09-02T00:00:00+00:00', 'criteria':{'min_later_sample':1},
-        'checks':{'sufficient_later_sample':True}}
     from stinky_api.prospective_score_paper_candidate import AUTHORITY as candidate_authority
-    from stinky_api.prospective_score_candidate_readiness import AUTHORITY as readiness_authority
     candidate.update(candidate_authority)
-    readiness.update(readiness_authority)
-    return candidate, readiness
 
+    comparison = {
+        'status':'OBSERVED',
+        'comparison_status':'PROSPECTIVE_COMPARISON_COMPLETE',
+        'candidate_version':candidate['candidate_version'],
+        'evidence_sha256':sha,
+        'candidate_threshold':55.0,
+        'candidate_cutoff':payload['evaluation_as_of'],
+        'as_of':'2026-09-02T00:00:00+00:00',
+        'sample_count':1,
+        'runner_count':1,
+        'negative_count':0,
+        'unknown_score_count':0,
+        'unknown_score_rate':0.0,
+        'actionable_score_count':1,
+        'actionable_score_rate':1.0,
+        'non_actionable_numeric_score_count':0,
+        'non_actionable_numeric_score_rate':0.0,
+        'score_threshold_metrics':{
+            'universe':'numeric_score','eligible_count':1,'runner_count':1,'negative_count':0,
+            'positive_count':1,'runner_precision':1.0,'false_discovery_rate':0.0,
+            'false_positive_rate':None,'runner_recall':1.0,'missed_runner_count':0,
+        },
+        'actionable_score_threshold_metrics':{
+            'universe':'actionable_score','eligible_count':1,'runner_count':1,'negative_count':0,
+            'positive_count':1,'runner_precision':1.0,'false_discovery_rate':0.0,
+            'false_positive_rate':None,'runner_recall':1.0,'missed_runner_count':0,
+        },
+        'actual_alert_admission_metrics':{
+            'universe':'all_labeled','eligible_count':1,'runner_count':1,'negative_count':0,
+            'positive_count':1,'runner_precision':1.0,'false_discovery_rate':0.0,
+            'false_positive_rate':None,'runner_recall':1.0,'missed_runner_count':0,
+        },
+        'missing':[],
+    }
+    from stinky_api.prospective_score_candidate_readiness import assess_post_candidate_readiness
+    readiness = assess_post_candidate_readiness(
+        comparison,
+        min_later_sample=1,
+        min_later_runners=1,
+        min_later_negatives=0,
+        min_actionable_score_rate=1.0,
+        min_actionable_positive_count=1,
+        min_actionable_runner_precision=1.0,
+        max_actionable_false_discovery_rate=0.0,
+        max_actionable_false_positive_rate=1.0,
+        min_actionable_runner_recall=1.0,
+        max_actionable_missed_runners=0,
+    )
+    return candidate, readiness
 
 @pytest.mark.parametrize('change',['candidate_payload','candidate_sha','version','schema','cutoff','naive','same_time','earlier','nonfinite','empty_criteria'])
 def test_provisioning_rejects_malformed_or_swapped_candidate_chain(change):
