@@ -8,6 +8,21 @@ const execFileAsync = promisify(execFile);
 export const dynamic = "force-dynamic";
 type Counts = Record<string, number>;
 
+function positiveEnvInt(name: string): number | null {
+  const raw = process.env[name];
+  if (!raw || !/^\\d+$/.test(raw.trim())) return null;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+function evidenceCriteria() {
+  const minClosed = positiveEnvInt("STINKY_PAPER_READINESS_MIN_CLOSED_OUTCOMES");
+  const minMarket = positiveEnvInt("STINKY_PAPER_READINESS_MIN_MARKET_CAP_SAMPLES");
+  const minClasses = positiveEnvInt("STINKY_PAPER_READINESS_MIN_OUTCOME_CLASSES");
+  const configured = minClosed !== null && minMarket !== null && minClasses !== null && minClasses <= 3;
+  return { configured, min_closed_outcomes: minClosed, min_market_cap_samples: minMarket, min_outcome_classes: minClasses };
+}
+
 async function psql(sql: string): Promise<string> {
   const { stdout } = await execFileAsync("docker", ["exec", "stinky-postgres", "psql", "-U", "stinky", "-d", "stinky", "-t", "-A", "-F", "|", "-c", sql], { timeout: 8_000, windowsHide: true, maxBuffer: 1024 * 1024 });
   return String(stdout || "").trim();
@@ -77,7 +92,8 @@ async function policyStatus() {
 
 export async function GET() {
   try {
-    const [workers, policy, epochRaw, candidateRaw, outcomeRaw, shadowRaw, paperRaw, intakeRaw, evidenceRaw] = await Promise.all([
+    const criteria = evidenceCriteria();
+    const [workers, policy, epochRaw, candidateRaw, outcomeRaw, shadowRaw, paperRaw, intakeRaw, evidenceRaw, marketRaw] = await Promise.all([
       workerHealth(), policyStatus(),
       psql("SELECT producer_version || '|' || prospective_started_at::text FROM paper_intake_producer_state WHERE singleton=TRUE LIMIT 1;"),
       psql("SELECT count(*) FROM paper_prospective_candidate;"),
@@ -93,6 +109,17 @@ export async function GET() {
     const [evidenceClosedRaw, representedRaw, firstCandidateAt, latestCandidateAt] = evidenceRaw ? evidenceRaw.split("|", 4) : ["0", "0", "", ""];
     const evidenceClosed = Number(evidenceClosedRaw || 0) || 0;
     const representedOutcomeClasses = Number(representedRaw || 0) || 0;
+    const marketCapSamples = Number(marketRaw || 0) || 0;
+    const readiness = criteria.configured ? {
+      status: "CRITERIA_CONFIGURED", criteria,
+      deficits: {
+        closed_outcomes_needed: Math.max(0, (criteria.min_closed_outcomes ?? 0) - evidenceClosed),
+        outcome_classes_needed: Math.max(0, (criteria.min_outcome_classes ?? 0) - representedOutcomeClasses),
+        market_cap_samples_needed: Math.max(0, (criteria.min_market_cap_samples ?? 0) - marketCapSamples),
+      },
+      observed_market_cap_samples: marketCapSamples,
+      policy_provisioned: false, automatic_activation: false,
+    } : { status: "CRITERIA_NOT_SET", criteria, deficits: null, observed_market_cap_samples: marketCapSamples, policy_provisioned: false, automatic_activation: false };
     const closedOutcomes = (outcomes.RUNNER || 0) + (outcomes.HELD || 0) + (outcomes.FADE || 0);
     return NextResponse.json({
       status: "OBSERVED", paper_only: true, live_trading: "LOCKED",
@@ -113,6 +140,7 @@ export async function GET() {
         latest_candidate_at: latestCandidateAt || null,
         policy_threshold_proposal: "REQUIRES_EXPLICIT_SUFFICIENCY_CRITERIA",
         thresholds_invented: false,
+        readiness,
       },
       authority: { live_execution: false, trading_authority: false, rpc_contacted: false, transaction_signed: false, order_submitted: false, wallet_mutated: false },
     });
