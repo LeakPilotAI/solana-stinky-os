@@ -79,6 +79,20 @@ def adapt_simulated_execution_for_walk_forward(
     )):
         missing.append("non_executing_paper_record")
 
+    identity = simulated_execution.get("policy_identity")
+    if not isinstance(identity, dict):
+        missing.append("policy_identity")
+        identity = {}
+    policy_version = str(identity.get("policy_version") or "").strip()
+    policy_sha256 = str(identity.get("policy_sha256") or "").strip()
+    provenance = identity.get("provenance")
+    if not policy_version:
+        missing.append("policy_version")
+    if len(policy_sha256) != 64:
+        missing.append("policy_sha256")
+    if not isinstance(provenance, dict) or provenance.get("evidence_backed") not in {True, False}:
+        missing.append("policy_provenance")
+
     close_time = _dt(closed_at)
     net_return = _number(simulated_execution.get("net_return_pct"))
     net_pnl = _number(simulated_execution.get("net_pnl_usd"))
@@ -104,6 +118,11 @@ def adapt_simulated_execution_for_walk_forward(
         "net_pnl": net_pnl,
         "paper_notional": notional,
         "mint": str(mint).strip() if mint is not None and str(mint).strip() else None,
+        "policy_identity": {
+            "policy_version": policy_version,
+            "policy_sha256": policy_sha256,
+            "provenance": deepcopy(provenance),
+        },
         "rpc_contacted": False,
         "transaction_signed": False,
         "order_submitted": False,
