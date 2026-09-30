@@ -867,20 +867,26 @@ async def _trending_m5(
                 await session.execute(
                     text(
                         """
-                        WITH latest AS (
-                          SELECT DISTINCT ON (ms.mint)
-                            ms.mint,
-                            ms.volume_m5_usd,
-                            ms.liquidity_usd,
-                            ms.price_usd,
-                            ms.market_cap_usd,
-                            ms.fdv_usd,
-                            ms.pair_address,
-                            ms.dex_id,
-                            ms.captured_at
-                          FROM market_snapshots ms
-                          WHERE ms.mint LIKE '%pump'
-                          ORDER BY ms.mint, ms.captured_at DESC
+                        WITH candidate_tracks AS (
+                          SELECT mint
+                          FROM migration_tracks
+                          WHERE lower(mint) LIKE '%pump'
+                          ORDER BY migration_at DESC NULLS LAST
+                          LIMIT 500
+                        ),
+                        latest AS (
+                          SELECT ct.mint, ms.volume_m5_usd, ms.liquidity_usd,
+                                 ms.price_usd, ms.market_cap_usd, ms.fdv_usd,
+                                 ms.pair_address, ms.dex_id, ms.captured_at
+                          FROM candidate_tracks ct
+                          LEFT JOIN LATERAL (
+                            SELECT volume_m5_usd, liquidity_usd, price_usd,
+                                   market_cap_usd, fdv_usd, pair_address, dex_id, captured_at
+                            FROM market_snapshots
+                            WHERE mint = ct.mint
+                            ORDER BY captured_at DESC
+                            LIMIT 1
+                          ) ms ON TRUE
                         )
                         SELECT
                           h.mint,
