@@ -21,7 +21,7 @@ type Report = {
 export function PaperCohortReport() {
   const [version, setVersion] = useState("");
   const [sha, setSha] = useState("");
-  const [provenance, setProvenance] = useState("");
+  const [provenance, setProvenance] = useState("");\n  const [asOf, setAsOf] = useState("");
   const [report, setReport] = useState<Report | null>(null);
   const [busy, setBusy] = useState(false);
   const generation = useRef(0);
@@ -33,7 +33,7 @@ export function PaperCohortReport() {
       const response = await fetch("/api/paper-cohort-report", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ policy_version: version.trim(), policy_sha256: sha.trim(),
-          evidence_backed: provenance === "EVIDENCE_BACKED", as_of: new Date().toISOString() }),
+          evidence_backed: provenance === "EVIDENCE_BACKED", as_of: new Date(asOf.trim()).toISOString() }),
         cache: "no-store", signal: AbortSignal.timeout(12_000),
       });
       if (!response.ok) throw new Error("unavailable");
@@ -45,12 +45,12 @@ export function PaperCohortReport() {
       if (requestId === generation.current) setBusy(false);
     }
   };
-  const valid = version.trim().length > 0 && /^[0-9a-f]{64}$/.test(sha.trim()) && provenance !== "";
+  const cutoffValid = asOf.trim().length > 0 && !Number.isNaN(new Date(asOf.trim()).getTime());\n  const valid = version.trim().length > 0 && /^[0-9a-f]{64}$/.test(sha.trim()) && provenance !== "" && cutoffValid;
   const inputClass = "rounded border border-terminal-border bg-[#080a08] px-2 py-1 font-mono text-terminal-text";
   return (
     <details className="mt-2 rounded border border-terminal-border bg-[#0c0e0c] px-3 py-2 text-[10px] text-terminal-muted">
       <summary className="cursor-pointer font-semibold text-terminal-text">Single-policy release evidence</summary>
-      <p className="mt-2">Explicit immutable cohort only. Copy the full SHA and version from the cohort list. This inspection supplies no release criteria and does not run walk-forward evaluation.</p>
+      <p className="mt-2">Explicit immutable cohort only. Copy the full SHA and version from the cohort list. This inspection supplies no release criteria and does not run walk-forward evaluation. The cutoff is explicit; Genesis does not substitute the current time.</p>
       <div className="mt-2 flex flex-wrap gap-2">
         <label>Policy version <input aria-label="Cohort policy version" className={inputClass} value={version} onChange={e => { setVersion(e.target.value); reset(); }} /></label>
         <label>Full policy SHA <input aria-label="Cohort policy SHA" className={`${inputClass} w-64`} value={sha} onChange={e => { setSha(e.target.value); reset(); }} /></label>
