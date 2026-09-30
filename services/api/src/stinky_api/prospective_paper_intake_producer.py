@@ -106,9 +106,18 @@ def paper_configuration_from_env(env: dict[str, str] | None = None) -> dict[str,
         "latency_ms": _num(source.get("STINKY_PAPER_LATENCY_MS")),
     }
     notional = _num(source.get("STINKY_PAPER_NOTIONAL_USD"))
+    policy_sha256 = str(source.get("STINKY_PAPER_POLICY_SHA256") or "").strip()
+    try:
+        provenance = json.loads(source.get("STINKY_PAPER_POLICY_PROVENANCE_JSON") or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        provenance = None
     missing: list[str] = []
     if not policy["policy_version"]:
         missing.append("STINKY_PAPER_POLICY_VERSION")
+    if len(policy_sha256) != 64:
+        missing.append("STINKY_PAPER_POLICY_SHA256")
+    if not isinstance(provenance, dict) or provenance.get("evidence_backed") not in {True, False}:
+        missing.append("STINKY_PAPER_POLICY_PROVENANCE_JSON")
     if policy["horizon"] not in _ALLOWED_HORIZONS:
         missing.append("STINKY_PAPER_HORIZON")
     for key in ("min_runner_probability", "max_fade_probability", "min_nonnegative_market_cap_probability"):
@@ -126,6 +135,8 @@ def paper_configuration_from_env(env: dict[str, str] | None = None) -> dict[str,
         "paper_policy": policy,
         "execution_assumptions": assumptions,
         "paper_notional_usd": notional,
+        "policy_sha256": policy_sha256 or None,
+        "provenance": provenance if isinstance(provenance, dict) else None,
         **_AUTHORITY,
     }
 
@@ -354,6 +365,10 @@ async def _freeze_new_candidates(session, limit: int = 25) -> int:
                     "future_evidence_used": False,
                 },
                 "paper_policy": copy.deepcopy(config["paper_policy"]),
+                "policy_identity": {
+                    "policy_sha256": config["policy_sha256"],
+                    "provenance": copy.deepcopy(config["provenance"]),
+                },
                 "execution_assumptions": copy.deepcopy(config["execution_assumptions"]),
                 "reference_entry_price": entry_price,
                 "paper_notional_usd": config["paper_notional_usd"],
