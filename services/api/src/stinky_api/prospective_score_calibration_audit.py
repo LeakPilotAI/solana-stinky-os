@@ -122,7 +122,22 @@ async def audit_prospective_score_calibration(
         "as_of": cutoff,
     })).mappings().all()
 
-    records = [dict(r) for r in rows if str(r.get("label") or "") in {"RUNNER", "HELD", "FADE"}]
+    records = []
+    for raw in rows:
+        record = dict(raw)
+        if str(record.get("label") or "") not in {"RUNNER", "HELD", "FADE"}:
+            continue
+        value = record.get("stinky_score")
+        normalized_score = None
+        if value is not None and not isinstance(value, bool):
+            try:
+                candidate = float(value)
+                if math.isfinite(candidate) and 0.0 <= candidate <= 100.0:
+                    normalized_score = candidate
+            except (TypeError, ValueError, OverflowError):
+                pass
+        record["stinky_score"] = normalized_score
+        records.append(record)
     labeled = len(records)
     scored = [r for r in records if r.get("stinky_score") is not None]
     unknown = [r for r in records if r.get("stinky_score") is None]
@@ -166,6 +181,7 @@ async def audit_prospective_score_calibration(
         "numeric_score_coverage": len(scored) / labeled if labeled else None,
         "unknown_score_count": len(unknown),
         "unknown_score_rate": len(unknown) / labeled if labeled else None,
+        "runner_count": len(all_runners),
         "runner_count_all_labeled": len(all_runners),
         "unknown_runner_count": len(unknown_runners),
         "unknown_runner_rate": len(unknown_runners) / len(all_runners) if all_runners else None,
