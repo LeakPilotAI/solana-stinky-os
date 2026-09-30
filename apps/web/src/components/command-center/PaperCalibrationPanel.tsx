@@ -14,7 +14,10 @@ type Status = {
   decisions?: { WOULD_WATCH?: number; WOULD_SKIP?: number; WOULD_ENTER?: number; UNKNOWN?: number };
   paper?: { SIMULATED_OPEN?: number; SIMULATED_CLOSED?: number; UNKNOWN?: number };
   intake?: { processed?: number; unprocessed?: number };
-  policy?: { status?: string; version?: string | null; horizon?: string | null; notional_usd?: number | null; policy_sha256?: string | null };
+  policy?: { status?: string; version?: string | null; horizon?: string | null; notional_usd?: number | null; policy_sha256?: string | null; provenance?: string | null; provenance_mode?: string | null; activated_at?: string | null };
+  policy_registry?: { policy_version?: string; policy_sha256?: string; provenance?: string; provenance_mode?: string; state?: string; created_at?: string | null; activated_at?: string | null }[];
+  policy_registry_scope?: string;
+  policy_registry_truncated?: boolean;
   policy_cohorts?: { policy_version?: string; policy_sha256?: string; provenance?: string; records?: number }[];
   aggregate_scope?: string;
   historical_identity_inference?: boolean;
@@ -87,7 +90,7 @@ export function PaperCalibrationPanel() {
         <Stat label="WOULD_WATCH" value={metric(s.WOULD_WATCH)} />
         <Stat label="WOULD_SKIP" value={metric(s.WOULD_SKIP)} />
         <Stat label="WOULD_ENTER" value={metric(s.WOULD_ENTER)} />
-        <Stat label="Paper policy" value={d.policy?.status || "NOT_SET"} hint={d.policy?.version || "explicit policy not provisioned"} />
+        <Stat label="Paper policy" value={d.policy?.status || "NOT_SET"} hint={d.policy?.version ? `${d.policy.version} · ${d.policy.provenance || "UNKNOWN"}` : "no active policy"} />
       </div>
 
       <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-4">
@@ -96,6 +99,14 @@ export function PaperCalibrationPanel() {
         <Stat label="Intake queue" value={metric(d.intake?.unprocessed)} hint={observed ? `${d.intake?.processed ?? 0} processed` : "intake unavailable"} />
         <Stat label="Policy horizon / notional" value={d.policy?.horizon || "UNKNOWN"} hint={d.policy?.notional_usd != null ? `$${d.policy.notional_usd} paper notional` : "not configured"} />
       </div>
+
+      {observed && (d.policy_registry?.length || 0) > 0 ? (
+        <div className="mt-2 rounded border border-terminal-border bg-[#0c0e0c] px-3 py-2 text-[10px] text-terminal-muted">
+          <div className="font-semibold uppercase tracking-[0.12em] text-terminal-dim">Paper policy registry — provisioned vs active</div>
+          {d.policy_registry?.map((item, index) => <div key={`${item.policy_sha256 || "unknown"}:${index}`} className="mt-1 break-all font-mono text-terminal-text">{item.state || "UNKNOWN"} · {item.provenance || "UNKNOWN"} · {item.policy_version || "UNKNOWN"} · {item.policy_sha256 || "UNKNOWN"}</div>)}
+          <div className="mt-1 text-terminal-dim">PROVISIONED is immutable registry state only; ACTIVE is the single runtime pointer. Evaluation/review never activates a policy.{d.policy_registry_truncated ? " Showing latest 50 only." : ""}</div>
+        </div>
+      ) : null}
 
       {observed && (d.policy_cohorts?.length || 0) > 0 ? (
         <div className="mt-2 rounded border border-terminal-border bg-[#0c0e0c] px-3 py-2 text-[10px] text-terminal-muted">
