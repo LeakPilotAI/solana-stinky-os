@@ -51,7 +51,7 @@ jobs:
         run: python -m compileall -q services/api/src
 
       - name: Run API tests
-        run: python -m pytest -q services/api/tests
+        run: python -m pytest -q services/api/tests tests/test_genesis_postgres_backup_contract.py
 
       - name: Install PostgreSQL client for isolated backup certification
         run: |
