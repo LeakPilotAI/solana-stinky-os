@@ -661,7 +661,7 @@ async def runtime_supervisors_endpoint() -> dict:
     root = Path(os.environ.get("STINKY_ROOT") or Path.cwd())
     log_dir = root / "logs"
     names = (
-        "event-log", "api", "sentinel", "discord", "collector", "entities",
+        "event-log", "api", "sentinel", "collector", "entities",
         "web", "maintain", "paper-intake-producer", "paper-runtime",
     )
     now = datetime.now(timezone.utc)
@@ -696,6 +696,7 @@ async def runtime_supervisors_endpoint() -> dict:
         "unknown_services": unknown,
         "services": services,
         "source": "runtime-state-per-service",
+        "disabled_services": ["discord"],
     }
 
 
