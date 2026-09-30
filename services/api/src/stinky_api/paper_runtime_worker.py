@@ -43,8 +43,13 @@ def process_frozen_bundle(payload: dict[str, Any]) -> dict[str, Any]:
     context = payload.get("decision_context")
     policy = payload.get("paper_policy")
     assumptions = payload.get("execution_assumptions")
-    if not all(isinstance(x, dict) for x in (probability, context, policy, assumptions)):
+    identity = payload.get("policy_identity")
+    if not all(isinstance(x, dict) for x in (probability, context, policy, assumptions, identity)):
         return {"status": "UNKNOWN", "missing": ["complete_frozen_bundle"], **AUTHORITY}
+    policy_sha = str(identity.get("policy_sha256") or "").strip()
+    provenance = identity.get("provenance")
+    if len(policy_sha) != 64 or not isinstance(provenance, dict) or provenance.get("evidence_backed") not in {True, False}:
+        return {"status": "UNKNOWN", "missing": ["valid_policy_identity"], **AUTHORITY}
 
     shadow = build_shadow_paper_decision(probability, context, policy)
     adapted = adapt_shadow_decision_for_paper(shadow)
@@ -64,6 +69,7 @@ def process_frozen_bundle(payload: dict[str, Any]) -> dict[str, Any]:
         "shadow": shadow,
         "paper": paper,
         "processed_at": datetime.now(timezone.utc).isoformat(),
+        "policy_identity": {"policy_version": policy.get("policy_version"), "policy_sha256": policy_sha, "provenance": provenance},
         **AUTHORITY,
     }
 
