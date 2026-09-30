@@ -20,7 +20,8 @@ def row(intake_id="close-1", at="2026-09-10T07:00:00Z", sha=None, version="shado
         provenance = payload["policy_identity"]["provenance"]
         provenance.update(candidate_version="score-paper-candidate-v1:" + "a" * 16,
             candidate_evidence_sha256="a" * 64, candidate_cutoff="2026-09-01T00:00:00Z",
-            comparison_as_of="2026-09-02T00:00:00Z", readiness_criteria={"min_later_sample": 1},
+            comparison_as_of="2026-09-02T00:00:00Z", comparison_evidence_sha256="b" * 64,
+            readiness_criteria={"min_later_sample": 1},
             readiness_checks={"sufficient_later_sample": True})
         provenance["provenance_sha256"] = canonical_sha256(provenance)
     bind_policy(payload)

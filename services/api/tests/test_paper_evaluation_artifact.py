@@ -183,3 +183,23 @@ async def test_verification_route_preserves_offline_non_authoritative_semantics(
     invalid = await paper_evaluation_artifact_verify({"artifact": {"artifact_sha256": "0" * 64, "content": {}}})
     assert invalid["valid"] is False
     assert invalid["automatic_activation"] is False
+
+
+@pytest.mark.asyncio
+async def test_evidence_backed_artifact_rejects_missing_comparison_identity_even_when_rehashed():
+    value = row(backed=True)
+    report = await report_paper_cohort(
+        session([value]),
+        **selection(policy_sha256=value['policy_sha256'], policy_version=value['policy_version'], evidence_backed=True),
+        release_criteria=criteria(),
+    )
+    assert report['evaluation_artifact_produced'] is True
+    bad = deepcopy(report['evaluation_artifact'])
+    provenance = bad['content']['policy_identity']['provenance']
+    provenance.pop('comparison_evidence_sha256')
+    body = {k:v for k,v in provenance.items() if k != 'provenance_sha256'}
+    provenance['provenance_sha256'] = content_sha256(body)
+    bad['artifact_sha256'] = content_sha256(bad['content'])
+    result = verify_evaluation_artifact(bad)
+    assert result['valid'] is False
+    assert result['status'] == 'UNKNOWN'

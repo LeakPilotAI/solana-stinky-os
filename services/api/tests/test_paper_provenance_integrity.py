@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from stinky_api.paper_policy_identity import validated_policy_identity
+from stinky_api.paper_evidence_json import content_sha256
 from stinky_api.paper_policy_provisioning import _evidence_provenance, load_active_paper_configuration, validate_paper_configuration, provision_evidence_backed_paper_policy
 from stinky_api.paper_runtime_worker import process_frozen_bundle, canonical_sha256
 from stinky_api.prospective_paper_intake_producer import paper_configuration_from_env
@@ -103,7 +104,7 @@ async def test_invalid_candidate_provisioning_does_not_touch_database():
     db.execute.assert_not_awaited(); db.commit.assert_not_awaited()
 
 
-@pytest.mark.parametrize('change',['missing','hash','cutoff','criteria','nonfinite'])
+@pytest.mark.parametrize('change',['missing','hash','cutoff','criteria','nonfinite','comparison_missing','comparison_format'])
 def test_evidence_backed_identity_requires_complete_intact_provenance(change):
     identity=row(backed=True)['record']['policy_identity']
     assert validated_policy_identity(identity) is not None
@@ -112,6 +113,14 @@ def test_evidence_backed_identity_requires_complete_intact_provenance(change):
     if change=='cutoff': identity['provenance']['candidate_cutoff']='later'
     if change=='criteria': identity['provenance']['readiness_criteria']['min_later_sample']=999
     if change=='nonfinite': identity['provenance']['extra']=float('nan')
+    if change=='comparison_missing':
+        identity['provenance'].pop('comparison_evidence_sha256')
+        body={k:v for k,v in identity['provenance'].items() if k!='provenance_sha256'}
+        identity['provenance']['provenance_sha256']=content_sha256(body)
+    if change=='comparison_format':
+        identity['provenance']['comparison_evidence_sha256']='z'*64
+        body={k:v for k,v in identity['provenance'].items() if k!='provenance_sha256'}
+        identity['provenance']['provenance_sha256']=content_sha256(body)
     assert validated_policy_identity(identity) is None
 
 
@@ -142,6 +151,30 @@ async def test_loader_cannot_certify_rehashed_intake_with_changed_policy_under_o
     report=await report_paper_cohort(session([value]),**selection(),release_criteria=criteria())
     assert report['reasons']==['frozen_policy_hash_mismatch']
     assert report['evaluation_artifact'] is None
+
+
+@pytest.mark.asyncio
+async def test_active_registry_rehydration_requires_bound_comparison_evidence_hash():
+    candidate, readiness = candidate_chain()
+    provenance = _evidence_provenance(candidate, readiness)
+    assert provenance is not None and provenance['comparison_evidence_sha256']
+
+    payload = validate_paper_configuration(valid_config())['configuration']
+    payload['provenance'] = deepcopy(provenance)
+    payload['provenance'].pop('comparison_evidence_sha256')
+    body = {k:v for k,v in payload['provenance'].items() if k != 'provenance_sha256'}
+    payload['provenance']['provenance_sha256'] = content_sha256(body)
+    value = {
+        'policy_payload': payload,
+        'policy_sha256': content_sha256(payload),
+        'policy_version': payload['paper_policy']['policy_version'],
+        'activated_at': 'stored',
+    }
+    fetched = Mock()
+    fetched.mappings.return_value.first.return_value = value
+    result = await load_active_paper_configuration(Mock(execute=AsyncMock(return_value=fetched)))
+    assert result['configured'] is False
+    assert result['missing'] == ['active_paper_policy_integrity']
 
 
 @pytest.mark.asyncio
