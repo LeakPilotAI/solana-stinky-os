@@ -123,7 +123,7 @@ export async function GET() {
       policy_provisioned: false, automatic_activation: false,
     } : { status: "CRITERIA_NOT_SET", criteria, deficits: null, observed_market_cap_samples: marketCapSamples, policy_provisioned: false, automatic_activation: false };
     const closedOutcomes = (outcomes.RUNNER || 0) + (outcomes.HELD || 0) + (outcomes.FADE || 0);
-    const policyCohorts = cohortRaw.split(/\\r?\\n/).filter(Boolean).map((line) => { const [version, sha, provenance, count] = line.split("|", 4); return { policy_version: version || "LEGACY_UNKNOWN", policy_sha256: sha || "UNKNOWN", provenance: provenance || "UNKNOWN", records: Number(count || 0) || 0 }; });
+    const policyCohorts = cohortRaw.split(/\r?\n/).filter(Boolean).map((line) => { const [version, sha, provenance, count] = line.split("|", 4); return { policy_version: version || "LEGACY_UNKNOWN", policy_sha256: sha || "UNKNOWN", provenance: provenance || "UNKNOWN", records: Number(count || 0) || 0 }; });
     return NextResponse.json({
       status: "OBSERVED", paper_only: true, live_trading: "LOCKED",
       producer: workers.producer, paper_runtime: workers.runtime,

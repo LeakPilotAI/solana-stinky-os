@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { PaperCohortReport } from "./PaperCohortReport";
 
 type Status = {
   status?: string;
@@ -73,7 +74,7 @@ export function PaperCalibrationPanel() {
       <div className="mb-2 flex items-start justify-between gap-3">
         <div>
           <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-terminal-dim">Paper / Calibration</div>
-          <div className="mt-1 text-[10px] text-terminal-muted">Prospective evidence only. T0 is frozen. UNKNOWN stays UNKNOWN. No live trading authority.</div>
+          <div className="mt-1 text-[10px] text-terminal-muted">All-policy observability. Aggregate counts are not single-policy release evidence. T0 is frozen. No live trading authority.</div>
         </div>
         <div className={`font-mono text-[10px] ${tone(d.live_trading)}`}>LIVE {d.live_trading || "LOCKED"}</div>
       </div>
@@ -99,10 +100,12 @@ export function PaperCalibrationPanel() {
       {observed && (d.policy_cohorts?.length || 0) > 0 ? (
         <div className="mt-2 rounded border border-terminal-border bg-[#0c0e0c] px-3 py-2 text-[10px] text-terminal-muted">
           <span className="font-semibold uppercase tracking-[0.12em] text-terminal-dim">Immutable policy cohorts</span>
-          {d.policy_cohorts?.map((cohort, index) => <span key={`${cohort.policy_sha256 || "unknown"}:${index}`} className="ml-3 font-mono text-terminal-text">{cohort.policy_version || "LEGACY_UNKNOWN"} · {cohort.provenance || "UNKNOWN"} · {cohort.records ?? 0} records · {(cohort.policy_sha256 || "UNKNOWN").slice(0, 12)}</span>)}
+          {d.policy_cohorts?.map((cohort, index) => <div key={`${cohort.policy_sha256 || "unknown"}:${index}`} className="mt-1 break-all font-mono text-terminal-text">{cohort.policy_version || "LEGACY_UNKNOWN"} · {cohort.provenance || "UNKNOWN"} · {cohort.records ?? 0} records · {cohort.policy_sha256 || "UNKNOWN"}</div>)}
           <span className="ml-3 text-terminal-dim">Historical identity is never inferred from the active policy.</span>
         </div>
       ) : null}
+
+      <PaperCohortReport />
 
       {observed ? (
         <div className="mt-2 rounded border border-terminal-border bg-[#0c0e0c] px-3 py-2 text-[10px] text-terminal-muted">
