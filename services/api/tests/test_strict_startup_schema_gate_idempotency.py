@@ -40,3 +40,8 @@ def test_startup_gate_still_has_no_live_execution_side_effects():
     src = (ROOT / "scripts/strict_startup_schema_gate.py").read_text(encoding="utf-8").lower()
     for forbidden in ("send_transaction", "sign_transaction", "private_key", "order_submitted=true"):
         assert forbidden not in src
+
+
+def test_standalone_schema_gate_starts_only_postgres():
+    src = (ROOT / "scripts/strict_startup_schema_gate.py").read_text(encoding="utf-8")
+    assert '"up","-d","postgres"' in src

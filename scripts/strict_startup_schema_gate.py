@@ -77,7 +77,7 @@ def main() -> int:
     try:
         docker=docker_bin(); compose=ROOT/"docker-compose.yml"
         if not compose.is_file(): raise RuntimeError("docker-compose.yml missing")
-        up=run([docker,"compose","-p",PROJECT,"-f",str(compose),"--project-directory",str(ROOT),"up","-d"], timeout=150)
+        up=run([docker,"compose","-p",PROJECT,"-f",str(compose),"--project-directory",str(ROOT),"up","-d","postgres"], timeout=150)
         if up.returncode != 0: raise RuntimeError("Genesis Docker startup failed: "+((up.stderr or up.stdout or "")[-800:]))
         ready=False
         for _ in range(30):
