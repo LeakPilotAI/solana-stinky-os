@@ -21,12 +21,12 @@ type Report = {
 export function PaperCohortReport() {
   const [version, setVersion] = useState("");
   const [sha, setSha] = useState("");
-  const [provenance, setProvenance] = useState("");\n  const [asOf, setAsOf] = useState("");
+  const [provenance, setProvenance] = useState("");\n  const [asOf, setAsOf] = useState("");\n  const [minimumClosed, setMinimumClosed] = useState("");\n  const [minimumMean, setMinimumMean] = useState("");\n  const [maximumDrawdown, setMaximumDrawdown] = useState("");\n  const [minimumWinRate, setMinimumWinRate] = useState("");
   const [report, setReport] = useState<Report | null>(null);
   const [busy, setBusy] = useState(false);
   const generation = useRef(0);
   const reset = () => { generation.current += 1; setReport(null); setBusy(false); };
-  const load = async () => {
+  const releaseCriteria = () => {\n    if (!/^\\d+$/.test(minimumClosed.trim()) || Number(minimumClosed) <= 0) return null;\n    const mean = Number(minimumMean), drawdown = Number(maximumDrawdown), win = Number(minimumWinRate);\n    if (!minimumMean.trim() || !maximumDrawdown.trim() || !minimumWinRate.trim() || !Number.isFinite(mean) || !Number.isFinite(drawdown) || drawdown < 0 || !Number.isFinite(win) || win < 0 || win > 1) return null;\n    return { minimum_closed_trades: Number(minimumClosed), minimum_mean_net_return_pct: mean, maximum_drawdown_pct: drawdown, minimum_win_rate: win };\n  };\n  const load = async (evaluate = false) => {
     const requestId = ++generation.current;
     setBusy(true); setReport(null);
     try {
@@ -57,9 +57,9 @@ export function PaperCohortReport() {
         <label>Provenance <select aria-label="Cohort provenance" className={inputClass} value={provenance} onChange={e => { setProvenance(e.target.value); reset(); }}>
           <option value="">Select explicitly</option><option value="MANUAL">MANUAL</option><option value="EVIDENCE_BACKED">EVIDENCE_BACKED</option>
         </select></label>
-        <button type="button" disabled={!valid || busy} onClick={load} className="rounded border border-terminal-border px-2 py-1 text-terminal-text disabled:opacity-40">{busy ? "Loading…" : "Inspect selected cohort"}</button>
+        <button type="button" disabled={!valid || busy} onClick={() => load(false)} className="rounded border border-terminal-border px-2 py-1 text-terminal-text disabled:opacity-40">{busy ? "Loading…" : "Inspect selected cohort"}</button>
       </div>
-      {report ? <div className="mt-2 space-y-1" role="status">
+      <div className="mt-2 flex flex-wrap gap-2 rounded border border-terminal-border p-2">\n        <span className="w-full font-semibold text-terminal-dim">Explicit release criteria — blank means no evaluation</span>\n        <label>Min closed <input aria-label="Minimum closed trades" className={`${inputClass} w-20`} value={minimumClosed} onChange={e => { setMinimumClosed(e.target.value); reset(); }} /></label>\n        <label>Min mean net return % <input aria-label="Minimum mean net return percent" className={`${inputClass} w-24`} value={minimumMean} onChange={e => { setMinimumMean(e.target.value); reset(); }} /></label>\n        <label>Max drawdown % <input aria-label="Maximum drawdown percent" className={`${inputClass} w-24`} value={maximumDrawdown} onChange={e => { setMaximumDrawdown(e.target.value); reset(); }} /></label>\n        <label>Min win rate 0–1 <input aria-label="Minimum win rate" className={`${inputClass} w-20`} value={minimumWinRate} onChange={e => { setMinimumWinRate(e.target.value); reset(); }} /></label>\n        <button type="button" disabled={!valid || releaseCriteria() === null || busy} onClick={() => load(true)} className="rounded border border-terminal-border px-2 py-1 text-terminal-text disabled:opacity-40">Evaluate explicit criteria</button>\n      </div>\n      {report ? <div className="mt-2 space-y-1" role="status">
         <p className={report.status === "OBSERVED" ? "text-terminal-text" : "text-amber-300"}>{report.status} · {report.provenance_classification || "UNKNOWN"}</p>
         {report.selected_policy ? <p className="break-all font-mono">{report.selected_policy.policy_version} · {report.selected_policy.policy_sha256} · evidence_backed={String(report.selected_policy.evidence_backed)}</p> : null}
         {report.counts ? <p>{report.counts.total_immutable_records} immutable records · {report.counts.closed_simulations} closed simulations · {report.counts.open_simulation_records} open simulation records · {report.counts.not_simulated_records} not simulated</p> : null}
