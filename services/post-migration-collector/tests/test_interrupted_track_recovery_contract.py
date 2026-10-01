@@ -17,3 +17,13 @@ def test_recovery_launcher_is_bounded_and_no_rpc():
     c = (ROOT / "Run-Interrupted-Track-Recovery.cmd").read_text()
     assert "recover_interrupted_migration_tracks.py" in c
     assert "diagnose_unresolved_prospective_outcomes.py" in c
+
+
+
+def test_unresolved_diagnostic_exposes_source_event_provenance_read_only():
+    s = (ROOT / "scripts" / "diagnose_unresolved_prospective_outcomes.py").read_text()
+    assert "source_event_id" in s
+    assert '"source_event":dict(source)' in s
+    assert "signature,producer,payload" in s
+    assert '"candidate_mutated":False' in s
+    assert '"rpc_contacted":False' in s
