@@ -52,6 +52,10 @@ def test_successful_append_and_duplicate_preserve_outbox_contract(monkeypatch, d
     else:
         instance._transport.publish.assert_not_awaited()
         instance._durable.mark_publish_failed.assert_awaited_once_with(event.event_id, "redis_not_connected")
+    if not duplicate:
+        body = instance._http.post.await_args.kwargs["json"]
+        assert body["event_id"] == str(event.event_id)
+        assert body["occurred_at"] == event.occurred_at.isoformat()
 
 
 @pytest.mark.parametrize("failure", [RuntimeError("durable event persistence failed"), asyncio.CancelledError()])
