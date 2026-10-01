@@ -135,15 +135,32 @@ class DurableEventStore:
 
         async with self._sessions() as session:
             if idem:
-                existing = (
+                # Reserve the idempotency key atomically before persisting the
+                # event/outbox. A SELECT-then-INSERT check races across
+                # concurrent Sentinel producers: both can observe no row and
+                # persist distinct events for the same chain signature.
+                #
+                # This reservation lives in the same transaction as the event
+                # and outbox writes. If either later write fails, PostgreSQL
+                # rolls the reservation back too, preserving safe retries.
+                reserved = (
                     await session.execute(
                         text(
-                            "SELECT event_id FROM event_idempotency WHERE idem_key = :k"
+                            """
+                            INSERT INTO event_idempotency (idem_key, event_id, event_type)
+                            VALUES (:k, :eid, :et)
+                            ON CONFLICT (idem_key) DO NOTHING
+                            RETURNING event_id
+                            """
                         ),
-                        {"k": idem},
+                        {
+                            "k": idem,
+                            "eid": str(event.event_id),
+                            "et": event.event_type.value,
+                        },
                     )
                 ).first()
-                if existing:
+                if not reserved:
                     logger.info(
                         "durable.duplicate_skipped",
                         idem_key=idem,
@@ -184,22 +201,6 @@ class DurableEventStore:
                     "producer": event.producer,
                 },
             )
-
-            if idem:
-                await session.execute(
-                    text(
-                        """
-                        INSERT INTO event_idempotency (idem_key, event_id, event_type)
-                        VALUES (:k, :eid, :et)
-                        ON CONFLICT (idem_key) DO NOTHING
-                        """
-                    ),
-                    {
-                        "k": idem,
-                        "eid": str(event.event_id),
-                        "et": event.event_type.value,
-                    },
-                )
 
             await session.execute(
                 text(
