@@ -22,5 +22,20 @@ if not "%READY%"=="1" (
  echo Genesis prospective evidence report FAILED. stinky-postgres did not become healthy within 180 seconds.
  exit /b 1
 )
-"%PY%" "%~dp0scripts\report_prospective_evidence_accumulation.py"
-exit /b %ERRORLEVEL%
+set "REPORT_OK=0"
+for /L %%I in (1,1,3) do (
+ "%PY%" "%~dp0scripts\report_prospective_evidence_accumulation.py"
+ if not errorlevel 1 (
+  set "REPORT_OK=1"
+  goto :report_ok
+ )
+ if %%I LSS 3 (
+  echo Genesis prospective evidence report attempt %%I failed; retrying in 3 seconds...
+  timeout /t 3 /nobreak >nul
+ )
+)
+echo Genesis prospective evidence report FAILED after 3 attempts.
+exit /b 1
+
+:report_ok
+exit /b 0
