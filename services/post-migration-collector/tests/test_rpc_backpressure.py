@@ -115,8 +115,19 @@ async def test_pump_pacer_honors_shared_cooldown(monkeypatch):
     ticks = iter([100.0, 105.0])
     sleep = AsyncMock()
 
-    monkeypatch.setattr(chain_module.time, "monotonic", lambda: next(ticks))
-    monkeypatch.setattr(chain_module.asyncio, "sleep", sleep)
+    class Clock:
+        @staticmethod
+        def monotonic():
+            return next(ticks)
+
+    class AsyncioStub:
+        pass
+
+    asyncio_stub = AsyncioStub()
+    asyncio_stub.sleep = sleep
+
+    monkeypatch.setattr(chain_module, "time", Clock())
+    monkeypatch.setattr(chain_module, "asyncio", asyncio_stub)
     monkeypatch.setattr(chain_module, "_pump_next_ok", 0.0)
     monkeypatch.setattr(chain_module, "_pump_cooldown_until", 105.0)
 
