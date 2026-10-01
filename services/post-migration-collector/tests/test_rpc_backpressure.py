@@ -64,3 +64,63 @@ async def test_rpc_429_sets_shared_retry_after_cooldown(monkeypatch):
 
 def test_rpc_default_pacing_stays_below_single_method_public_limit():
     assert chain_module._RPC_MIN_INTERVAL_SEC >= 0.25
+
+
+
+@pytest.mark.asyncio
+async def test_pump_429_sets_shared_retry_after_cooldown(monkeypatch):
+    class Response:
+        status_code = 429
+        headers = {"Retry-After": "17"}
+
+    client = object.__new__(ChainClient)
+    client._http = AsyncMock()
+    client._http.get.return_value = Response()
+    client._pace_pump = AsyncMock()
+
+    monkeypatch.setattr(chain_module.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(chain_module, "_pump_cooldown_until", 0.0)
+
+    result = await client._fetch_pump_v2("Mint111")
+
+    assert result == []
+    assert chain_module._pump_cooldown_until == 117.0
+
+
+@pytest.mark.asyncio
+async def test_pump_429_without_retry_after_uses_shared_fallback(monkeypatch):
+    class Response:
+        status_code = 429
+        headers = {}
+
+    client = object.__new__(ChainClient)
+    client._http = AsyncMock()
+    client._http.get.return_value = Response()
+    client._pace_pump = AsyncMock()
+
+    monkeypatch.setattr(chain_module.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(chain_module, "_pump_cooldown_until", 0.0)
+
+    result = await client._fetch_pump_v2("Mint111")
+
+    assert result == []
+    assert chain_module._pump_cooldown_until == (
+        100.0 + chain_module._PUMP_429_FALLBACK_COOLDOWN_SEC
+    )
+
+
+@pytest.mark.asyncio
+async def test_pump_pacer_honors_shared_cooldown(monkeypatch):
+    client = object.__new__(ChainClient)
+    ticks = iter([100.0, 105.0])
+    sleep = AsyncMock()
+
+    monkeypatch.setattr(chain_module.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(chain_module.asyncio, "sleep", sleep)
+    monkeypatch.setattr(chain_module, "_pump_next_ok", 0.0)
+    monkeypatch.setattr(chain_module, "_pump_cooldown_until", 105.0)
+
+    await client._pace_pump()
+
+    sleep.assert_awaited_once_with(5.0)
+    assert chain_module._pump_next_ok == 105.0 + chain_module._PUMP_MIN_INTERVAL_SEC
