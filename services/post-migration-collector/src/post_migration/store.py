@@ -619,7 +619,7 @@ class Store:
                         LIMIT :lim
                         """
                     ),
-                    {"lim": limit, "cutoff": cutoff},
+                    {"lim": limit},
                 )
             ).fetchall()
             return [str(r[0]) for r in rows]
@@ -705,7 +705,7 @@ class Store:
                         LIMIT :lim
                         """
                     ),
-                    {"lim": limit},
+                    {"lim": limit, "cutoff": cutoff},
                 )
             except Exception as exc:
                 logger.warning("store.migrations_needing_buyers_failed", error=str(exc))

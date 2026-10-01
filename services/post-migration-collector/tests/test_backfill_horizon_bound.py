@@ -58,8 +58,21 @@ def test_store_backfill_sql_is_bounded_to_current_observation_horizon():
 
     assert "max_age_sec: float" in block
     assert "e.occurred_at >= CAST(:cutoff AS timestamptz)" in block
-    assert '"cutoff": cutoff' in block
+    assert '{"lim": limit, "cutoff": cutoff}' in block
     assert "mt.status = 'active'" in block
+
+
+def test_unrelated_wallet_listing_does_not_reference_backfill_cutoff():
+    source = (
+        ROOT / "services" / "post-migration-collector" / "src"
+        / "post_migration" / "store.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("    async def list_wallets_with_trades(")
+    end = source.index("    async def recompute_all_performance(", start)
+    block = source[start:end]
+
+    assert '{"lim": limit}' in block
+    assert "cutoff" not in block
 
 
 def test_service_has_second_line_of_defense_for_stale_stream_events():
