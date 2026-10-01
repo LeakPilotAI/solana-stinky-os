@@ -51,7 +51,10 @@ _PUMP_MIN_INTERVAL_SEC = 0.25
 
 _rpc_lock = asyncio.Lock()
 _rpc_next_ok = 0.0
-_RPC_MIN_INTERVAL_SEC = 0.15
+_rpc_cooldown_until = 0.0
+# Stay below the public endpoint's documented 40 requests / 10s / RPC-method cap.
+_RPC_MIN_INTERVAL_SEC = 0.30
+_RPC_429_FALLBACK_COOLDOWN_SEC = 10.0
 
 
 def helius_throttled() -> bool:
@@ -108,6 +111,10 @@ def last_trade_source_status() -> TradeSourceStatus:
 class ChainClient:
     def __init__(self) -> None:
         self._http = httpx.AsyncClient(timeout=30.0, headers=_HTTP_HEADERS)
+        # Successful transaction fetches are immutable. Cache parsed results for
+        # the current signature window so repeated tracker polls do not refetch
+        # the same getTransaction payloads from the public RPC.
+        self._rpc_trade_cache: dict[str, dict[str, list[ObservedTrade]]] = {}
 
     async def close(self) -> None:
         await self._http.aclose()
@@ -189,11 +196,13 @@ class ChainClient:
     async def _pace_rpc(self) -> None:
         global _rpc_next_ok
         async with _rpc_lock:
-            now = time.monotonic()
-            wait = _rpc_next_ok - now
-            if wait > 0:
+            while True:
+                now = time.monotonic()
+                wait = max(_rpc_next_ok, _rpc_cooldown_until) - now
+                if wait <= 0:
+                    _rpc_next_ok = now + _RPC_MIN_INTERVAL_SEC
+                    return
                 await asyncio.sleep(wait)
-            _rpc_next_ok = time.monotonic() + _RPC_MIN_INTERVAL_SEC
 
     async def _fetch_pump_v2(self, mint: str) -> list[ObservedTrade]:
         global _last_source_status
@@ -268,6 +277,7 @@ class ChainClient:
         return trades
 
     async def _rpc(self, method: str, params: list[Any]) -> Any:
+        global _rpc_cooldown_until
         await self._pace_rpc()
         payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
         try:
@@ -276,8 +286,22 @@ class ChainClient:
             logger.warning("chain.rpc_failed", method=method, error=str(exc)[:200])
             return None
         if resp.status_code == 429:
-            logger.warning("chain.rpc_rate_limited", method=method)
-            await asyncio.sleep(1.5)
+            retry_after = _RPC_429_FALLBACK_COOLDOWN_SEC
+            raw_retry_after = resp.headers.get("Retry-After")
+            if raw_retry_after:
+                try:
+                    retry_after = max(retry_after, float(raw_retry_after))
+                except (TypeError, ValueError):
+                    pass
+            _rpc_cooldown_until = max(
+                _rpc_cooldown_until,
+                time.monotonic() + retry_after,
+            )
+            logger.warning(
+                "chain.rpc_rate_limited",
+                method=method,
+                cooldown_sec=round(retry_after, 3),
+            )
             return None
         if resp.status_code != 200:
             logger.warning("chain.rpc_http", method=method, status=resp.status_code)
@@ -309,11 +333,25 @@ class ChainClient:
             return []
         trades: list[ObservedTrade] = []
         pulled = 0
+        cache = self._rpc_trade_cache.setdefault(address, {})
+        current_signatures = {
+            str(row.get("signature"))
+            for row in sigs
+            if isinstance(row, dict) and not row.get("err") and row.get("signature")
+        }
+        for cached_sig in list(cache):
+            if cached_sig not in current_signatures:
+                cache.pop(cached_sig, None)
+
         for row in sigs:
             if not isinstance(row, dict) or row.get("err"):
                 continue
             sig = row.get("signature")
             if not sig:
+                continue
+            sig = str(sig)
+            if sig in cache:
+                trades.extend(cache[sig])
                 continue
             tx = await self._rpc(
                 "getTransaction",
@@ -329,7 +367,9 @@ class ChainClient:
             pulled += 1
             if not isinstance(tx, dict):
                 continue
-            trades.extend(parse_rpc_json_parsed(tx, mint=mint))
+            parsed = parse_rpc_json_parsed(tx, mint=mint)
+            cache[sig] = parsed
+            trades.extend(parsed)
             if pulled >= int(settings.rpc_sig_limit):
                 break
         if trades:
