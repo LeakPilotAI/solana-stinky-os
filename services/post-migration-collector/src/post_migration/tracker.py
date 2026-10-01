@@ -149,6 +149,19 @@ class MintTracker:
                 migration_at=self.migration_at,
                 meta=self.payload,
             )
+            durable_status = await self._store.get_track_status(self.mint)
+            if durable_status in {TrackStatus.COMPLETED, TrackStatus.FAILED}:
+                logger.info("track.terminal_replay_ignored", mint=self.mint, status=durable_status.value)
+                return
+            tracking_anchor = self.migration_at
+            if tracking_anchor.tzinfo is None:
+                tracking_anchor = tracking_anchor.replace(tzinfo=timezone.utc)
+            elapsed_at_start = (datetime.now(timezone.utc) - tracking_anchor).total_seconds()
+            if elapsed_at_start >= settings.track_max_duration_sec:
+                await self._store.complete_track(self.mint, status=TrackStatus.FAILED)
+                logger.warning("track.interrupted_window_failed", mint=self.mint, elapsed=int(elapsed_at_start), required_window=settings.track_max_duration_sec)
+                metrics.inc("tracks_failed_interrupted_window")
+                return
             metrics.inc("tracks_started")
             self._early_buyer_events_published.update(
                 await self._store.load_early_buyer_event_keys(self.mint)
@@ -171,9 +184,6 @@ class MintTracker:
                 track_id=str(self.track_id),
             )
 
-            tracking_anchor = self.migration_at
-            if tracking_anchor.tzinfo is None:
-                tracking_anchor = tracking_anchor.replace(tzinfo=timezone.utc)
             last_market = 0.0
             early_done = False
 

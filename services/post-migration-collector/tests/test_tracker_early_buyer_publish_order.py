@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
 
-from post_migration.models import ObservedTrade, TradeSide
+from post_migration.models import ObservedTrade, TradeSide, TrackStatus
 from post_migration.tracker import MintTracker
 
 
@@ -96,7 +96,7 @@ def test_backfill_includes_interrupted_active_tracks_with_partial_buyers():
     start = store.index("    async def migrations_needing_buyers(")
     block = store[start:]
     assert "NOT EXISTS (" in block
-    assert "FROM migration_buyers mb" in block
+    assert "FROM migration_buyers mb" not in block
     assert "OR EXISTS (" in block
     assert "FROM migration_tracks mt" in block
     assert "mt.status = 'active'" in block
@@ -160,3 +160,32 @@ def test_tracker_persists_buyer_capture_completeness_for_downstream_evidence():
     assert "set_buyer_capture_complete(self.mint, True)" in tracker
     assert "set_buyer_capture_complete(self.mint, False)" in tracker
     assert "buyer_capture_complete" in store
+
+
+@pytest.mark.asyncio
+async def test_interrupted_track_past_horizon_fails_closed_without_completion_event():
+    store, publisher, chain = AsyncMock(), AsyncMock(), AsyncMock()
+    store.start_track.return_value = __import__("uuid").uuid4()
+    store.get_track_status.return_value = TrackStatus.ACTIVE
+    tracker = MintTracker(
+        store=store, publisher=publisher, chain=chain,
+        mint="StaleMint11111111111111111111111111111111111",
+        pool=None, creator=None, destination=None,
+        migration_signature=None, migration_slot=None,
+        migration_at=datetime.now(timezone.utc) - timedelta(hours=2),
+    )
+    await tracker.run()
+    store.complete_track.assert_awaited_once_with(tracker.mint, status=TrackStatus.FAILED)
+    publisher.tracking_completed.assert_not_awaited()
+    publisher.tracking_started.assert_not_awaited()
+    chain.fetch_trades_for_mint.assert_not_awaited()
+
+
+def test_store_recovery_never_promotes_interrupted_active_track_to_completed():
+    from pathlib import Path
+    store = (Path(__file__).parents[1] / "src" / "post_migration" / "store.py").read_text()
+    block = store[store.index("    async def fail_stale_active_tracks("):store.index("    async def set_buyer_capture_complete(")]
+    assert "WHERE status='active'" in block
+    assert "status='failed'" in block
+    assert "interrupted_observation_window" in block
+    assert "status='completed'" not in block

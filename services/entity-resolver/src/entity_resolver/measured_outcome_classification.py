@@ -21,6 +21,10 @@ from stinky_core.outcomes import (
 )
 
 CLASSIFIED_OUTCOMES = {RUNNER, HELD, FADE}
+# Evidence-completeness tolerance only; not a trading/policy threshold. The collector
+# targets 60s market snapshots, so a path may start/end up to two intervals from
+# the exact one-hour boundary without pretending a much shorter path is complete.
+MAX_HORIZON_EDGE_GAP_SEC = 120.0
 
 
 def _dt(value: Any) -> datetime | None:
@@ -99,6 +103,21 @@ def classify_completed_market_path(
         }
 
     first_at, entry_price, entry_volume, entry_liquidity = points[0]
+    final_at = points[-1][0]
+    first_delay = (first_at - migration_at).total_seconds()
+    final_coverage = (final_at - migration_at).total_seconds()
+    required_final_coverage = max(0.0, DEFAULT_OBSERVATION_WINDOW_SEC - MAX_HORIZON_EDGE_GAP_SEC)
+    if first_delay > MAX_HORIZON_EDGE_GAP_SEC or final_coverage < required_final_coverage:
+        return {
+            "label": UNKNOWN,
+            "reason": "incomplete_measured_path_coverage",
+            "first_snapshot_delay_sec": first_delay,
+            "final_snapshot_coverage_sec": final_coverage,
+            "required_final_snapshot_coverage_sec": required_final_coverage,
+            "valid_price_snapshot_count": len(points),
+            "evidence_only": True,
+        }
+
     peak_index = max(range(len(points)), key=lambda idx: points[idx][1])
     peak_at, peak_price, _, _ = points[peak_index]
     final_at, final_price, _, final_liquidity = points[-1]

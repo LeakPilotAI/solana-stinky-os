@@ -99,3 +99,24 @@ def test_missing_price_path_remains_unknown():
 
     assert result["label"] == "UNKNOWN"
     assert result["reason"] == "insufficient_measured_price_path"
+
+
+def test_late_completion_timestamp_cannot_substitute_for_missing_horizon_path():
+    result = classify_completed_market_path(
+        _track(duration=14 * 3600),
+        [_snapshot(30, 1.0), _snapshot(260, 1.02)],
+    )
+    assert result["label"] == "UNKNOWN"
+    assert result["reason"] == "incomplete_measured_path_coverage"
+    assert result["final_snapshot_coverage_sec"] == 260
+    assert result["required_final_snapshot_coverage_sec"] == 3480
+
+
+def test_late_first_snapshot_cannot_claim_full_path():
+    result = classify_completed_market_path(
+        _track(),
+        [_snapshot(300, 1.0), _snapshot(3590, 1.1)],
+    )
+    assert result["label"] == "UNKNOWN"
+    assert result["reason"] == "incomplete_measured_path_coverage"
+    assert result["first_snapshot_delay_sec"] == 300

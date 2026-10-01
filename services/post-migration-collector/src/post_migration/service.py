@@ -33,6 +33,9 @@ class CollectorService:
 
     async def start(self) -> None:
         await self._store.ensure_schema()
+        stale = await self._store.fail_stale_active_tracks(max_duration_sec=settings.track_max_duration_sec)
+        if stale:
+            logger.warning("collector.interrupted_tracks_failed_closed", count=len(stale), mints=stale[:20])
         await self._publisher.connect()
         self._redis = redis.from_url(
             settings.redis_url,
