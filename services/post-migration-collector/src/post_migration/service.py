@@ -213,6 +213,17 @@ class CollectorService:
         if mat.tzinfo is None:
             mat = mat.replace(tzinfo=timezone.utc)
 
+        age_sec = (datetime.now(timezone.utc) - mat).total_seconds()
+        if age_sec >= settings.track_max_duration_sec:
+            logger.info(
+                "collector.expired_migration_ignored",
+                mint=mint,
+                age_sec=round(age_sec, 3),
+                max_age_sec=settings.track_max_duration_sec,
+            )
+            metrics.inc("expired_migrations_ignored")
+            return False
+
         tracker = MintTracker(
             store=self._store,
             publisher=self._publisher,
@@ -276,7 +287,10 @@ class CollectorService:
 
     async def backfill_from_events(self, *, limit: int = 20) -> int:
         """Spawn tracks for recent token.migrated rows that have zero buyers."""
-        rows = await self._store.migrations_needing_buyers(limit=limit)
+        rows = await self._store.migrations_needing_buyers(
+            limit=limit,
+            max_age_sec=settings.track_max_duration_sec,
+        )
         started = 0
         for row in rows:
             mint = row.get("mint")

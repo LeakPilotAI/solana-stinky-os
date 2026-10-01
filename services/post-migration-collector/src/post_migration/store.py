@@ -662,8 +662,18 @@ class Store:
         logger.info("store.recompute_performance_done", wallets=n)
         return n
 
-    async def migrations_needing_buyers(self, *, limit: int = 20) -> list[dict[str, Any]]:
-        """Recent migrations needing buyer capture, including interrupted active tracks."""
+    async def migrations_needing_buyers(
+        self, *, limit: int = 20, max_age_sec: float
+    ) -> list[dict[str, Any]]:
+        """Current-horizon migrations needing buyer capture.
+
+        Historical events older than the factual tracking window cannot be
+        reconstructed into prospective evidence and must never be replayed as
+        fresh tracker work.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            seconds=max(0.0, float(max_age_sec))
+        )
         async with self._sessions() as session:
             try:
                 result = await session.execute(
@@ -679,6 +689,7 @@ class Store:
                         FROM events e
                         WHERE e.event_type = 'token.migrated'
                           AND e.payload->>'mint' IS NOT NULL
+                          AND e.occurred_at >= CAST(:cutoff AS timestamptz)
                           AND (
                               NOT EXISTS (
                                   SELECT 1 FROM migration_tracks mt
@@ -694,7 +705,7 @@ class Store:
                         LIMIT :lim
                         """
                     ),
-                    {"lim": limit},
+                    {"lim": limit, "cutoff": cutoff},
                 )
             except Exception as exc:
                 logger.warning("store.migrations_needing_buyers_failed", error=str(exc))
