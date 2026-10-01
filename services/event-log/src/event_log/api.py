@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from typing import Annotated
+from uuid import UUID
 
 import structlog
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.responses import ORJSONResponse
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from stinky_core.events.base import Event, EventType
@@ -89,6 +90,8 @@ app = FastAPI(
 
 
 class IngestRequest(BaseModel):
+    event_id: UUID | None = None
+    occurred_at: AwareDatetime | None = None
     event_type: EventType
     payload: dict = Field(default_factory=dict)
     slot: int | None = None
@@ -96,6 +99,13 @@ class IngestRequest(BaseModel):
     signature: str | None = None
     producer: str = "api"
     schema_version: str = "1.0.0"
+
+    @model_validator(mode="after")
+    def complete_event_identity(self):
+        # Timescale's immutable identity is the pair, not event_id alone.
+        if (self.event_id is None) != (self.occurred_at is None):
+            raise ValueError("event_id and occurred_at must be supplied together")
+        return self
 
 
 class IngestResponse(BaseModel):
@@ -125,7 +135,11 @@ async def ingest_event(
     if body.block_time:
         block_time = datetime.fromisoformat(body.block_time.replace("Z", "+00:00"))
 
+    identity = {} if body.event_id is None else {
+        "event_id": body.event_id, "occurred_at": body.occurred_at,
+    }
     event = Event(
+        **identity,
         event_type=body.event_type,
         payload=body.payload,
         slot=body.slot,

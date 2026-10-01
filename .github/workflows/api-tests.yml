@@ -46,9 +46,13 @@ jobs:
           python -m pip install pytest pytest-asyncio
           python -m pip install -e packages/stinky-core
           python -m pip install -e services/api
+          python -m pip install -e services/event-log
 
       - name: Compile API
         run: python -m compileall -q services/api/src
+
+      - name: Verify HTTP event identity
+        run: python -m pytest -q services/event-log/tests
 
       - name: Run API tests
         run: python -m pytest -q services/api/tests tests/test_genesis_postgres_backup_contract.py tests/test_paper_recovery_pid_reuse.py tests/test_paper_recovery_drill_contract.py tests/test_paper_recovery_soak_contract.py tests/test_formal_paper_validation_preflight_contract.py tests/test_formal_paper_validation_launcher_contract.py tests/test_prospective_evidence_accumulation_contract.py tests/test_unresolved_outcome_diagnostic_contract.py
