@@ -47,7 +47,9 @@ _HELIUS_HARD_COOLDOWN_SEC = 1800.0
 
 _pump_lock = asyncio.Lock()
 _pump_next_ok = 0.0
+_pump_cooldown_until = 0.0
 _PUMP_MIN_INTERVAL_SEC = 0.25
+_PUMP_429_FALLBACK_COOLDOWN_SEC = 10.0
 
 _rpc_lock = asyncio.Lock()
 _rpc_next_ok = 0.0
@@ -187,11 +189,13 @@ class ChainClient:
     async def _pace_pump(self) -> None:
         global _pump_next_ok
         async with _pump_lock:
-            now = time.monotonic()
-            wait = _pump_next_ok - now
-            if wait > 0:
+            while True:
+                now = time.monotonic()
+                wait = max(_pump_next_ok, _pump_cooldown_until) - now
+                if wait <= 0:
+                    _pump_next_ok = now + _PUMP_MIN_INTERVAL_SEC
+                    return
                 await asyncio.sleep(wait)
-            _pump_next_ok = time.monotonic() + _PUMP_MIN_INTERVAL_SEC
 
     async def _pace_rpc(self) -> None:
         global _rpc_next_ok
@@ -205,7 +209,7 @@ class ChainClient:
                 await asyncio.sleep(wait)
 
     async def _fetch_pump_v2(self, mint: str) -> list[ObservedTrade]:
-        global _last_source_status
+        global _last_source_status, _pump_cooldown_until
         trades: list[ObservedTrade] = []
         raw_rows = 0
         pages_fetched = 0
@@ -225,8 +229,23 @@ class ChainClient:
                 logger.warning("chain.pump_v2_failed", mint=mint[:12], error=str(exc)[:200])
                 break
             if resp.status_code == 429:
-                logger.warning("chain.pump_v2_rate_limited", mint=mint[:12], page=page)
-                await asyncio.sleep(2.0)
+                retry_after = _PUMP_429_FALLBACK_COOLDOWN_SEC
+                raw_retry_after = resp.headers.get("Retry-After")
+                if raw_retry_after:
+                    try:
+                        retry_after = max(retry_after, float(raw_retry_after))
+                    except (TypeError, ValueError):
+                        pass
+                _pump_cooldown_until = max(
+                    _pump_cooldown_until,
+                    time.monotonic() + retry_after,
+                )
+                logger.warning(
+                    "chain.pump_v2_rate_limited",
+                    mint=mint[:12],
+                    page=page,
+                    cooldown_sec=round(retry_after, 3),
+                )
                 break
             if resp.status_code != 200:
                 logger.warning(
