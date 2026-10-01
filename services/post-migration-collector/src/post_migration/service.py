@@ -10,6 +10,7 @@ from typing import Any
 
 import redis.asyncio as redis
 import structlog
+from redis.exceptions import ResponseError
 
 from post_migration.chain import ChainClient
 from post_migration.config import settings
@@ -43,15 +44,7 @@ class CollectorService:
             socket_connect_timeout=5,
             socket_timeout=None,
         )
-        try:
-            await self._redis.xgroup_create(
-                settings.event_stream,
-                settings.collector_consumer_group,
-                id="0",
-                mkstream=True,
-            )
-        except Exception:
-            pass
+        await self._ensure_consumer_group()
         self._running = True
         logger.info(
             "collector.started",
@@ -61,6 +54,50 @@ class CollectorService:
             enable_helius=bool(settings.enable_helius),
             trade_source="pump.v2",
         )
+
+    async def _ensure_consumer_group(self) -> bool:
+        """Ensure the collector group exists without hiding real Redis failures."""
+        assert self._redis is not None
+        try:
+            await self._redis.xgroup_create(
+                settings.event_stream,
+                settings.collector_consumer_group,
+                id="0",
+                mkstream=True,
+            )
+        except ResponseError as exc:
+            if "BUSYGROUP" in str(exc):
+                return False
+            raise
+        logger.info(
+            "collector.consumer_group_created",
+            stream=settings.event_stream,
+            group=settings.collector_consumer_group,
+        )
+        return True
+
+    async def _read_group(self, consumer: str) -> list[Any]:
+        """Read once, recreating a consumer group that disappeared at runtime."""
+        assert self._redis is not None
+        try:
+            return await self._redis.xreadgroup(
+                groupname=settings.collector_consumer_group,
+                consumername=consumer,
+                streams={settings.event_stream: ">"},
+                count=20,
+                block=5000,
+            )
+        except ResponseError as exc:
+            if "NOGROUP" not in str(exc):
+                raise
+            logger.warning(
+                "collector.consumer_group_missing",
+                stream=settings.event_stream,
+                group=settings.collector_consumer_group,
+            )
+            metrics.inc("consumer_group_recoveries")
+            await self._ensure_consumer_group()
+            return []
 
     async def stop(self) -> None:
         self._running = False
@@ -86,13 +123,7 @@ class CollectorService:
         try:
             while self._running:
                 try:
-                    rows = await self._redis.xreadgroup(
-                        groupname=settings.collector_consumer_group,
-                        consumername=consumer,
-                        streams={settings.event_stream: ">"},
-                        count=20,
-                        block=5000,
-                    )
+                    rows = await self._read_group(consumer)
                     if rows:
                         for _stream, messages in rows:
                             for msg_id, fields in messages:
