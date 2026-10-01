@@ -35,7 +35,7 @@ async def report():
           max(outcome_observed_at) AS latest_outcome_observed_at
           FROM paper_prospective_candidate
           WHERE producer_version=:version AND cohort_pattern_hash=:pattern_hash
-            AND (:started IS NULL OR decided_at>=:started)""")),
+            AND (:started IS NULL OR decided_at>=:started)"""),
           {"version":PRODUCER_VERSION,"pattern_hash":pattern_hash,"started":started})).mappings().one()
         market=(await s.execute(text("""SELECT horizon,count(*) AS samples
           FROM market_outcome_observations
