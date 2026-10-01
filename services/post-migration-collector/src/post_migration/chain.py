@@ -54,9 +54,11 @@ _PUMP_429_FALLBACK_COOLDOWN_SEC = 10.0
 _rpc_lock = asyncio.Lock()
 _rpc_next_ok = 0.0
 _rpc_cooldown_until = 0.0
+_rpc_429_streak_by_method: dict[str, int] = {}
 # Stay below the public endpoint's documented 40 requests / 10s / RPC-method cap.
 _RPC_MIN_INTERVAL_SEC = 0.30
 _RPC_429_FALLBACK_COOLDOWN_SEC = 10.0
+_RPC_429_MAX_COOLDOWN_SEC = 120.0
 
 
 def helius_throttled() -> bool:
@@ -305,13 +307,20 @@ class ChainClient:
             logger.warning("chain.rpc_failed", method=method, error=str(exc)[:200])
             return None
         if resp.status_code == 429:
-            retry_after = _RPC_429_FALLBACK_COOLDOWN_SEC
+            streak = _rpc_429_streak_by_method.get(method, 0) + 1
+            _rpc_429_streak_by_method[method] = streak
+            retry_after: float | None = None
             raw_retry_after = resp.headers.get("Retry-After")
             if raw_retry_after:
                 try:
-                    retry_after = max(retry_after, float(raw_retry_after))
+                    retry_after = float(raw_retry_after)
                 except (TypeError, ValueError):
-                    pass
+                    retry_after = None
+            if retry_after is None or retry_after <= 0:
+                retry_after = min(
+                    _RPC_429_FALLBACK_COOLDOWN_SEC * (2 ** (streak - 1)),
+                    _RPC_429_MAX_COOLDOWN_SEC,
+                )
             _rpc_cooldown_until = max(
                 _rpc_cooldown_until,
                 time.monotonic() + retry_after,
@@ -320,6 +329,7 @@ class ChainClient:
                 "chain.rpc_rate_limited",
                 method=method,
                 cooldown_sec=round(retry_after, 3),
+                streak=streak,
             )
             return None
         if resp.status_code != 200:
@@ -334,6 +344,7 @@ class ChainClient:
         if body.get("error"):
             logger.warning("chain.rpc_error", method=method, error=str(body.get("error"))[:160])
             return None
+        _rpc_429_streak_by_method.pop(method, None)
         return body.get("result")
 
     async def _fetch_public_rpc(
@@ -378,7 +389,7 @@ class ChainClient:
                     sig,
                     {
                         "encoding": "jsonParsed",
-                        "maxSupportedTransactionVersion": 0,
+                        "maxSupportedTransactionVersion": 1,
                         "commitment": settings.commitment,
                     },
                 ],
