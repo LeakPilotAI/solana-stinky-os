@@ -191,6 +191,68 @@ class Store:
             )
             await session.commit()
 
+    async def market_snapshot_coverage(
+        self,
+        mint: str,
+        *,
+        start_at: datetime,
+        end_at: datetime,
+    ) -> dict[str, Any]:
+        """Return persisted valid-price coverage inside the factual track window."""
+        async with self._sessions() as session:
+            row = (
+                await session.execute(
+                    text(
+                        """
+                        SELECT count(*)::int AS valid_price_snapshot_count,
+                               min(captured_at) AS first_snapshot_at,
+                               max(captured_at) AS final_snapshot_at
+                        FROM market_snapshots
+                        WHERE mint = :mint
+                          AND captured_at >= :start_at
+                          AND captured_at <= :end_at
+                          AND price_usd IS NOT NULL
+                          AND price_usd > 0
+                        """
+                    ),
+                    {"mint": mint, "start_at": start_at, "end_at": end_at},
+                )
+            ).mappings().one()
+        return dict(row)
+
+    async def fail_track_for_incomplete_market_path(
+        self,
+        mint: str,
+        *,
+        coverage: dict[str, Any],
+    ) -> None:
+        """Fail closed when wall-clock completion lacks a measured market path."""
+        async with self._sessions() as session:
+            await session.execute(
+                text(
+                    """
+                    UPDATE migration_tracks
+                    SET status = 'failed',
+                        completed_at = NULL,
+                        meta = COALESCE(meta, '{}'::jsonb)
+                               || jsonb_build_object(
+                                    'tracking_failure_reason',
+                                    'incomplete_measured_market_path',
+                                    'completion_coverage',
+                                    CAST(:coverage AS jsonb),
+                                    'tracking_failed_at',
+                                    now()
+                                  )
+                    WHERE mint = :mint
+                    """
+                ),
+                {
+                    "mint": mint,
+                    "coverage": __import__("orjson").dumps(coverage).decode(),
+                },
+            )
+            await session.commit()
+
     async def complete_track(self, mint: str, *, status: TrackStatus = TrackStatus.COMPLETED) -> None:
         async with self._sessions() as session:
             await session.execute(

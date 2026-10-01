@@ -22,6 +22,11 @@ async def diagnose():
     ORDER BY decided_at,candidate_id"""))).mappings().all()
   details=[]
   for c in candidates:
+   source=(await s.execute(text("""SELECT event_id::text event_id,event_type,occurred_at,ingested_at,
+      signature,producer,payload
+      FROM events WHERE event_id::text=:event_id
+      ORDER BY ingested_at,event_id LIMIT 1"""),
+      {"event_id":c["source_event_id"]})).mappings().first()
    track=(await s.execute(text("""SELECT track_id,migration_at,completed_at,status,
       buyers_captured,trades_observed,snapshots_taken
       FROM migration_tracks WHERE mint=:mint
@@ -60,8 +65,10 @@ async def diagnose():
     state="migration_track_not_completed"
    else:
     state="canonical_evidence_insufficient"
-   details.append({"candidate_id":c["candidate_id"],"mint":c["mint"],"decided_at":c["decided_at"],
-    "diagnostic_state":state,"migration_track":dict(track) if track else None,
+   details.append({"candidate_id":c["candidate_id"],"source_event_id":c["source_event_id"],
+    "mint":c["mint"],"decided_at":c["decided_at"],
+    "diagnostic_state":state,"source_event":dict(source) if source else None,
+    "migration_track":dict(track) if track else None,
     "valid_in_window_snapshot_count":len([x for x in snaps if x.get("price_usd") is not None and float(x["price_usd"])>0]),
     "canonical_classifier":classification,"entity_launch":dict(launch) if launch else None,
     "immutable_outcome_ledger":dict(ledger) if ledger else None,

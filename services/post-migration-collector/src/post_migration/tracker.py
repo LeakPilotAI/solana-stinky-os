@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
@@ -25,6 +25,54 @@ _PHASE10_FEATURE_HORIZONS: tuple[tuple[str, int], ...] = (
     ("15m", 900),
     ("30m", 1800),
 )
+
+# Keep lifecycle completion aligned with the canonical measured-outcome classifier.
+# This is evidence-completeness tolerance, not a trading or policy threshold.
+_COMPLETION_EDGE_TOLERANCE_SEC = 120.0
+
+
+def _completion_coverage_evidence(
+    *,
+    migration_at: datetime,
+    coverage: dict[str, Any],
+    required_window_sec: float,
+) -> dict[str, Any]:
+    first_at = coverage.get("first_snapshot_at")
+    final_at = coverage.get("final_snapshot_at")
+    count = int(coverage.get("valid_price_snapshot_count") or 0)
+    if isinstance(first_at, datetime) and first_at.tzinfo is None:
+        first_at = first_at.replace(tzinfo=timezone.utc)
+    if isinstance(final_at, datetime) and final_at.tzinfo is None:
+        final_at = final_at.replace(tzinfo=timezone.utc)
+    anchor = migration_at if migration_at.tzinfo else migration_at.replace(tzinfo=timezone.utc)
+    first_delay = (
+        (first_at - anchor).total_seconds()
+        if isinstance(first_at, datetime)
+        else None
+    )
+    final_coverage = (
+        (final_at - anchor).total_seconds()
+        if isinstance(final_at, datetime)
+        else None
+    )
+    required_final = max(0.0, float(required_window_sec) - _COMPLETION_EDGE_TOLERANCE_SEC)
+    complete = bool(
+        count >= 2
+        and first_delay is not None
+        and first_delay <= _COMPLETION_EDGE_TOLERANCE_SEC
+        and final_coverage is not None
+        and final_coverage >= required_final
+    )
+    return {
+        "complete": complete,
+        "valid_price_snapshot_count": count,
+        "first_snapshot_at": first_at.isoformat() if isinstance(first_at, datetime) else None,
+        "final_snapshot_at": final_at.isoformat() if isinstance(final_at, datetime) else None,
+        "first_snapshot_delay_sec": first_delay,
+        "final_snapshot_coverage_sec": final_coverage,
+        "required_final_snapshot_coverage_sec": required_final,
+        "edge_tolerance_sec": _COMPLETION_EDGE_TOLERANCE_SEC,
+    }
 
 
 class MintTracker:
@@ -280,6 +328,29 @@ class MintTracker:
                 await asyncio.sleep(settings.track_poll_interval_sec)
 
             await self._refresh_performance(milestones)
+            coverage = await self._store.market_snapshot_coverage(
+                self.mint,
+                start_at=tracking_anchor,
+                end_at=tracking_anchor + timedelta(seconds=settings.track_max_duration_sec),
+            )
+            completion_evidence = _completion_coverage_evidence(
+                migration_at=tracking_anchor,
+                coverage=coverage,
+                required_window_sec=settings.track_max_duration_sec,
+            )
+            if not completion_evidence["complete"]:
+                await self._store.fail_track_for_incomplete_market_path(
+                    self.mint,
+                    coverage=completion_evidence,
+                )
+                metrics.inc("tracks_failed_incomplete_market_path")
+                logger.warning(
+                    "track.incomplete_market_path_failed",
+                    mint=self.mint,
+                    **completion_evidence,
+                )
+                return
+
             await self._store.complete_track(self.mint, status=TrackStatus.COMPLETED)
             await self._publisher.tracking_completed(
                 self.mint,
