@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 from uuid import UUID
 
@@ -139,6 +139,41 @@ class Store:
             await session.commit()
             assert row is not None
             return row[0]
+
+    async def get_track_status(self, mint: str) -> TrackStatus | None:
+        """Return durable lifecycle status without changing it."""
+        async with self._sessions() as session:
+            row = (await session.execute(
+                text("SELECT status FROM migration_tracks WHERE mint=:mint LIMIT 1"),
+                {"mint": mint},
+            )).first()
+        if not row:
+            return None
+        try:
+            return TrackStatus(str(row[0]))
+        except ValueError:
+            return None
+
+    async def fail_stale_active_tracks(self, *, max_duration_sec: float) -> list[str]:
+        """Fail closed when an interrupted factual observation window has expired."""
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=max(0.0, float(max_duration_sec)))
+        async with self._sessions() as session:
+            rows = (await session.execute(
+                text("""
+                    UPDATE migration_tracks
+                    SET status='failed',
+                        meta=COALESCE(meta,'{}'::jsonb)
+                             || jsonb_build_object(
+                                  'tracking_failure_reason','interrupted_observation_window',
+                                  'tracking_recovered_at',now()
+                                )
+                    WHERE status='active' AND migration_at <= :cutoff
+                    RETURNING mint
+                """),
+                {"cutoff": cutoff},
+            )).scalars().all()
+            await session.commit()
+        return [str(mint) for mint in rows]
 
     async def set_buyer_capture_complete(self, mint: str, complete: bool) -> None:
         """Persist whether the ranked buyer cohort has complete source coverage."""
@@ -646,8 +681,8 @@ class Store:
                           AND e.payload->>'mint' IS NOT NULL
                           AND (
                               NOT EXISTS (
-                                  SELECT 1 FROM migration_buyers mb
-                                  WHERE mb.mint = e.payload->>'mint'
+                                  SELECT 1 FROM migration_tracks mt
+                                  WHERE mt.mint = e.payload->>'mint'
                               )
                               OR EXISTS (
                                   SELECT 1 FROM migration_tracks mt

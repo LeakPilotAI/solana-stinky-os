@@ -54,6 +54,8 @@ async def diagnose():
     state="canonical_classification_possible_but_not_reconciled"
    elif not track:
     state="missing_migration_track"
+   elif track["status"]=="failed":
+    state="migration_track_failed_or_interrupted"
    elif track["status"]!="completed" or track["completed_at"] is None:
     state="migration_track_not_completed"
    else:
