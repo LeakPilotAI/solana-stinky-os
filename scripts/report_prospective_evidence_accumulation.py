@@ -37,10 +37,14 @@ async def report():
           WHERE producer_version=:version AND cohort_pattern_hash=:pattern_hash
             AND (CAST(:started AS timestamptz) IS NULL OR decided_at>=CAST(:started AS timestamptz))"""),
           {"version":PRODUCER_VERSION,"pattern_hash":pattern_hash,"started":started})).mappings().one()
-        market=(await s.execute(text("""SELECT horizon,count(*) AS samples
-          FROM market_outcome_observations
-          WHERE pattern_hash=:pattern_hash AND observed_at IS NOT NULL
-          GROUP BY horizon ORDER BY horizon"""),{"pattern_hash":pattern_hash})).all()
+        market=(await s.execute(text("""SELECT mo.horizon,count(*) AS samples
+          FROM market_path_pattern_occurrences o
+          JOIN market_outcome_observations mo
+            ON mo.mint=o.mint AND mo.observed_at>o.observed_at
+          WHERE o.pattern_hash=:pattern_hash
+            AND mo.observed_at IS NOT NULL
+            AND mo.ingested_at>o.observed_at
+          GROUP BY mo.horizon ORDER BY mo.horizon"""),{"pattern_hash":pattern_hash})).all()
     counts={k:(int(row[k]) if row[k] is not None else 0) for k in ("candidates","closed","runners","held","fades","unresolved")}
     return {"status":"OBSERVED","as_of":datetime.now(timezone.utc).isoformat(),
       "producer_version":PRODUCER_VERSION,"filter_version":str(FILTER_VERSION or "UNKNOWN"),
