@@ -16,3 +16,11 @@ def test_accumulation_launcher_starts_only_postgres():
  assert "docker compose -p project-genesis up -d postgres" in t
  assert "report_prospective_evidence_accumulation.py" in t
  assert "Start-Stinky-OS" not in t
+
+def test_accumulation_launcher_retries_transient_report_failures_but_stays_fail_closed():
+ t=(ROOT/"Run-Prospective-Evidence-Report.cmd").read_text()
+ assert "for /L %%I in (1,1,3) do" in t
+ assert "retrying in 3 seconds" in t
+ assert "FAILED after 3 attempts" in t
+ assert "goto :report_ok" in t
+ assert "exit /b 1" in t
