@@ -33,8 +33,12 @@ async def test_report_binds_non_null_prospective_epoch_with_asyncpg():
           CREATE TABLE "{schema}".paper_prospective_candidate(
           producer_version text NOT NULL, cohort_pattern_hash text NOT NULL,
           canonical_outcome text, decided_at timestamptz NOT NULL, outcome_observed_at timestamptz);
+          CREATE TABLE "{schema}".market_path_pattern_occurrences(
+          id bigserial PRIMARY KEY,pattern_hash text NOT NULL,mint text NOT NULL,
+          observed_at timestamptz NOT NULL);
           CREATE TABLE "{schema}".market_outcome_observations(
-          pattern_hash text NOT NULL,horizon text NOT NULL,observed_at timestamptz);''')
+          id bigserial PRIMARY KEY,mint text NOT NULL,horizon text NOT NULL,
+          observed_at timestamptz NOT NULL,ingested_at timestamptz NOT NULL);''')
         module=load_report_module()
         pattern=module.canonical_pattern_hash(module.cohort_signature(str(module.FILTER_VERSION or "UNKNOWN")))
         started=datetime(2026,9,10,6,29,37,tzinfo=timezone.utc)
@@ -42,8 +46,11 @@ async def test_report_binds_non_null_prospective_epoch_with_asyncpg():
         await conn.execute(f'''INSERT INTO "{schema}".paper_prospective_candidate
           (producer_version,cohort_pattern_hash,canonical_outcome,decided_at,outcome_observed_at)
           VALUES($1,$2,'RUNNER',$3,$3)''',module.PRODUCER_VERSION,pattern,started)
+        await conn.execute(f'''INSERT INTO "{schema}".market_path_pattern_occurrences
+          (pattern_hash,mint,observed_at) VALUES($1,'mint-1',$2)''',pattern,started)
+        followup=started.replace(minute=started.minute+15)
         await conn.execute(f'''INSERT INTO "{schema}".market_outcome_observations
-          (pattern_hash,horizon,observed_at) VALUES($1,'15m',$2)''',pattern,started)
+          (mint,horizon,observed_at,ingested_at) VALUES('mint-1','15m',$1,$1)''',followup)
         engine=create_async_engine(DB_URL.replace("postgresql://","postgresql+asyncpg://",1),
           connect_args={"server_settings":{"search_path":schema}})
         module.SessionLocal=async_sessionmaker(engine,expire_on_commit=False)
