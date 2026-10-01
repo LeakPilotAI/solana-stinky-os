@@ -17,7 +17,7 @@ AUTH={"paper_only":True,"read_only":True,"classification_reused":True,
 
 async def diagnose():
  async with SessionLocal() as s:
-  candidates=(await s.execute(text("""SELECT candidate_id,mint,decided_at
+  candidates=(await s.execute(text("""SELECT candidate_id,source_event_id,mint,decided_at
     FROM paper_prospective_candidate WHERE canonical_outcome IS NULL
     ORDER BY decided_at,candidate_id"""))).mappings().all()
   details=[]
