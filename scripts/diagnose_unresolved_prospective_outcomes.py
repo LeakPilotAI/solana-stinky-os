@@ -55,7 +55,7 @@ async def diagnose():
       {"mint":c["mint"]})).mappings().first()
    snaps=[]
    classification={"label":"UNKNOWN","reason":"no_completed_migration_track","evidence_only":True}
-   if track and track["migration_at"] is not None and track["completed_at"] is not None:
+   if track and track["status"]=="completed" and track["migration_at"] is not None and track["completed_at"] is not None:
     snaps=[dict(x) for x in (await s.execute(text("""SELECT captured_at,price_usd,liquidity_usd,volume_m5_usd
        FROM market_snapshots WHERE mint=:mint AND captured_at>=:start AND captured_at<=:end
        ORDER BY captured_at,snapshot_id"""),{"mint":c["mint"],"start":track["migration_at"],"end":track["completed_at"]})).mappings().all()]
