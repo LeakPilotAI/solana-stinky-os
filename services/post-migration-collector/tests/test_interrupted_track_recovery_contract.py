@@ -23,7 +23,8 @@ def test_recovery_launcher_is_bounded_and_no_rpc():
 def test_unresolved_diagnostic_exposes_source_event_provenance_read_only():
     s = (ROOT / "scripts" / "diagnose_unresolved_prospective_outcomes.py").read_text()
     assert "SELECT candidate_id,source_event_id,mint,decided_at" in s
-    assert '{"event_id":c["source_event_id"]}' in s
+    assert 'source_event_for_candidate(s,c["source_event_id"])' in s
+    assert '{"event_id":source_event_id}' in s
     assert '"source_event_id":c["source_event_id"]' in s
     assert '"source_event":dict(source)' in s
     assert "signature,producer,payload" in s

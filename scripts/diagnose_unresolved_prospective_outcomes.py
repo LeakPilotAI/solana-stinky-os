@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio,json,sys
 from datetime import datetime,timezone
 from pathlib import Path
+from uuid import UUID
 from sqlalchemy import text
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/"services"/"api"/"src"))
@@ -15,6 +16,19 @@ AUTH={"paper_only":True,"read_only":True,"classification_reused":True,
 "trading_authority":False,"rpc_contacted":False,"transaction_signed":False,
 "order_submitted":False,"wallet_mutated":False}
 
+async def source_event_for_candidate(session, source_event_id):
+ # Preserve the previous exact text-match semantics for malformed/legacy IDs.
+ try:
+  if str(UUID(source_event_id)) != source_event_id:
+   return None
+ except (ValueError, TypeError, AttributeError):
+  return None
+ return (await session.execute(text("""SELECT event_id::text event_id,event_type,occurred_at,ingested_at,
+      signature,producer,payload
+      FROM events WHERE event_id=CAST(:event_id AS uuid)
+      ORDER BY ingested_at,event_id LIMIT 1"""),
+      {"event_id":source_event_id})).mappings().first()
+
 async def diagnose():
  async with SessionLocal() as s:
   candidates=(await s.execute(text("""SELECT candidate_id,source_event_id,mint,decided_at
@@ -22,11 +36,7 @@ async def diagnose():
     ORDER BY decided_at,candidate_id"""))).mappings().all()
   details=[]
   for c in candidates:
-   source=(await s.execute(text("""SELECT event_id::text event_id,event_type,occurred_at,ingested_at,
-      signature,producer,payload
-      FROM events WHERE event_id::text=:event_id
-      ORDER BY ingested_at,event_id LIMIT 1"""),
-      {"event_id":c["source_event_id"]})).mappings().first()
+   source=await source_event_for_candidate(s,c["source_event_id"])
    track=(await s.execute(text("""SELECT track_id,migration_at,completed_at,status,
       buyers_captured,trades_observed,snapshots_taken
       FROM migration_tracks WHERE mint=:mint
