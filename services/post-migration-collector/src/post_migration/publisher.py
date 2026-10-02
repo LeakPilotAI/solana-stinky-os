@@ -67,6 +67,8 @@ class EventPublisher:
         if settings.event_log_url and http_allowed:
             try:
                 body = {
+                    "event_id": str(event.event_id),
+                    "occurred_at": event.occurred_at.isoformat(),
                     "event_type": event.event_type.value,
                     "payload": event.payload,
                     "slot": event.slot,
