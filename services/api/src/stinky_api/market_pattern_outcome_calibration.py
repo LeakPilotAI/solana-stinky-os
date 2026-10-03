@@ -106,7 +106,7 @@ async def calibrate_market_pattern_outcomes(
                         FROM market_outcome_observations b
                         WHERE b.mint = o.mint
                           AND b.observed_at <= o.observed_at
-                          AND (:as_of IS NULL OR b.ingested_at <= :as_of)
+                          AND (CAST(:as_of AS timestamptz) IS NULL OR b.ingested_at <= CAST(:as_of AS timestamptz))
                         ORDER BY b.observed_at DESC, b.horizon_seconds DESC, b.id DESC
                         LIMIT 1
                     ) baseline ON TRUE
