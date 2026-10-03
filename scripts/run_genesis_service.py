@@ -51,6 +51,20 @@ WATCH_CONTAINERS = (
     "stinky-minio",
 )
 
+
+def stopped_watch_containers(raw: str) -> list[str]:
+    states: dict[str, str] = {}
+    for line in raw.splitlines():
+        name_part, separator, state_part = line.partition("|")
+        if separator:
+            states[name_part.strip()] = state_part.strip().lower()
+    return [
+        name
+        for name in WATCH_CONTAINERS
+        if states.get(name) and states[name] != "running"
+    ]
+
+
 CORE_HEALTH = (
     ("event-log", 8002, "http://127.0.0.1:8002/health"),
     ("api", 8010, "http://127.0.0.1:8010/health"),
@@ -471,7 +485,9 @@ def main() -> int:
                 return int(parts[-1])
         return 0
 
-    def hidden_run(cmd: list[str], timeout: int = 40) -> None:
+    def hidden_run(
+        cmd: list[str], timeout: int = 40
+    ) -> subprocess.CompletedProcess[str] | None:
         flags = 0
         startupinfo = None
         if os.name == "nt":
@@ -480,25 +496,33 @@ def main() -> int:
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             startupinfo.wShowWindow = 0
         try:
-            subprocess.run(
+            return subprocess.run(
                 cmd,
                 capture_output=True,
+                text=True,
                 timeout=timeout,
                 creationflags=flags,
                 startupinfo=startupinfo,
             )
         except (subprocess.TimeoutExpired, OSError):
-            pass
+            return None
 
     def watchdog_tick() -> None:
-        """If Postgres/Redis/MinIO were stopped, start them. No compose up. No consoles. Never ATLAS.
+        """Start only stopped, existing Genesis dependencies. Never ATLAS.
 
-        project-genesis compose up is only at desktop start.
+        project-genesis compose up is only at desktop start; this watchdog never runs compose up.
         """
         docker = find_docker_bin()
         if not docker:
             return
-        hidden_run([docker, "start", *WATCH_CONTAINERS], timeout=40)
+        probe = hidden_run(
+            [docker, "ps", "-a", "--format", "{{.Names}}|{{.State}}"], timeout=20
+        )
+        if probe is None or probe.returncode != 0:
+            return
+        stopped = stopped_watch_containers(probe.stdout)
+        if stopped:
+            hidden_run([docker, "start", *stopped], timeout=40)
 
     # Ownership must be provable immediately, before any unrelated core HTTP
     # probes can consume the paper starter's bounded proof window.

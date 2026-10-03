@@ -4,6 +4,7 @@ These are source-level tests so CI can verify Windows launcher safety without
 starting Docker Desktop or Windows service processes on the runner.
 """
 
+import importlib.util
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -78,6 +79,26 @@ def test_supervisor_failure_state_is_durable_per_service():
     assert '"supervisor_phase": phase or "RUNNING"' in t
     assert 'write_supervisor_ownership_state(phase or "RUNNING", services=core)' in t
     assert 'dump_runtime("FAILED")' in t
+
+
+def test_dependency_watchdog_starts_only_existing_stopped_containers():
+    t = read("scripts/run_genesis_service.py")
+    assert '[docker, "ps", "-a", "--format", "{{.Names}}|{{.State}}"]' in t
+    assert 'if states.get(name) and states[name] != "running"' in t
+    assert "if stopped:" in t
+    assert 'hidden_run([docker, "start", *stopped], timeout=40)' in t
+    assert 'hidden_run([docker, "start", *WATCH_CONTAINERS], timeout=40)' not in t
+
+
+def test_stopped_watch_container_parser_ignores_running_and_missing_dependencies():
+    spec = importlib.util.spec_from_file_location(
+        "run_genesis_service_watchdog_test", ROOT / "scripts" / "run_genesis_service.py"
+    )
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    raw = "stinky-postgres|running\nstinky-redis|exited\nunrelated|exited\n"
+    assert mod.stopped_watch_containers(raw) == ["stinky-redis"]
 
 
 def test_healthy_core_supervisor_heartbeats_runtime_state():
