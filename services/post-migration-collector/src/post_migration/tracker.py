@@ -8,6 +8,7 @@ from typing import Any
 from uuid import UUID
 
 import structlog
+from sqlalchemy.exc import DBAPIError
 
 from post_migration.chain import ChainClient, last_trade_source_status
 from post_migration.config import settings
@@ -29,6 +30,29 @@ _PHASE10_FEATURE_HORIZONS: tuple[tuple[str, int], ...] = (
 # Keep lifecycle completion aligned with the canonical measured-outcome classifier.
 # This is evidence-completeness tolerance, not a trading or policy threshold.
 _COMPLETION_EDGE_TOLERANCE_SEC = 120.0
+
+
+def _is_transient_database_disconnect(exc: BaseException) -> bool:
+    """Recognize connection loss without treating evidence/query errors as transient."""
+    pending: list[BaseException] = [exc]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, ConnectionError):
+            return True
+        if isinstance(current, DBAPIError) and bool(current.connection_invalidated):
+            return True
+        for related in (
+            getattr(current, "orig", None),
+            current.__cause__,
+            current.__context__,
+        ):
+            if isinstance(related, BaseException):
+                pending.append(related)
+    return False
 
 
 def _completion_coverage_evidence(
@@ -372,6 +396,18 @@ class MintTracker:
                 sells=sells,
             )
         except Exception as exc:
+            if _is_transient_database_disconnect(exc):
+                metrics.inc("database_disconnects")
+                logger.warning(
+                    "track.database_disconnect_deferred",
+                    mint=self.mint,
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
+                # Do not retry an uncertain write in-place. Leave durable state
+                # active so the existing bounded periodic backfill can resume
+                # this still-current observation window from persisted evidence.
+                return
             metrics.inc("errors")
             logger.error("track.failed", mint=self.mint, error=str(exc))
             try:
