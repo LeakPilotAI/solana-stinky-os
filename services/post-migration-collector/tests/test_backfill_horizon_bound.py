@@ -47,6 +47,22 @@ async def test_backfill_passes_factual_tracking_horizon_to_store_query():
     )
 
 
+@pytest.mark.asyncio
+async def test_backfill_overfetches_by_in_memory_active_count():
+    service = CollectorService()
+    service._store = AsyncMock()
+    service._store.migrations_needing_buyers.return_value = []
+    service._active_tracks.update({"A", "B", "C"})
+
+    started = await service.backfill_from_events(limit=12)
+
+    assert started == 0
+    service._store.migrations_needing_buyers.assert_awaited_once_with(
+        limit=15,
+        max_age_sec=settings.track_max_duration_sec,
+    )
+
+
 def test_store_backfill_sql_is_bounded_to_current_observation_horizon():
     source = (
         ROOT / "services" / "post-migration-collector" / "src"
@@ -60,6 +76,7 @@ def test_store_backfill_sql_is_bounded_to_current_observation_horizon():
     assert "e.occurred_at >= CAST(:cutoff AS timestamptz)" in block
     assert '{"lim": limit, "cutoff": cutoff}' in block
     assert "mt.status = 'active'" in block
+    assert "CASE WHEN mt.status = 'active' THEN 0 ELSE 1 END" in block
 
 
 def test_unrelated_wallet_listing_does_not_reference_backfill_cutoff():

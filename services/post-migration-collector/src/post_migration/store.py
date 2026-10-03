@@ -749,21 +749,14 @@ class Store:
                                e.occurred_at,
                                e.payload
                         FROM events e
+                        LEFT JOIN migration_tracks mt
+                          ON mt.mint = e.payload->>'mint'
                         WHERE e.event_type = 'token.migrated'
                           AND e.payload->>'mint' IS NOT NULL
                           AND e.occurred_at >= CAST(:cutoff AS timestamptz)
-                          AND (
-                              NOT EXISTS (
-                                  SELECT 1 FROM migration_tracks mt
-                                  WHERE mt.mint = e.payload->>'mint'
-                              )
-                              OR EXISTS (
-                                  SELECT 1 FROM migration_tracks mt
-                                  WHERE mt.mint = e.payload->>'mint'
-                                    AND mt.status = 'active'
-                              )
-                          )
-                        ORDER BY e.occurred_at DESC
+                          AND (mt.mint IS NULL OR mt.status = 'active')
+                        ORDER BY CASE WHEN mt.status = 'active' THEN 0 ELSE 1 END,
+                                 e.occurred_at DESC
                         LIMIT :lim
                         """
                     ),
