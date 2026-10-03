@@ -105,7 +105,7 @@ async def motif_outcome_context(
                    l.observed_at, l.created_at
             FROM entity_launches l
             WHERE l.entity_id::text = ANY(:entity_ids)
-              AND (:current_mint IS NULL OR l.mint <> :current_mint)
+              AND (CAST(:current_mint AS text) IS NULL OR l.mint <> CAST(:current_mint AS text))
               {clause}
             ORDER BY l.observed_at DESC, l.id DESC
             LIMIT :limit

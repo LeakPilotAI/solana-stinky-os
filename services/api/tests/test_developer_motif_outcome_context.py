@@ -86,6 +86,7 @@ async def test_outcome_event_after_cutoff_is_unknown_and_observation_ingestion_i
     sql = "\n".join(call[0] for call in session.calls)
     assert "o.observed_at <= :as_of AND o.ingested_at <= :as_of" in sql
     assert "e.occurred_at <= :as_of AND e.ingested_at <= :as_of" in sql
+    assert "(CAST(:current_mint AS text) IS NULL OR l.mint <> CAST(:current_mint AS text))" in sql
 
 
 @pytest.mark.asyncio

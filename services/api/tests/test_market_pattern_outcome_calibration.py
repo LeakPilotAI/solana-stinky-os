@@ -112,7 +112,7 @@ async def test_pattern_followup_query_enforces_strict_after_boundary_and_as_of()
     assert "observed_at <= :as_of" in session.statement
     assert "mo.observed_at <= :as_of" in session.statement
     assert "mo.ingested_at <= :as_of" in session.statement
-    assert "b.ingested_at <= :as_of" in session.statement
+    assert "b.ingested_at <= CAST(:as_of AS timestamptz)" in session.statement
     assert session.params["as_of"].isoformat() == "2026-09-03T00:00:00+00:00"
     assert result["status"] == "UNKNOWN"
     assert result["temporal_cutoff_enforced"] is True
@@ -145,4 +145,4 @@ async def test_backdated_but_late_ingested_evidence_is_excluded_by_query_contrac
     )
 
     assert "mo.observed_at <= :as_of AND mo.ingested_at <= :as_of" in session.statement
-    assert "(:as_of IS NULL OR b.ingested_at <= :as_of)" in session.statement
+    assert "(CAST(:as_of AS timestamptz) IS NULL OR b.ingested_at <= CAST(:as_of AS timestamptz))" in session.statement
