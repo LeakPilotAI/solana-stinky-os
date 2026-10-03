@@ -734,7 +734,7 @@ class FeeResolver:
                         str(sig),
                         {
                             "encoding": "jsonParsed",
-                            "maxSupportedTransactionVersion": 0,
+                            "maxSupportedTransactionVersion": 1,
                             "commitment": "confirmed",
                         },
                     ],

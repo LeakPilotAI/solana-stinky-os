@@ -205,7 +205,7 @@ async def fetch_native_transfers(
             signature,
             {
                 "encoding": "jsonParsed",
-                "maxSupportedTransactionVersion": 0,
+                "maxSupportedTransactionVersion": 1,
                 "commitment": "confirmed",
             },
         ],

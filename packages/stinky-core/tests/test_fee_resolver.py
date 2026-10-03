@@ -319,6 +319,7 @@ def test_onchain_early_exit_when_lower_bound_ge_one():
 
     def rpc_call(method: str, params: list):
         assert method == "getTransaction"
+        assert params[1]["maxSupportedTransactionVersion"] == 1
         return tx
 
     r = FeeResolver(http_get=http_get, rpc_call=rpc_call, max_txs=10)
