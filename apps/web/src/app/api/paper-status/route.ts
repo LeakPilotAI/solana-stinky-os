@@ -101,7 +101,7 @@ export async function GET() {
       psql("SELECT paper_status, count(*) FROM paper_runtime_record GROUP BY paper_status ORDER BY paper_status;"),
       psql("SELECT CASE WHEN processed_at IS NULL THEN 'UNPROCESSED' ELSE 'PROCESSED' END, count(*) FROM paper_runtime_intake GROUP BY 1 ORDER BY 1;"),
       psql("SELECT count(*) FILTER (WHERE canonical_outcome IN ('RUNNER','HELD','FADE'))::text || '|' || count(DISTINCT canonical_outcome) FILTER (WHERE canonical_outcome IN ('RUNNER','HELD','FADE'))::text || '|' || COALESCE(min(decided_at)::text,'') || '|' || COALESCE(max(decided_at)::text,'') FROM paper_prospective_candidate;"),
-      psql("SELECT COALESCE(max(sample_count),0) FROM market_pattern_outcome_distributions WHERE status='CALIBRATED_EMPIRICAL';").catch(() => "0"),
+      psql("SELECT COALESCE(max(sample_count),0) FROM market_pattern_outcome_distributions WHERE status='CALIBRATED_EMPIRICAL';").catch(() => null),
       psql("SELECT json_build_object('policy_version',COALESCE(policy_version,'LEGACY_UNKNOWN'),'policy_sha256',COALESCE(policy_sha256,'UNKNOWN'),'provenance',CASE WHEN policy_evidence_backed IS TRUE THEN 'EVIDENCE_BACKED' WHEN policy_evidence_backed IS FALSE THEN 'MANUAL' ELSE 'UNKNOWN' END,'policy_identity',record->'policy_identity','records',count(*))::text FROM paper_runtime_record GROUP BY policy_version,policy_sha256,policy_evidence_backed,record->'policy_identity' ORDER BY min(created_at);"),
       psql("SELECT json_build_object('policy_version',r.policy_version,'policy_sha256',r.policy_sha256,'provenance',CASE WHEN r.policy_payload->'provenance'->>'evidence_backed'='true' THEN 'EVIDENCE_BACKED' WHEN r.policy_payload->'provenance'->>'evidence_backed'='false' THEN 'MANUAL' ELSE 'UNKNOWN' END,'provenance_mode',COALESCE(r.policy_payload->'provenance'->>'mode','UNKNOWN'),'policy_identity',json_build_object('policy_version',r.policy_version,'policy_sha256',r.policy_sha256,'provenance',r.policy_payload->'provenance'),'state',CASE WHEN a.policy_version IS NOT NULL THEN 'ACTIVE' ELSE 'PROVISIONED' END,'created_at',r.created_at,'activated_at',a.activated_at)::text FROM paper_policy_registry r LEFT JOIN paper_policy_active a ON a.singleton=TRUE AND a.policy_version=r.policy_version ORDER BY r.created_at DESC,r.policy_version DESC LIMIT 51;"),
     ]);
@@ -111,17 +111,19 @@ export async function GET() {
     const [evidenceClosedRaw, representedRaw, firstCandidateAt, latestCandidateAt] = evidenceRaw ? evidenceRaw.split("|", 4) : ["0", "0", "", ""];
     const evidenceClosed = Number(evidenceClosedRaw || 0) || 0;
     const representedOutcomeClasses = Number(representedRaw || 0) || 0;
-    const marketCapSamples = Number(marketRaw || 0) || 0;
+    const marketCapSamplesAvailable = marketRaw !== null;
+    const marketCapSamples = marketCapSamplesAvailable ? (Number(marketRaw || 0) || 0) : null;
     const readiness = criteria.configured ? {
       status: "CRITERIA_CONFIGURED", criteria,
       deficits: {
         closed_outcomes_needed: Math.max(0, (criteria.min_closed_outcomes ?? 0) - evidenceClosed),
         outcome_classes_needed: Math.max(0, (criteria.min_outcome_classes ?? 0) - representedOutcomeClasses),
-        market_cap_samples_needed: Math.max(0, (criteria.min_market_cap_samples ?? 0) - marketCapSamples),
+        market_cap_samples_needed: marketCapSamples === null ? null : Math.max(0, (criteria.min_market_cap_samples ?? 0) - marketCapSamples),
       },
       observed_market_cap_samples: marketCapSamples,
+      market_cap_samples_available: marketCapSamplesAvailable,
       policy_provisioned: false, automatic_activation: false,
-    } : { status: "CRITERIA_NOT_SET", criteria, deficits: null, observed_market_cap_samples: marketCapSamples, policy_provisioned: false, automatic_activation: false };
+    } : { status: "CRITERIA_NOT_SET", criteria, deficits: null, observed_market_cap_samples: marketCapSamples, market_cap_samples_available: marketCapSamplesAvailable, policy_provisioned: false, automatic_activation: false };
     const closedOutcomes = (outcomes.RUNNER || 0) + (outcomes.HELD || 0) + (outcomes.FADE || 0);
     const policyCohorts = cohortRaw.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
     const registryAll = registryRaw.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
