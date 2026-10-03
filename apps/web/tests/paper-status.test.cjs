@@ -7,7 +7,7 @@ const ts = require("typescript");
 
 // Run the actual route with only its external database/process/filesystem edges
 // replaced. No Docker, application database, or credentials are used.
-function route({ env = {}, cohortFailure = false, cohortRaw = "", policyRaw = "", registryRaw = "" } = {}) {
+function route({ env = {}, cohortFailure = false, marketFailure = false, cohortRaw = "", policyRaw = "", registryRaw = "" } = {}) {
   const source = fs.readFileSync(path.join(__dirname, "../src/app/api/paper-status/route.ts"), "utf8");
   const output = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
   const exports = {};
@@ -24,6 +24,10 @@ function route({ env = {}, cohortFailure = false, cohortRaw = "", policyRaw = ""
         if (sql.includes("GROUP BY policy_version,policy_sha256,policy_evidence_backed")) {
           if (cohortFailure) throw new Error("database unavailable");
           return { stdout: cohortRaw };
+        }
+        if (sql.includes("FROM market_pattern_outcome_distributions")) {
+          if (marketFailure) throw new Error("relation does not exist");
+          return { stdout: "0" };
         }
         return { stdout: "" };
       } };
@@ -50,6 +54,24 @@ test("cohort database failure stays UNKNOWN instead of a valid empty cohort list
   const result = await route({ cohortFailure: true })();
   assert.equal(result.status, "UNKNOWN");
   assert.equal(result.policy_cohorts, undefined);
+});
+
+test("missing market-cap source remains unavailable instead of becoming a measured zero", async () => {
+  const result = await route({
+    marketFailure: true,
+    env: {
+      STINKY_PAPER_READINESS_MIN_CLOSED_OUTCOMES: "12",
+      STINKY_PAPER_READINESS_MIN_MARKET_CAP_SAMPLES: "8",
+      STINKY_PAPER_READINESS_MIN_OUTCOME_CLASSES: "2",
+    },
+  })();
+  assert.equal(result.status, "OBSERVED");
+  assert.equal(result.prospective_evidence.readiness.status, "CRITERIA_CONFIGURED");
+  assert.equal(result.prospective_evidence.readiness.observed_market_cap_samples, null);
+  assert.equal(result.prospective_evidence.readiness.market_cap_samples_available, false);
+  assert.equal(result.prospective_evidence.readiness.deficits.market_cap_samples_needed, null);
+  assert.equal(result.prospective_evidence.readiness.deficits.closed_outcomes_needed, 12);
+  assert.equal(result.prospective_evidence.readiness.automatic_activation, false);
 });
 
 test("cohort identity survives newline-delimited JSON including delimiters in versions", async () => {

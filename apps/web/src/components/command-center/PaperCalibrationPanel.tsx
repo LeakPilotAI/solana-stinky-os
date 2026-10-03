@@ -38,7 +38,7 @@ type Status = {
   policy_cohorts?: { policy_version?: string; policy_sha256?: string; provenance?: string; policy_identity?: PolicyIdentity | null; records?: number }[];
   aggregate_scope?: string;
   historical_identity_inference?: boolean;
-  prospective_evidence?: { status?: string; closed_outcomes?: number; pending_outcomes?: number; represented_outcome_classes?: number; first_candidate_at?: string | null; latest_candidate_at?: string | null; policy_threshold_proposal?: string; thresholds_invented?: boolean; readiness?: { status?: string; criteria?: { min_closed_outcomes?: number | null; min_market_cap_samples?: number | null; min_outcome_classes?: number | null }; deficits?: { closed_outcomes_needed?: number; market_cap_samples_needed?: number; outcome_classes_needed?: number } | null; observed_market_cap_samples?: number; policy_provisioned?: boolean; automatic_activation?: boolean } };
+  prospective_evidence?: { status?: string; closed_outcomes?: number; pending_outcomes?: number; represented_outcome_classes?: number; first_candidate_at?: string | null; latest_candidate_at?: string | null; policy_threshold_proposal?: string; thresholds_invented?: boolean; readiness?: { status?: string; criteria?: { min_closed_outcomes?: number | null; min_market_cap_samples?: number | null; min_outcome_classes?: number | null }; deficits?: { closed_outcomes_needed?: number; market_cap_samples_needed?: number | null; outcome_classes_needed?: number } | null; observed_market_cap_samples?: number | null; market_cap_samples_available?: boolean; policy_provisioned?: boolean; automatic_activation?: boolean } };
   live_trading?: string;
   error?: string;
 };
@@ -159,6 +159,7 @@ export function PaperCalibrationPanel() {
           <span className="ml-3">outcome classes {e.represented_outcome_classes ?? 0}/3</span>
           {d.policy?.status === "NOT_SET" && r.status === "CRITERIA_NOT_SET" ? <span className="ml-3 text-amber-300">Policy remains intentionally unset until explicit evidence-sufficiency criteria are supplied.</span> : null}
           {d.policy?.status === "NOT_SET" && r.status === "CRITERIA_CONFIGURED" ? <span className="ml-3 text-amber-300">Evidence deficits: closed {r.deficits?.closed_outcomes_needed ?? "—"}, classes {r.deficits?.outcome_classes_needed ?? "—"}, market-cap {r.deficits?.market_cap_samples_needed ?? "—"}. Review only; no automatic policy activation.</span> : null}
+          {r.market_cap_samples_available === false ? <span className="ml-3 text-amber-300">Market-cap evidence unavailable; no zero inferred.</span> : null}
         </div>
       ) : null}
 
