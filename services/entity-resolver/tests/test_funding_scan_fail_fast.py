@@ -39,6 +39,7 @@ async def test_scan_stops_after_first_unavailable_transaction(monkeypatch):
 @pytest.mark.asyncio
 async def test_successful_transaction_lookup_is_cached(monkeypatch):
     calls = 0
+    seen_params: list[list[object]] = []
     transaction = {
         "slot": 1,
         "blockTime": 1,
@@ -49,6 +50,7 @@ async def test_successful_transaction_lookup_is_cached(monkeypatch):
     async def fake_rpc(client, *, rpc_url, method, params):
         nonlocal calls
         calls += 1
+        seen_params.append(params)
         return transaction
 
     monkeypatch.setattr(chain_evidence, "_rpc", fake_rpc)
@@ -66,3 +68,4 @@ async def test_successful_transaction_lookup_is_cached(monkeypatch):
     assert second.rpc_success is True
     assert second.cache_hit is True
     assert calls == 1
+    assert seen_params[0][1]["maxSupportedTransactionVersion"] == 1

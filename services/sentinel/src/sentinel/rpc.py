@@ -93,7 +93,7 @@ class SolanaRPC:
                 signature,
                 {
                     "encoding": "jsonParsed",
-                    "maxSupportedTransactionVersion": 0,
+                    "maxSupportedTransactionVersion": 1,
                     "commitment": settings.commitment,
                 },
             ],
