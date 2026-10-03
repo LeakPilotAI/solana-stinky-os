@@ -3310,7 +3310,7 @@ async def load_observation_snapshot(session: AsyncSession) -> dict[str, Any]:
 
     try:
         ticks_raw = (await session.execute(text(
-            "SELECT mint, observed_at, source, volume_m5_usd, liquidity_usd, price_usd, market_cap_usd, fdv_usd, buy_sell_ratio, txns, pair_address, dex_id, row FROM (SELECT mo.*, row_number() OVER (PARTITION BY mint ORDER BY observed_at DESC) AS rn FROM market_observations mo WHERE mint = ANY(:mints)) q WHERE rn <= 50 ORDER BY observed_at ASC"
+            "SELECT mint, observed_at, source, volume_m5_usd, liquidity_usd, price_usd, market_cap_usd, buys, sells, txns, unique_buyers, unique_sellers, volume_since_gate, pair_address, dex_id FROM (SELECT mo.*, row_number() OVER (PARTITION BY mint ORDER BY observed_at DESC) AS rn FROM market_observations mo WHERE mint = ANY(:mints)) q WHERE rn <= 50 ORDER BY observed_at ASC"
         ), {"mints": mints})).mappings().all()
         ticks = [_clean(r) for r in ticks_raw]
     except Exception:
@@ -3367,7 +3367,7 @@ async def load_quality_snapshot(session: AsyncSession) -> dict[str, Any]:
 
     try:
         ticks = (await session.execute(text(
-            "SELECT mint, observed_at, source, volume_m5_usd, liquidity_usd, price_usd, market_cap_usd, fdv_usd, buy_sell_ratio, txns, pair_address, dex_id, row FROM (SELECT mo.*, row_number() OVER (PARTITION BY mint ORDER BY observed_at DESC) AS rn FROM market_observations mo WHERE mint = ANY(:mints)) q WHERE rn <= 20 ORDER BY observed_at ASC"
+            "SELECT mint, observed_at, source, volume_m5_usd, liquidity_usd, price_usd, market_cap_usd, buys, sells, txns, unique_buyers, unique_sellers, volume_since_gate, pair_address, dex_id FROM (SELECT mo.*, row_number() OVER (PARTITION BY mint ORDER BY observed_at DESC) AS rn FROM market_observations mo WHERE mint = ANY(:mints)) q WHERE rn <= 20 ORDER BY observed_at ASC"
         ), {"mints": mints})).mappings().all()
         tick_rows = [_clean(r) for r in ticks]
     except Exception:
