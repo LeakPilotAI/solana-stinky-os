@@ -19,6 +19,16 @@ function route({ env = {}, cohortFailure = false, marketFailure = false, cohortR
       if (name === "node:child_process") return { execFile: true };
       if (name === "node:util") return { promisify: () => async (_file, args) => {
         const sql = args.at(-1);
+        if (sql.includes("paper_status_snapshot")) {
+          if (cohortFailure) throw new Error("database unavailable");
+          const lines = [
+            "candidate|0",
+            'evidence|{"closed":0,"represented":0,"first_candidate_at":null,"latest_candidate_at":null}',
+            ...cohortRaw.split(/\r?\n/).filter(Boolean).map(line => `cohort|${line}`),
+            ...registryRaw.split(/\r?\n/).filter(Boolean).map(line => `registry|${line}`),
+          ];
+          return { stdout: lines.join("\n") };
+        }
         if (sql.includes("FROM paper_policy_active a JOIN paper_policy_registry r")) return { stdout: policyRaw };
         if (sql.includes("FROM paper_policy_registry r LEFT JOIN paper_policy_active a")) return { stdout: registryRaw };
         if (sql.includes("GROUP BY policy_version,policy_sha256,policy_evidence_backed")) {
@@ -54,6 +64,15 @@ test("cohort database failure stays UNKNOWN instead of a valid empty cohort list
   const result = await route({ cohortFailure: true })();
   assert.equal(result.status, "UNKNOWN");
   assert.equal(result.policy_cohorts, undefined);
+});
+
+test("paper status bounds Docker/PostgreSQL probes instead of concurrent fan-out", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../src/app/api/paper-status/route.ts"), "utf8");
+  assert.ok(source.includes("paper_status_snapshot"));
+  assert.ok(source.includes("const snapshotRaw = await psql"));
+  assert.ok(source.includes("const policy = await policyStatus();"));
+  assert.ok(source.includes("const marketRaw = await psql"));
+  assert.ok(!source.includes("await Promise.all(["));
 });
 
 test("missing market-cap source remains unavailable instead of becoming a measured zero", async () => {
