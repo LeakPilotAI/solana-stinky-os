@@ -28,16 +28,6 @@ async function psql(sql: string): Promise<string> {
   return String(stdout || "").trim();
 }
 
-function parseCountRows(raw: string): Counts {
-  const out: Counts = {};
-  for (const line of raw.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    const [key, value] = line.split("|");
-    if (key) out[key] = Number(value || 0) || 0;
-  }
-  return out;
-}
-
 function rootCandidates(): string[] {
   return [process.cwd(), path.resolve(process.cwd(), "..", ".."), path.resolve(process.cwd(), "..", "..", "..")];
 }
@@ -92,25 +82,44 @@ async function policyStatus() {
 export async function GET() {
   try {
     const criteria = evidenceCriteria();
-    const [workers, policy, epochRaw, candidateRaw, outcomeRaw, shadowRaw, paperRaw, intakeRaw, evidenceRaw, marketRaw, cohortRaw, registryRaw] = await Promise.all([
-      workerHealth(), policyStatus(),
-      psql("SELECT producer_version || '|' || prospective_started_at::text FROM paper_intake_producer_state WHERE singleton=TRUE LIMIT 1;"),
-      psql("SELECT count(*) FROM paper_prospective_candidate;"),
-      psql("SELECT canonical_outcome, count(*) FROM paper_prospective_candidate GROUP BY canonical_outcome ORDER BY canonical_outcome NULLS LAST;"),
-      psql("SELECT COALESCE(shadow_action,'UNKNOWN'), count(*) FROM paper_runtime_record GROUP BY COALESCE(shadow_action,'UNKNOWN') ORDER BY 1;"),
-      psql("SELECT paper_status, count(*) FROM paper_runtime_record GROUP BY paper_status ORDER BY paper_status;"),
-      psql("SELECT CASE WHEN processed_at IS NULL THEN 'UNPROCESSED' ELSE 'PROCESSED' END, count(*) FROM paper_runtime_intake GROUP BY 1 ORDER BY 1;"),
-      psql("SELECT count(*) FILTER (WHERE canonical_outcome IN ('RUNNER','HELD','FADE'))::text || '|' || count(DISTINCT canonical_outcome) FILTER (WHERE canonical_outcome IN ('RUNNER','HELD','FADE'))::text || '|' || COALESCE(min(decided_at)::text,'') || '|' || COALESCE(max(decided_at)::text,'') FROM paper_prospective_candidate;"),
-      psql("SELECT COALESCE(max(sample_count),0) FROM market_pattern_outcome_distributions WHERE status='CALIBRATED_EMPIRICAL';").catch(() => null),
-      psql("SELECT json_build_object('policy_version',COALESCE(policy_version,'LEGACY_UNKNOWN'),'policy_sha256',COALESCE(policy_sha256,'UNKNOWN'),'provenance',CASE WHEN policy_evidence_backed IS TRUE THEN 'EVIDENCE_BACKED' WHEN policy_evidence_backed IS FALSE THEN 'MANUAL' ELSE 'UNKNOWN' END,'policy_identity',record->'policy_identity','records',count(*))::text FROM paper_runtime_record GROUP BY policy_version,policy_sha256,policy_evidence_backed,record->'policy_identity' ORDER BY min(created_at);"),
-      psql("SELECT json_build_object('policy_version',r.policy_version,'policy_sha256',r.policy_sha256,'provenance',CASE WHEN r.policy_payload->'provenance'->>'evidence_backed'='true' THEN 'EVIDENCE_BACKED' WHEN r.policy_payload->'provenance'->>'evidence_backed'='false' THEN 'MANUAL' ELSE 'UNKNOWN' END,'provenance_mode',COALESCE(r.policy_payload->'provenance'->>'mode','UNKNOWN'),'policy_identity',json_build_object('policy_version',r.policy_version,'policy_sha256',r.policy_sha256,'provenance',r.policy_payload->'provenance'),'state',CASE WHEN a.policy_version IS NOT NULL THEN 'ACTIVE' ELSE 'PROVISIONED' END,'created_at',r.created_at,'activated_at',a.activated_at)::text FROM paper_policy_registry r LEFT JOIN paper_policy_active a ON a.singleton=TRUE AND a.policy_version=r.policy_version ORDER BY r.created_at DESC,r.policy_version DESC LIMIT 51;"),
-    ]);
-    const [producerVersion, prospectiveStartedAt] = epochRaw ? epochRaw.split("|", 2) : [null, null];
-    const outcomes = parseCountRows(outcomeRaw), shadow = parseCountRows(shadowRaw), paper = parseCountRows(paperRaw), intake = parseCountRows(intakeRaw);
-    const candidates = Number(candidateRaw || 0) || 0;
-    const [evidenceClosedRaw, representedRaw, firstCandidateAt, latestCandidateAt] = evidenceRaw ? evidenceRaw.split("|", 4) : ["0", "0", "", ""];
-    const evidenceClosed = Number(evidenceClosedRaw || 0) || 0;
-    const representedOutcomeClasses = Number(representedRaw || 0) || 0;
+    const workers = await workerHealth();
+    // One bounded read-only psql process replaces the former concurrent docker-exec fan-out.
+    // Keep policy and optional market-cap probes separate so their existing UNKNOWN/unavailable
+    // failure semantics remain unchanged, while never running multiple docker psql probes at once.
+    const snapshotRaw = await psql(`
+      /* paper_status_snapshot */
+      SELECT 'epoch|' || json_build_object('producer_version',producer_version,'prospective_started_at',prospective_started_at)::text FROM paper_intake_producer_state WHERE singleton=TRUE LIMIT 1;
+      SELECT 'candidate|' || count(*)::text FROM paper_prospective_candidate;
+      SELECT 'outcome|' || json_build_object('key',COALESCE(canonical_outcome,''),'value',count(*))::text FROM paper_prospective_candidate GROUP BY canonical_outcome ORDER BY canonical_outcome NULLS LAST;
+      SELECT 'shadow|' || json_build_object('key',COALESCE(shadow_action,'UNKNOWN'),'value',count(*))::text FROM paper_runtime_record GROUP BY COALESCE(shadow_action,'UNKNOWN') ORDER BY COALESCE(shadow_action,'UNKNOWN');
+      SELECT 'paper|' || json_build_object('key',paper_status,'value',count(*))::text FROM paper_runtime_record GROUP BY paper_status ORDER BY paper_status;
+      SELECT 'intake|' || json_build_object('key',CASE WHEN processed_at IS NULL THEN 'UNPROCESSED' ELSE 'PROCESSED' END,'value',count(*))::text FROM paper_runtime_intake GROUP BY CASE WHEN processed_at IS NULL THEN 'UNPROCESSED' ELSE 'PROCESSED' END ORDER BY 1;
+      SELECT 'evidence|' || json_build_object('closed',count(*) FILTER (WHERE canonical_outcome IN ('RUNNER','HELD','FADE')),'represented',count(DISTINCT canonical_outcome) FILTER (WHERE canonical_outcome IN ('RUNNER','HELD','FADE')),'first_candidate_at',min(decided_at),'latest_candidate_at',max(decided_at))::text FROM paper_prospective_candidate;
+      SELECT 'cohort|' || json_build_object('policy_version',COALESCE(policy_version,'LEGACY_UNKNOWN'),'policy_sha256',COALESCE(policy_sha256,'UNKNOWN'),'provenance',CASE WHEN policy_evidence_backed IS TRUE THEN 'EVIDENCE_BACKED' WHEN policy_evidence_backed IS FALSE THEN 'MANUAL' ELSE 'UNKNOWN' END,'policy_identity',record->'policy_identity','records',count(*))::text FROM paper_runtime_record GROUP BY policy_version,policy_sha256,policy_evidence_backed,record->'policy_identity' ORDER BY min(created_at);
+      SELECT 'registry|' || json_build_object('policy_version',r.policy_version,'policy_sha256',r.policy_sha256,'provenance',CASE WHEN r.policy_payload->'provenance'->>'evidence_backed'='true' THEN 'EVIDENCE_BACKED' WHEN r.policy_payload->'provenance'->>'evidence_backed'='false' THEN 'MANUAL' ELSE 'UNKNOWN' END,'provenance_mode',COALESCE(r.policy_payload->'provenance'->>'mode','UNKNOWN'),'policy_identity',json_build_object('policy_version',r.policy_version,'policy_sha256',r.policy_payload->'provenance'),'state',CASE WHEN a.policy_version IS NOT NULL THEN 'ACTIVE' ELSE 'PROVISIONED' END,'created_at',r.created_at,'activated_at',a.activated_at)::text FROM paper_policy_registry r LEFT JOIN paper_policy_active a ON a.singleton=TRUE AND a.policy_version=r.policy_version ORDER BY r.created_at DESC,r.policy_version DESC LIMIT 51;
+    `);
+    const policy = await policyStatus();
+    const marketRaw = await psql("SELECT COALESCE(max(sample_count),0) FROM market_pattern_outcome_distributions WHERE status='CALIBRATED_EMPIRICAL';").catch(() => null);
+
+    let producerVersion: string | null = null, prospectiveStartedAt: string | null = null, candidates = 0;
+    const outcomes: Counts = {}, shadow: Counts = {}, paper: Counts = {}, intake: Counts = {};
+    let evidenceClosed = 0, representedOutcomeClasses = 0, firstCandidateAt: string | null = null, latestCandidateAt: string | null = null;
+    const policyCohorts: Record<string, unknown>[] = [], registryAll: Record<string, unknown>[] = [];
+    for (const line of snapshotRaw.split(/\r?\n/).filter(Boolean)) {
+      const separator = line.indexOf("|");
+      if (separator < 0) continue;
+      const tag = line.slice(0, separator), payload = line.slice(separator + 1);
+      if (tag === "candidate") { candidates = Number(payload || 0) || 0; continue; }
+      const value = JSON.parse(payload);
+      if (tag === "epoch") { producerVersion = value.producer_version ?? null; prospectiveStartedAt = value.prospective_started_at ?? null; }
+      else if (tag === "outcome" && value.key) outcomes[value.key] = Number(value.value || 0) || 0;
+      else if (tag === "shadow" && value.key) shadow[value.key] = Number(value.value || 0) || 0;
+      else if (tag === "paper" && value.key) paper[value.key] = Number(value.value || 0) || 0;
+      else if (tag === "intake" && value.key) intake[value.key] = Number(value.value || 0) || 0;
+      else if (tag === "evidence") { evidenceClosed = Number(value.closed || 0) || 0; representedOutcomeClasses = Number(value.represented || 0) || 0; firstCandidateAt = value.first_candidate_at ?? null; latestCandidateAt = value.latest_candidate_at ?? null; }
+      else if (tag === "cohort") policyCohorts.push(value);
+      else if (tag === "registry") registryAll.push(value);
+    }
     const marketCapSamplesAvailable = marketRaw !== null;
     const marketCapSamples = marketCapSamplesAvailable ? (Number(marketRaw || 0) || 0) : null;
     const readiness = criteria.configured ? {
@@ -125,8 +134,6 @@ export async function GET() {
       policy_provisioned: false, automatic_activation: false,
     } : { status: "CRITERIA_NOT_SET", criteria, deficits: null, observed_market_cap_samples: marketCapSamples, market_cap_samples_available: marketCapSamplesAvailable, policy_provisioned: false, automatic_activation: false };
     const closedOutcomes = (outcomes.RUNNER || 0) + (outcomes.HELD || 0) + (outcomes.FADE || 0);
-    const policyCohorts = cohortRaw.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
-    const registryAll = registryRaw.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
     const policyRegistryTruncated = registryAll.length > 50;
     const policyRegistry = registryAll.slice(0, 50);
     return NextResponse.json({
