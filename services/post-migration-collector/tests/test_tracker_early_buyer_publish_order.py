@@ -95,11 +95,10 @@ def test_backfill_includes_interrupted_active_tracks_with_partial_buyers():
 
     start = store.index("    async def migrations_needing_buyers(")
     block = store[start:]
-    assert "NOT EXISTS (" in block
+    assert "LEFT JOIN migration_tracks mt" in block
     assert "FROM migration_buyers mb" not in block
-    assert "OR EXISTS (" in block
-    assert "FROM migration_tracks mt" in block
-    assert "mt.status = 'active'" in block
+    assert "(mt.mint IS NULL OR mt.status = 'active')" in block
+    assert "CASE WHEN mt.status = 'active' THEN 0 ELSE 1 END" in block
 
 
 def test_existing_trade_after_restart_still_marks_wallet_for_performance_refresh():

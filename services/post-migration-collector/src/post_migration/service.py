@@ -318,8 +318,12 @@ class CollectorService:
 
     async def backfill_from_events(self, *, limit: int = 20) -> int:
         """Spawn tracks for recent token.migrated rows that have zero buyers."""
+        # Rows for already-running in-memory tracks consume the durable query
+        # limit too. Over-fetch by the active count so interrupted durable-active
+        # tracks are not starved behind sessions this process is already running.
+        query_limit = min(100, max(1, int(limit)) + len(self._active_tracks))
         rows = await self._store.migrations_needing_buyers(
-            limit=limit,
+            limit=query_limit,
             max_age_sec=settings.track_max_duration_sec,
         )
         started = 0
@@ -338,7 +342,12 @@ class CollectorService:
             )
             if ok:
                 started += 1
-        logger.info("collector.backfill_started", tracks=started, candidates=len(rows))
+        logger.info(
+            "collector.backfill_started",
+            tracks=started,
+            candidates=len(rows),
+            query_limit=query_limit,
+        )
         return started
 
     @property
