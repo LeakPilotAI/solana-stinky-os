@@ -109,7 +109,7 @@ async def correlate_developer_identity(
                    ew.first_seen_at, ew.last_seen_at
             FROM entity_wallets ew
             WHERE ew.wallet = ANY(:wallets) AND ew.entity_id <> :entity_id
-              AND (:as_of IS NULL OR ew.first_seen_at <= :as_of)
+              AND (CAST(:as_of AS timestamptz) IS NULL OR ew.first_seen_at <= CAST(:as_of AS timestamptz))
             ORDER BY ew.first_seen_at ASC NULLS LAST, ew.wallet
             LIMIT :limit
         """), {**params, "as_of": cutoff})).mappings().all()
@@ -158,7 +158,7 @@ async def correlate_developer_identity(
             LEFT JOIN entity_wallets wa ON wa.wallet = wr.wallet_a
             LEFT JOIN entity_wallets wb ON wb.wallet = wr.wallet_b
             WHERE (wa.entity_id = :entity_id OR wb.entity_id = :entity_id)
-              AND (:as_of IS NULL OR wr.first_seen_at <= :as_of)
+              AND (CAST(:as_of AS timestamptz) IS NULL OR wr.first_seen_at <= CAST(:as_of AS timestamptz))
             GROUP BY wr.relationship_kind, other_entity_id
             HAVING CASE WHEN wa.entity_id = :entity_id THEN wb.entity_id::text ELSE wa.entity_id::text END IS NOT NULL
             ORDER BY COUNT(*) DESC, SUM(COALESCE(wr.observation_count,0)) DESC
