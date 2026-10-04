@@ -268,7 +268,7 @@ class Store:
                     """
                     UPDATE migration_tracks
                     SET status = 'failed',
-                        completed_at = NULL,
+                        completed_at = now(),
                         meta = COALESCE(meta, '{}'::jsonb)
                                || jsonb_build_object(
                                     'tracking_failure_reason',
