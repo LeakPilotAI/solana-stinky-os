@@ -29,10 +29,15 @@ class CollectorService:
         self._chain = ChainClient()
         self._redis: redis.Redis | None = None
         self._running = False
+        self._measured_outcome_epoch: datetime | None = None
         self._active_tracks: set[str] = set()
         self._tasks: set[asyncio.Task[None]] = set()
 
     async def start(self) -> None:
+        # New measured-outcome metadata is forward-only from this collector process.
+        # Backfilled tracks that began before deployment may complete normally but
+        # cannot become post-fix prospective outcome evidence.
+        self._measured_outcome_epoch = datetime.now(timezone.utc)
         await self._store.ensure_schema()
         stale = await self._store.fail_stale_active_tracks(max_duration_sec=settings.track_max_duration_sec)
         if stale:
@@ -266,6 +271,7 @@ class CollectorService:
             migration_signature=signature,
             migration_slot=slot,
             migration_at=mat,
+            measured_outcome_epoch=getattr(self, "_measured_outcome_epoch", None),
             payload=payload or {},
         )
 

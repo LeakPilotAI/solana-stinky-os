@@ -220,6 +220,32 @@ class Store:
             ).mappings().one()
         return dict(row)
 
+    async def load_market_snapshots(
+        self,
+        mint: str,
+        *,
+        start_at: datetime,
+        end_at: datetime,
+    ) -> list[dict[str, Any]]:
+        """Load the persisted measured path used by the shared canonical classifier."""
+        async with self._sessions() as session:
+            rows = (
+                await session.execute(
+                    text(
+                        """
+                        SELECT captured_at, price_usd, liquidity_usd, volume_m5_usd
+                        FROM market_snapshots
+                        WHERE mint = :mint
+                          AND captured_at >= :start_at
+                          AND captured_at <= :end_at
+                        ORDER BY captured_at ASC, snapshot_id ASC
+                        """
+                    ),
+                    {"mint": mint, "start_at": start_at, "end_at": end_at},
+                )
+            ).mappings().all()
+        return [dict(row) for row in rows]
+
     async def fail_track_for_incomplete_market_path(
         self,
         mint: str,
@@ -266,6 +292,42 @@ class Store:
                 {"status": status.value, "mint": mint},
             )
             await session.commit()
+
+    async def complete_track_with_measured_outcome(
+        self,
+        mint: str,
+        *,
+        completed_at: datetime,
+        canonical_measured_outcome: dict[str, Any],
+    ) -> datetime | None:
+        """Atomically complete an active track with its forward measured classification."""
+        outcome_json = __import__("orjson").dumps(canonical_measured_outcome).decode()
+        async with self._sessions() as session:
+            row = (
+                await session.execute(
+                    text(
+                        """
+                        UPDATE migration_tracks
+                        SET status = 'completed',
+                            completed_at = CAST(:completed_at AS timestamptz),
+                            meta = COALESCE(meta, '{}'::jsonb)
+                                   || jsonb_build_object(
+                                        'canonical_measured_outcome',
+                                        CAST(:outcome AS jsonb)
+                                      )
+                        WHERE mint = :mint AND status = 'active'
+                        RETURNING completed_at
+                        """
+                    ),
+                    {
+                        "mint": mint,
+                        "completed_at": completed_at,
+                        "outcome": outcome_json,
+                    },
+                )
+            ).first()
+            await session.commit()
+        return row[0] if row else None
 
     async def upsert_trade(self, trade: ObservedTrade) -> bool:
         """Insert trade if new. Returns True if inserted."""

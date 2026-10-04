@@ -208,6 +208,13 @@ def test_prospective_outcomes_consume_later_measured_entity_classification_witho
     block = src[start:end]
     assert "entity_launches" in block
     assert "outcome_meta->>'observed_at'" in block
+    assert "canonical_measured_outcome" in block
+    assert "migration_tracks" in block
+    assert "migration_track:" in block
+    assert "classify_completed_market_path" not in block
+    assert "canonical_classification" in block
+    assert "predictive_authority" in block
+    assert "trade_signal" in block
     assert "> c.decided_at" in block
     assert "entity_launches:measured" in block
     assert "WHERE c.canonical_outcome IS NULL" in block
