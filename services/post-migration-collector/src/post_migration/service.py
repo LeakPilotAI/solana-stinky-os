@@ -21,6 +21,11 @@ from post_migration.tracker import MintTracker
 
 logger = structlog.get_logger(__name__)
 
+# Startup must prove the local PostgreSQL transport is responsive before any
+# schema/recovery write is attempted. This is deliberately a read-only bound:
+# stale Windows<->Docker sockets fail closed without creating an uncertain write.
+COLLECTOR_STARTUP_DB_PROBE_TIMEOUT_SEC = 10.0
+
 
 class CollectorService:
     def __init__(self) -> None:
@@ -33,11 +38,35 @@ class CollectorService:
         self._active_tracks: set[str] = set()
         self._tasks: set[asyncio.Task[None]] = set()
 
+    async def _require_startup_database(
+        self,
+        *,
+        timeout_sec: float = COLLECTOR_STARTUP_DB_PROBE_TIMEOUT_SEC,
+    ) -> None:
+        try:
+            healthy = await asyncio.wait_for(
+                self._store.health(),
+                timeout=timeout_sec,
+            )
+        except TimeoutError:
+            logger.error(
+                "collector.startup_database_timeout",
+                timeout_sec=timeout_sec,
+            )
+            raise
+        if not healthy:
+            logger.error("collector.startup_database_unavailable")
+            raise ConnectionError("collector startup database health probe failed")
+
     async def start(self) -> None:
         # New measured-outcome metadata is forward-only from this collector process.
         # Backfilled tracks that began before deployment may complete normally but
         # cannot become post-fix prospective outcome evidence.
         self._measured_outcome_epoch = datetime.now(timezone.utc)
+        # This read-only probe is intentionally before ensure_schema() and the
+        # stale-track recovery UPDATE. A wedged transport therefore exits before
+        # any startup write can become uncertain.
+        await self._require_startup_database()
         await self._store.ensure_schema()
         stale = await self._store.fail_stale_active_tracks(max_duration_sec=settings.track_max_duration_sec)
         if stale:

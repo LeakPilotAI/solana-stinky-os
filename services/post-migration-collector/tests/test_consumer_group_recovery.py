@@ -33,6 +33,57 @@ def service_with(redis):
     return service
 
 
+def test_startup_database_probe_times_out_before_any_write():
+    service = object.__new__(CollectorService)
+
+    class StuckStore:
+        async def health(self):
+            await asyncio.Event().wait()
+
+    service._store = StuckStore()
+
+    async def exercise():
+        with pytest.raises(TimeoutError):
+            await service._require_startup_database(timeout_sec=0.01)
+
+    asyncio.run(exercise())
+
+
+def test_startup_database_probe_fails_closed_when_unavailable():
+    service = object.__new__(CollectorService)
+
+    class UnhealthyStore:
+        async def health(self):
+            return False
+
+    service._store = UnhealthyStore()
+
+    with pytest.raises(ConnectionError, match="startup database health probe failed"):
+        asyncio.run(service._require_startup_database(timeout_sec=0.1))
+
+
+def test_startup_database_probe_allows_healthy_transport():
+    service = object.__new__(CollectorService)
+
+    class HealthyStore:
+        async def health(self):
+            return True
+
+    service._store = HealthyStore()
+    asyncio.run(service._require_startup_database(timeout_sec=0.1))
+
+
+def test_startup_database_probe_precedes_schema_and_recovery_writes():
+    source = __import__("pathlib").Path(
+        __import__("post_migration.service", fromlist=["__file__"]).__file__
+    ).read_text(encoding="utf-8")
+    start = source[source.index("    async def start(self) -> None:"):source.index("    async def _ensure_consumer_group")]
+    probe = start.index("await self._require_startup_database()")
+    schema = start.index("await self._store.ensure_schema()")
+    recovery = start.index("await self._store.fail_stale_active_tracks")
+    assert probe < schema < recovery
+
+
 def test_missing_group_is_recreated_before_next_read():
     redis = FakeRedis(read_error=ResponseError("NOGROUP No such key or consumer group"))
     service = service_with(redis)
