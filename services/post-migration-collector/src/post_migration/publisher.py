@@ -37,9 +37,11 @@ class EventPublisher:
             default_stream=settings.event_stream,
         )
         self._connected = False
-        self._http = httpx.AsyncClient(timeout=2.0)
+        self._http: httpx.AsyncClient | None = None
 
     async def connect(self) -> None:
+        if self._http is None:
+            self._http = httpx.AsyncClient(timeout=2.0)
         try:
             await self._transport.connect()
             self._connected = True
@@ -50,7 +52,9 @@ class EventPublisher:
     async def close(self) -> None:
         if self._connected:
             await self._transport.close()
-        await self._http.aclose()
+        if self._http is not None:
+            await self._http.aclose()
+            self._http = None
 
     async def _emit(self, event: Event, *, force_durable: bool = False) -> None:
         stream_allowed = force_durable or event.event_type not in _SKIP_STREAM
@@ -78,6 +82,8 @@ class EventPublisher:
                     "signature": event.signature,
                     "producer": settings.service_name,
                 }
+                if self._http is None:
+                    self._http = httpx.AsyncClient(timeout=2.0)
                 resp = await self._http.post(
                     f"{settings.event_log_url.rstrip('/')}/v1/events",
                     json=body,
