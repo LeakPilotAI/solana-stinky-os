@@ -288,6 +288,38 @@ class Store:
             )
             await session.commit()
 
+    async def fail_track_for_exception(
+        self,
+        mint: str,
+        *,
+        error_type: str,
+        error_message: str,
+    ) -> None:
+        async with self._sessions() as session:
+            await session.execute(
+                text(
+                    """
+                    UPDATE migration_tracks
+                    SET status = 'failed',
+                        completed_at = now(),
+                        meta = COALESCE(meta, '{}'::jsonb)
+                               || jsonb_build_object(
+                                    'tracking_failure_reason', 'tracker_exception',
+                                    'tracking_exception_type', :error_type,
+                                    'tracking_exception_message', :error_message,
+                                    'tracking_failed_at', now()
+                                  )
+                    WHERE mint = :mint
+                    """
+                ),
+                {
+                    "mint": mint,
+                    "error_type": error_type[:200],
+                    "error_message": error_message[:2000],
+                },
+            )
+            await session.commit()
+
     async def complete_track(self, mint: str, *, status: TrackStatus = TrackStatus.COMPLETED) -> None:
         async with self._sessions() as session:
             await session.execute(
