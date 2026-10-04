@@ -10,6 +10,11 @@ from uuid import UUID
 import structlog
 from sqlalchemy.exc import DBAPIError
 
+from stinky_core.measured_outcomes import (
+    CLASSIFIED_OUTCOMES,
+    classify_completed_market_path,
+)
+
 from post_migration.chain import ChainClient, last_trade_source_status
 from post_migration.config import settings
 from post_migration.metrics import metrics
@@ -53,6 +58,33 @@ def _is_transient_database_disconnect(exc: BaseException) -> bool:
             if isinstance(related, BaseException):
                 pending.append(related)
     return False
+
+
+def _completion_outcome_summary(classification: dict[str, Any]) -> dict[str, Any]:
+    """Expose only measured canonical labels; UNKNOWN remains unlabeled evidence."""
+    label = str(classification.get("label") or "UNKNOWN").upper()
+    if label not in CLASSIFIED_OUTCOMES:
+        return {}
+    return {
+        "outcome_status": label,
+        "outcome_evidence": classification,
+    }
+
+
+def _is_forward_outcome_eligible(
+    migration_at: datetime,
+    measured_outcome_epoch: datetime | None,
+) -> bool:
+    """Require the measured observation window to begin after this process boundary."""
+    if measured_outcome_epoch is None:
+        return False
+    migration = migration_at if migration_at.tzinfo else migration_at.replace(tzinfo=timezone.utc)
+    epoch = (
+        measured_outcome_epoch
+        if measured_outcome_epoch.tzinfo
+        else measured_outcome_epoch.replace(tzinfo=timezone.utc)
+    )
+    return migration >= epoch
 
 
 def _completion_coverage_evidence(
@@ -115,6 +147,7 @@ class MintTracker:
         migration_signature: str | None,
         migration_slot: int | None,
         migration_at: datetime,
+        measured_outcome_epoch: datetime | None = None,
         payload: dict[str, Any] | None = None,
     ) -> None:
         self._store = store
@@ -127,6 +160,7 @@ class MintTracker:
         self.migration_signature = migration_signature
         self.migration_slot = migration_slot
         self.migration_at = migration_at
+        self.measured_outcome_epoch = measured_outcome_epoch
         self.payload = payload or {}
         self.track_id: UUID | None = None
         self._seen_trade_keys: set[tuple[str, str, str]] = set()
@@ -375,13 +409,46 @@ class MintTracker:
                 )
                 return
 
-            await self._store.complete_track(self.mint, status=TrackStatus.COMPLETED)
+            completed_at = datetime.now(timezone.utc)
+            measured_path = await self._store.load_market_snapshots(
+                self.mint,
+                start_at=tracking_anchor,
+                end_at=completed_at,
+            )
+            classification = classify_completed_market_path(
+                {
+                    "migration_at": tracking_anchor,
+                    "completed_at": completed_at,
+                },
+                measured_path,
+            )
+            forward_outcome_eligible = _is_forward_outcome_eligible(
+                tracking_anchor,
+                self.measured_outcome_epoch,
+            )
+            outcome_summary = (
+                _completion_outcome_summary(classification)
+                if forward_outcome_eligible
+                else {}
+            )
+            if outcome_summary:
+                await self._store.complete_track_with_measured_outcome(
+                    self.mint,
+                    completed_at=completed_at,
+                    canonical_measured_outcome=classification,
+                )
+            else:
+                await self._store.complete_track(
+                    self.mint,
+                    status=TrackStatus.COMPLETED,
+                )
             await self._publisher.tracking_completed(
                 self.mint,
                 {
                     "wallets_touched": len(self._wallets_touched),
                     "trades_seen": len(self._seen_trade_keys),
                     "duration_sec": settings.track_max_duration_sec,
+                    **outcome_summary,
                 },
             )
             metrics.inc("tracks_completed")

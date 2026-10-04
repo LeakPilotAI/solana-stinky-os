@@ -436,10 +436,11 @@ async def _attach_canonical_outcomes(session, limit: int = 50) -> int:
     """Attach the earliest provably post-T0 canonical measured outcome.
 
     Prefer the immutable tracking-completed event when it already carries a
-    canonical label. The durable measured classifier may later promote the
-    entity launch to RUNNER/HELD/FADE without rewriting that original event;
-    consume that promotion only from its explicit outcome_meta.observed_at and
-    only when it is strictly later than the candidate T0.
+    canonical label. New post-fix tracks also persist the same canonical measured
+    result atomically with completion so event-delivery or missing entity-launch
+    state cannot strand genuinely forward evidence. Older tracks without that
+    explicit completion metadata remain untouched. Entity-launch promotion remains
+    a compatible later evidence path. Every choice must be strictly later than T0.
     """
     rows = (
         await session.execute(
@@ -449,7 +450,10 @@ async def _attach_canonical_outcomes(session, limit: int = 50) -> int:
                        ev.outcome_event_id,ev.occurred_at AS event_occurred_at,
                        ev.ingested_at AS event_ingested_at,ev.payload AS event_payload,
                        el.outcome_status AS launch_outcome,
-                       el.outcome_meta AS launch_outcome_meta
+                       el.outcome_meta AS launch_outcome_meta,
+                       mt.track_id AS measured_track_id,
+                       mt.completed_at AS measured_track_completed_at,
+                       mt.canonical_measured_outcome
                 FROM paper_prospective_candidate c
                 LEFT JOIN LATERAL (
                     SELECT event_id::text AS outcome_event_id,occurred_at,ingested_at,payload
@@ -471,8 +475,30 @@ async def _attach_canonical_outcomes(session, limit: int = 50) -> int:
                       AND (outcome_meta->>'observed_at')::timestamptz > c.decided_at
                     ORDER BY (outcome_meta->>'observed_at')::timestamptz ASC,id ASC LIMIT 1
                 ) el ON TRUE
+                LEFT JOIN LATERAL (
+                    SELECT track_id::text AS track_id,completed_at,
+                           meta->'canonical_measured_outcome' AS canonical_measured_outcome
+                    FROM migration_tracks
+                    WHERE mint=c.mint
+                      AND status='completed'
+                      AND completed_at IS NOT NULL
+                      AND completed_at > c.decided_at
+                      AND upper(COALESCE(meta->'canonical_measured_outcome'->>'label',''))
+                          IN ('RUNNER','HELD','FADE')
+                      AND COALESCE((meta->'canonical_measured_outcome'->>'canonical_classification')::boolean,false)
+                      AND COALESCE((meta->'canonical_measured_outcome'->>'evidence_only')::boolean,false)
+                      AND NOT COALESCE((meta->'canonical_measured_outcome'->>'predictive_authority')::boolean,true)
+                      AND NOT COALESCE((meta->'canonical_measured_outcome'->>'trade_signal')::boolean,true)
+                      AND NULLIF(meta->'canonical_measured_outcome'->>'completed_at','') IS NOT NULL
+                      AND (meta->'canonical_measured_outcome'->>'completed_at')::timestamptz = completed_at
+                    ORDER BY completed_at ASC,track_id ASC LIMIT 1
+                ) mt ON TRUE
                 WHERE c.canonical_outcome IS NULL
-                  AND (ev.outcome_event_id IS NOT NULL OR el.outcome_status IS NOT NULL)
+                  AND (
+                    ev.outcome_event_id IS NOT NULL
+                    OR el.outcome_status IS NOT NULL
+                    OR mt.track_id IS NOT NULL
+                  )
                 ORDER BY c.decided_at ASC LIMIT :limit
                 """
             ),
@@ -500,11 +526,33 @@ async def _attach_canonical_outcomes(session, limit: int = 50) -> int:
         launch_outcome = str(row["launch_outcome"] or "").upper()
         launch_known_at = _dt(meta.get("observed_at"))
 
+        measured = (
+            row["canonical_measured_outcome"]
+            if isinstance(row["canonical_measured_outcome"], dict)
+            else {}
+        )
+        measured_outcome = str(measured.get("label") or "").upper()
+        measured_known_at = _dt(row["measured_track_completed_at"])
+        measured_track_id = str(row["measured_track_id"] or "")
+
         choices: list[tuple[datetime, str, str]] = []
         if event_outcome in {"RUNNER", "HELD", "FADE"} and event_known_at is not None and event_known_at > decided:
             choices.append((event_known_at, event_outcome, str(row["outcome_event_id"])))
         if launch_outcome in {"RUNNER", "HELD", "FADE"} and launch_known_at is not None and launch_known_at > decided:
             choices.append((launch_known_at, launch_outcome, "entity_launches:measured"))
+        if (
+            measured_outcome in {"RUNNER", "HELD", "FADE"}
+            and measured_known_at is not None
+            and measured_known_at > decided
+            and measured_track_id
+        ):
+            choices.append(
+                (
+                    measured_known_at,
+                    measured_outcome,
+                    f"migration_track:{measured_track_id}",
+                )
+            )
 
         if not choices:
             continue
