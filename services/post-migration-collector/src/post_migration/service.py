@@ -25,6 +25,8 @@ logger = structlog.get_logger(__name__)
 # schema/recovery write is attempted. This is deliberately a read-only bound:
 # stale Windows<->Docker sockets fail closed without creating an uncertain write.
 COLLECTOR_STARTUP_DB_PROBE_TIMEOUT_SEC = 10.0
+COLLECTOR_STARTUP_REDIS_TIMEOUT_SEC = 10.0
+COLLECTOR_STARTUP_TOTAL_TIMEOUT_SEC = 45.0
 
 
 class CollectorService:
@@ -59,6 +61,20 @@ class CollectorService:
             raise ConnectionError("collector startup database health probe failed")
 
     async def start(self) -> None:
+        try:
+            await asyncio.wait_for(
+                self._start_bounded(),
+                timeout=COLLECTOR_STARTUP_TOTAL_TIMEOUT_SEC,
+            )
+        except TimeoutError:
+            logger.error(
+                "collector.startup_total_timeout",
+                timeout_sec=COLLECTOR_STARTUP_TOTAL_TIMEOUT_SEC,
+            )
+            await self._store.reset_pool()
+            raise
+
+    async def _start_bounded(self) -> None:
         # New measured-outcome metadata is forward-only from this collector process.
         # Backfilled tracks that began before deployment may complete normally but
         # cannot become post-fix prospective outcome evidence.
@@ -66,12 +82,15 @@ class CollectorService:
         # This read-only probe is intentionally before ensure_schema() and the
         # stale-track recovery UPDATE. A wedged transport therefore exits before
         # any startup write can become uncertain.
+        logger.info("collector.startup_phase", phase="database_health")
         await self._require_startup_database()
         try:
+            logger.info("collector.startup_phase", phase="ensure_schema")
             await asyncio.wait_for(
                 self._store.ensure_schema(),
                 timeout=settings.runtime_database_timeout_sec,
             )
+            logger.info("collector.startup_phase", phase="stale_track_recovery")
             stale = await asyncio.wait_for(
                 self._store.fail_stale_active_tracks(
                     max_duration_sec=settings.track_max_duration_sec
@@ -87,6 +106,7 @@ class CollectorService:
             raise
         if stale:
             logger.warning("collector.interrupted_tracks_failed_closed", count=len(stale), mints=stale[:20])
+        logger.info("collector.startup_phase", phase="publisher_connect")
         await self._publisher.connect()
         self._redis = redis.from_url(
             settings.redis_url,
@@ -94,7 +114,8 @@ class CollectorService:
             socket_connect_timeout=5,
             socket_timeout=10,
         )
-        await self._ensure_consumer_group()
+        logger.info("collector.startup_phase", phase="consumer_group")
+        await asyncio.wait_for(self._ensure_consumer_group(), timeout=COLLECTOR_STARTUP_REDIS_TIMEOUT_SEC)
         self._running = True
         logger.info(
             "collector.started",
