@@ -28,6 +28,11 @@ class Store:
             database_url or settings.database_url,
             pool_pre_ping=True,
             pool_size=5,
+            pool_recycle=180,
+            connect_args={
+                "timeout": settings.database_connect_timeout_sec,
+                "command_timeout": settings.database_command_timeout_sec,
+            },
         )
         self._sessions = async_sessionmaker(
             self._engine, class_=AsyncSession, expire_on_commit=False
@@ -35,6 +40,10 @@ class Store:
 
     async def close(self) -> None:
         await self._engine.dispose()
+
+    async def reset_pool(self) -> None:
+        """Drop pooled connections without waiting on stale transports."""
+        await self._engine.dispose(close=False)
 
     async def health(self) -> bool:
         try:
