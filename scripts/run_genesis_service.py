@@ -583,6 +583,18 @@ def main() -> int:
                     sys.stdout.flush()
                     append_log(msg)
                 now = time.time()
+                # Prospective intelligence research capture. PAPER/evidence only:
+                # score eligible T+60 tracks, then classify only tracks that are
+                # still incomplete. The fixed boundary prevents historical backfill.
+                research_boundary = "2026-10-05T12:46:27.418241+00:00"
+                run_job_with_retry(
+                    [py, str(root / "scripts" / "run_intelligence_shadow_scorer.py"),
+                     "--boundary", research_boundary, "--limit", "500"], attempts=1
+                )
+                run_job_with_retry(
+                    [py, str(root / "scripts" / "run_intelligence_paper_decisions.py"),
+                     "--boundary", research_boundary, "--limit", "500"], attempts=1
+                )
                 if now >= next_job:
                     run_job_with_retry([py, "-m", "post_migration.cli", "learn-success"])
                     run_job_with_retry([py, "-m", "post_migration.cli", "recompute-performance"])
