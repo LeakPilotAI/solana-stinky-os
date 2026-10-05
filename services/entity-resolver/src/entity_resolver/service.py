@@ -165,7 +165,21 @@ class EntityService:
                 return
             next_id = str(claimed[0])
             messages = claimed[1] or []
+            ignored_ids: list[str] = []
+            relevant_messages: list[tuple[str, dict[str, str]]] = []
             for msg_id, fields in messages:
+                event_type = self._stream_event_type(fields)
+                if event_type is not None and event_type not in ENTITY_RELEVANT_EVENT_TYPES:
+                    ignored_ids.append(msg_id)
+                else:
+                    relevant_messages.append((msg_id, fields))
+            if ignored_ids:
+                await self._redis.xack(
+                    settings.event_stream,
+                    settings.entity_consumer_group,
+                    *ignored_ids,
+                )
+            for msg_id, fields in relevant_messages:
                 await self._handle(msg_id, fields)
             if next_id == "0-0" or not messages:
                 return
