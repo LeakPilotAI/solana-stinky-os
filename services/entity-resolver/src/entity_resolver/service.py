@@ -110,8 +110,8 @@ class EntityService:
         await self.start()
         assert self._redis is not None
         consumer = f"entity-{id(self)}"
-        await self._recover_pending(consumer)
         last_batch = asyncio.get_event_loop().time()
+        last_pending_recovery = 0.0
         backoff = 1.0
         while self._running:
             try:
@@ -140,6 +140,9 @@ class EntityService:
                             )
 
                 now = asyncio.get_event_loop().time()
+                if now - last_pending_recovery >= 5.0:
+                    await self._recover_pending(consumer, max_batches=1)
+                    last_pending_recovery = now
                 if now - last_batch >= settings.batch_interval_sec:
                     self._schedule_batch()
                     last_batch = now
@@ -148,11 +151,13 @@ class EntityService:
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
 
-    async def _recover_pending(self, consumer: str) -> None:
-        """Recover stale PEL entries left by a previous entity worker."""
+    async def _recover_pending(self, consumer: str, *, max_batches: int = 1) -> None:
+        """Recover stale PEL entries without starving fresh stream intake."""
         assert self._redis is not None
         start_id = "0-0"
-        while True:
+        batches = 0
+        while batches < max_batches:
+            batches += 1
             claimed = await self._redis.xautoclaim(
                 settings.event_stream,
                 settings.entity_consumer_group,
