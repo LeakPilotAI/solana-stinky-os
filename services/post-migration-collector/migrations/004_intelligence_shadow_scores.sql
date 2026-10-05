@@ -1,0 +1,20 @@
+CREATE TABLE IF NOT EXISTS intelligence_shadow_scores (
+    id bigserial PRIMARY KEY,
+    track_id uuid NOT NULL REFERENCES migration_tracks(track_id),
+    mint text NOT NULL,
+    shadow_version text NOT NULL,
+    score_version text NOT NULL,
+    calibration_version text NOT NULL,
+    calibration_sha256 text NOT NULL,
+    horizon_sec integer NOT NULL,
+    migration_at timestamptz NOT NULL,
+    cutoff_at timestamptz NOT NULL,
+    scored_at timestamptz NOT NULL,
+    market_observed_at timestamptz NULL,
+    feature_payload jsonb NOT NULL,
+    score_payload jsonb NOT NULL,
+    authority text NOT NULL,
+    trade_signal boolean NOT NULL DEFAULT false,
+    predictive_authority boolean NOT NULL DEFAULT false,
+    UNIQUE(track_id, score_version, horizon_sec)
+);
