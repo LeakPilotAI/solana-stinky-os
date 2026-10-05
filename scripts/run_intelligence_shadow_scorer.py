@@ -24,7 +24,8 @@ LEFT JOIN LATERAL (
  SELECT count(*)::int early_buyer_count,count(*) FILTER (WHERE mb.is_meaningful)::int meaningful_buyer_count,sum(mb.sol_spent) buyer_sol_spent
  FROM migration_buyers mb WHERE mb.track_id=mt.track_id
  AND mb.bought_at <= mt.migration_at + ($1 * interval '1 second')) b ON TRUE
-WHERE mt.migration_at + ($1 * interval '1 second') <= $2
+WHERE mt.migration_at >= $5
+AND mt.migration_at + ($1 * interval '1 second') <= $2
 AND NOT EXISTS (SELECT 1 FROM intelligence_shadow_scores iss
  WHERE iss.track_id=mt.track_id AND iss.score_version=$3 AND iss.horizon_sec=$1)
 ORDER BY mt.migration_at,mt.track_id LIMIT $4"""
@@ -35,11 +36,11 @@ def score_module():
 
 def features(row):
     return {k:row.get(k) for k in ("price_usd","liquidity_usd","volume_m5_usd","market_cap_usd","early_buyer_count","meaningful_buyer_count","buyer_sol_spent")}
-async def build_scores(cal_path:Path,limit:int):
+async def build_scores(cal_path:Path,limit:int,boundary:datetime):
     raw=cal_path.read_bytes(); cal=json.loads(raw); scorer=score_module(); clock=datetime.now(timezone.utc)
     conn=await asyncpg.connect(dsn())
     try:
-        rows=await conn.fetch(QUERY,HORIZON_SEC,clock,scorer.SCORE_VERSION,limit); out=[]
+        rows=await conn.fetch(QUERY,HORIZON_SEC,clock,scorer.SCORE_VERSION,limit,boundary); out=[]
         for rec in rows:
             row=dict(rec); cutoff=row["cutoff_at"]; observed=row.get("market_observed_at")
             if cutoff>clock or (observed is not None and observed>cutoff): raise RuntimeError("prospective as-of leakage invariant violated")
@@ -59,7 +60,7 @@ async def persist(items):
     finally: await conn.close()
 
 def main():
-    ap=argparse.ArgumentParser(); ap.add_argument("--calibration",type=Path,default=DEFAULT_CAL); ap.add_argument("--limit",type=int,default=500); a=ap.parse_args()
-    items=asyncio.run(build_scores(a.calibration,a.limit)); inserted=asyncio.run(persist(items))
+    ap=argparse.ArgumentParser(); ap.add_argument("--calibration",type=Path,default=DEFAULT_CAL); ap.add_argument("--limit",type=int,default=500); ap.add_argument("--boundary",required=True); a=ap.parse_args()
+    items=asyncio.run(build_scores(a.calibration,a.limit,datetime.fromisoformat(a.boundary))); inserted=asyncio.run(persist(items))
     print(json.dumps({"eligible":len(items),"inserted":inserted,"shadow_version":SHADOW_VERSION},sort_keys=True))
 if __name__=="__main__": main()
