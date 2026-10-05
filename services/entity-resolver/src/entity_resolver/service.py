@@ -59,7 +59,7 @@ class EntityService:
             settings.redis_url,
             decode_responses=True,
             socket_connect_timeout=3,
-            socket_timeout=5,
+            socket_timeout=10,
             retry_on_timeout=False,
             health_check_interval=30,
             socket_keepalive=True,
