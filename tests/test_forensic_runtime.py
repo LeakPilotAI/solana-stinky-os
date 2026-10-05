@@ -58,7 +58,8 @@ def test_ticks_skip_redis_stream():
 
 def test_entity_reconnect_is_bounded():
     t = read("services/entity-resolver/src/entity_resolver/service.py")
-    assert "socket_timeout=5" in t
+    assert "socket_timeout=10" in t
+    assert "block=5000" in t
     assert "backoff" in t
     assert "min(backoff * 2, 30.0)" in t
 
