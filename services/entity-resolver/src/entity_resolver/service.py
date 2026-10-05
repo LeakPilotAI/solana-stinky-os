@@ -110,6 +110,7 @@ class EntityService:
         await self.start()
         assert self._redis is not None
         consumer = f"entity-{id(self)}"
+        await self._recover_pending(consumer)
         last_batch = asyncio.get_event_loop().time()
         backoff = 1.0
         while self._running:
@@ -146,6 +147,29 @@ class EntityService:
                 logger.warning("entity_service.loop_error", error=str(exc)[:240], backoff=backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
+
+    async def _recover_pending(self, consumer: str) -> None:
+        """Recover stale PEL entries left by a previous entity worker."""
+        assert self._redis is not None
+        start_id = "0-0"
+        while True:
+            claimed = await self._redis.xautoclaim(
+                settings.event_stream,
+                settings.entity_consumer_group,
+                consumer,
+                min_idle_time=30_000,
+                start_id=start_id,
+                count=ENTITY_STREAM_READ_COUNT,
+            )
+            if not claimed or len(claimed) < 2:
+                return
+            next_id = str(claimed[0])
+            messages = claimed[1] or []
+            for msg_id, fields in messages:
+                await self._handle(msg_id, fields)
+            if next_id == "0-0" or not messages:
+                return
+            start_id = next_id
 
     @classmethod
     def _stream_event_type(cls, fields: dict[str, str]) -> str | None:
