@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse,asyncio,json,os
 from datetime import datetime,timezone
 import asyncpg
-POLICY_VERSION="genesis-evidence-paper-v1"
+POLICY_VERSION="genesis-evidence-paper-v2"
 MIN_WOULD_ENTER_SCORE=50.0
 AUTHORITY={"paper_only":True,"live_execution":False,"trading_authority":False,"trade_signal":False,"recommendation_authority":False}
 DDL="""CREATE TABLE IF NOT EXISTS intelligence_paper_decisions (
@@ -21,6 +21,8 @@ AND NOT EXISTS (SELECT 1 FROM intelligence_paper_decisions ipd
 ORDER BY iss.scored_at,iss.id LIMIT $3"""
 def dsn(): return os.getenv("STINKY_DATABASE_URL","postgresql://stinky:stinky@127.0.0.1:5433/stinky").replace("postgresql+asyncpg://","postgresql://",1)
 def decide(payload):
+    if isinstance(payload,str):
+        payload=json.loads(payload)
     status=payload.get("status") if isinstance(payload,dict) else None
     score=payload.get("score") if isinstance(payload,dict) else None
     if status!="KNOWN" or score is None:
