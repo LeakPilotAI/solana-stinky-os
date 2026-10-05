@@ -44,6 +44,7 @@ class EntityService:
         self._running = False
         self._funding_scanned_wallets: set[str] = set()
         self._phase10_captured_entities: set[tuple[str, str, str]] = set()
+        self._batch_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         await self._store.ensure_schema()
@@ -76,10 +77,26 @@ class EntityService:
             stream=settings.event_stream,
             group=settings.entity_consumer_group,
         )
-        await self._resolver.run_batch()
+        self._schedule_batch()
+
+    async def _run_batch_guarded(self) -> None:
+        try:
+            await self._resolver.run_batch()
+        except Exception as exc:
+            logger.warning("entity.batch_error", error=str(exc)[:240])
+
+    def _schedule_batch(self) -> None:
+        if self._batch_task is None or self._batch_task.done():
+            self._batch_task = asyncio.create_task(self._run_batch_guarded())
 
     async def stop(self) -> None:
         self._running = False
+        if self._batch_task is not None and not self._batch_task.done():
+            self._batch_task.cancel()
+            try:
+                await self._batch_task
+            except asyncio.CancelledError:
+                pass
         if self._redis:
             await self._redis.aclose()
         await self._http.aclose()
@@ -123,7 +140,7 @@ class EntityService:
 
                 now = asyncio.get_event_loop().time()
                 if now - last_batch >= settings.batch_interval_sec:
-                    await self._resolver.run_batch()
+                    self._schedule_batch()
                     last_batch = now
             except Exception as exc:
                 logger.warning("entity_service.loop_error", error=str(exc)[:240], backoff=backoff)
