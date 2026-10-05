@@ -21,6 +21,15 @@ from entity_resolver.store import EntityStore
 
 logger = structlog.get_logger(__name__)
 
+ENTITY_RELEVANT_EVENT_TYPES = frozenset({
+    "token.launch",
+    "token.migrated",
+    "post_migration.buy",
+    "post_migration.tracking_completed",
+    "token.transfer",
+})
+ENTITY_STREAM_READ_COUNT = 500
+
 
 class EntityService:
     def __init__(self) -> None:
@@ -47,7 +56,7 @@ class EntityService:
             settings.redis_url,
             decode_responses=True,
             socket_connect_timeout=3,
-            socket_timeout=10,
+            socket_timeout=5,
             retry_on_timeout=False,
             health_check_interval=30,
             socket_keepalive=True,
@@ -92,14 +101,25 @@ class EntityService:
                     groupname=settings.entity_consumer_group,
                     consumername=consumer,
                     streams={settings.event_stream: ">"},
-                    count=20,
+                    count=ENTITY_STREAM_READ_COUNT,
                     block=5000,
                 )
                 backoff = 1.0
                 if rows:
                     for _stream, messages in rows:
+                        ignored_ids: list[str] = []
                         for msg_id, fields in messages:
+                            event_type = self._stream_event_type(fields)
+                            if event_type is not None and event_type not in ENTITY_RELEVANT_EVENT_TYPES:
+                                ignored_ids.append(msg_id)
+                                continue
                             await self._handle(msg_id, fields)
+                        if ignored_ids:
+                            await self._redis.xack(
+                                settings.event_stream,
+                                settings.entity_consumer_group,
+                                *ignored_ids,
+                            )
 
                 now = asyncio.get_event_loop().time()
                 if now - last_batch >= settings.batch_interval_sec:
@@ -109,6 +129,24 @@ class EntityService:
                 logger.warning("entity_service.loop_error", error=str(exc)[:240], backoff=backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
+
+    @classmethod
+    def _stream_event_type(cls, fields: dict[str, str]) -> str | None:
+        """Return the event type when an envelope is safely classifiable."""
+        raw = fields.get("data") or fields.get("payload") or ""
+        if not raw:
+            for value in fields.values():
+                if isinstance(value, str) and value.startswith("{"):
+                    raw = value
+                    break
+        if not raw:
+            return None
+        try:
+            event = cls._parse_stream_event(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError, TypeError):
+            return None
+        event_type = event.get("event_type") or event.get("type")
+        return str(event_type) if event_type else None
 
     @staticmethod
     def _parse_stream_event(raw: str | bytes) -> dict[str, object]:
