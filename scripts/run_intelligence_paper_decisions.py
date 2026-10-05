@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse,asyncio,json,os
 from datetime import datetime,timezone
 import asyncpg
-POLICY_VERSION="genesis-evidence-paper-v2"
+POLICY_VERSION="genesis-evidence-paper-v3"
 MIN_WOULD_ENTER_SCORE=50.0
 AUTHORITY={"paper_only":True,"live_execution":False,"trading_authority":False,"trade_signal":False,"recommendation_authority":False}
 DDL="""CREATE TABLE IF NOT EXISTS intelligence_paper_decisions (
@@ -15,7 +15,9 @@ DDL="""CREATE TABLE IF NOT EXISTS intelligence_paper_decisions (
  UNIQUE(shadow_score_id,policy_version))"""
 QUERY="""SELECT iss.id,iss.track_id,iss.mint,iss.score_version,iss.migration_at,iss.scored_at,iss.score_payload
 FROM intelligence_shadow_scores iss
+JOIN migration_tracks mt ON mt.track_id=iss.track_id
 WHERE iss.migration_at >= $1 AND iss.scored_at >= $1
+AND mt.completed_at IS NULL
 AND NOT EXISTS (SELECT 1 FROM intelligence_paper_decisions ipd
  WHERE ipd.shadow_score_id=iss.id AND ipd.policy_version=$2)
 ORDER BY iss.scored_at,iss.id LIMIT $3"""

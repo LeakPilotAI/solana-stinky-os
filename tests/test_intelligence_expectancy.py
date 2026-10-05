@@ -19,6 +19,6 @@ def test_future_outcome_join_requires_decision_precede_completion():
  except RuntimeError:return
  assert False
 def test_policy_is_frozen_and_outcome_not_in_decision_source():
- m=mod(); s=P.read_text(); assert m.POLICY_VERSION=="genesis-evidence-paper-v2"; assert m.FROZEN_THRESHOLD==50.0
+ m=mod(); s=P.read_text(); assert m.POLICY_VERSION=="genesis-evidence-paper-v3"; assert m.FROZEN_THRESHOLD==50.0
  assert m.MIN_MATURED_TOTAL==30 and m.MIN_MATURED_PER_DECISION==10
  assert "threshold_retuning_permitted" in s and "live_trading_authority" in s

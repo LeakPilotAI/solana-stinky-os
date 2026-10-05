@@ -6,7 +6,7 @@ from collections import Counter,defaultdict
 from datetime import datetime,timezone
 import asyncpg
 EVAL_VERSION="genesis-expectancy-v1"
-POLICY_VERSION="genesis-evidence-paper-v2"
+POLICY_VERSION="genesis-evidence-paper-v3"
 FROZEN_THRESHOLD=50.0
 MIN_MATURED_TOTAL=30
 MIN_MATURED_PER_DECISION=10
