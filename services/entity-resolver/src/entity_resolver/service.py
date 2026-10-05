@@ -29,6 +29,7 @@ ENTITY_RELEVANT_EVENT_TYPES = frozenset({
     "token.transfer",
 })
 ENTITY_STREAM_READ_COUNT = 500
+ENTITY_EVENT_HANDLE_TIMEOUT_SEC = 30.0
 
 
 class EntityService:
@@ -134,18 +135,21 @@ class EntityService:
                 if rows:
                     for _stream, messages in rows:
                         ignored_ids: list[str] = []
+                        relevant_messages: list[tuple[str, dict[str, str]]] = []
                         for msg_id, fields in messages:
                             event_type = self._stream_event_type(fields)
                             if event_type is not None and event_type not in ENTITY_RELEVANT_EVENT_TYPES:
                                 ignored_ids.append(msg_id)
-                                continue
-                            await self._handle(msg_id, fields)
+                            else:
+                                relevant_messages.append((msg_id, fields))
                         if ignored_ids:
                             await self._redis.xack(
                                 settings.event_stream,
                                 settings.entity_consumer_group,
                                 *ignored_ids,
                             )
+                        for msg_id, fields in relevant_messages:
+                            await self._handle_bounded(msg_id, fields)
 
                 now = asyncio.get_event_loop().time()
                 if now - last_pending_recovery >= 5.0:
@@ -193,10 +197,21 @@ class EntityService:
                     *ignored_ids,
                 )
             for msg_id, fields in relevant_messages:
-                await self._handle(msg_id, fields)
+                await self._handle_bounded(msg_id, fields)
             if next_id == "0-0" or not messages:
                 return
             start_id = next_id
+
+    async def _handle_bounded(self, msg_id: str, fields: dict[str, str]) -> None:
+        try:
+            await asyncio.wait_for(self._handle(msg_id, fields), timeout=ENTITY_EVENT_HANDLE_TIMEOUT_SEC)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "entity.event_handle_timeout",
+                msg_id=msg_id,
+                event_type=self._stream_event_type(fields),
+                timeout_sec=ENTITY_EVENT_HANDLE_TIMEOUT_SEC,
+            )
 
     @classmethod
     def _stream_event_type(cls, fields: dict[str, str]) -> str | None:
