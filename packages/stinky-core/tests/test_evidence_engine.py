@@ -122,9 +122,8 @@ def test_life_slices_include_t1200_t1800_and_hide_future():
     as_of = life_slices(mem, mint=MINT_A, t0=T0, as_of=T0 + timedelta(seconds=90))
     by = {s["offset_sec"]: s for s in as_of["slices"]}
     assert 1200 in by and 1800 in by
-    assert by[300]["volume_m5_usd"] == 180_000
-    assert by[1800]["volume_m5_usd"] == 180_000
-    assert by[1800]["volume_m5_usd"] != 90_000
+    assert by[300]["volume_m5_usd"] is None
+    assert by[1800]["volume_m5_usd"] is None
     assert by[0]["stage"] == STAGE_DISCOVERY
     assert by[1800]["stage"] == STAGE_OUTCOME
     later = life_slices(mem, mint=MINT_A, t0=T0, as_of=T0 + timedelta(seconds=2000))

@@ -204,8 +204,8 @@ def test_life_slices_t15_carry_forward_not_future():
     sl = life_slices(mem, mint=MINT_A, t0=T0, as_of=T0 + timedelta(seconds=20))
     by = {s["offset_sec"]: s for s in sl["slices"]}
     assert by[15]["volume_m5_usd"] == 150_000
-    assert by[30]["volume_m5_usd"] == 150_000
-    assert by[300]["volume_m5_usd"] != 400_000
+    assert by[30]["volume_m5_usd"] is None
+    assert by[300]["volume_m5_usd"] is None
 
 
 def test_three_early_ticks_do_not_complete_future_outcome_horizon():

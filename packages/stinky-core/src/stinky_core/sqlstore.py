@@ -118,7 +118,9 @@ CREATE TABLE IF NOT EXISTS market_observations (
     txns INTEGER,
     unique_buyers INTEGER,
     unique_sellers INTEGER,
-    volume_since_gate REAL
+    volume_since_gate REAL,
+    pair_address TEXT,
+    dex_id TEXT
 );
 CREATE TABLE IF NOT EXISTS intelligence_investigations (
     mint TEXT PRIMARY KEY,
@@ -204,6 +206,8 @@ class SqliteMemoryStore:
             "ALTER TABLE market_observations ADD COLUMN unique_buyers INTEGER",
             "ALTER TABLE market_observations ADD COLUMN unique_sellers INTEGER",
             "ALTER TABLE market_observations ADD COLUMN volume_since_gate REAL",
+            "ALTER TABLE market_observations ADD COLUMN pair_address TEXT",
+            "ALTER TABLE market_observations ADD COLUMN dex_id TEXT",
         ):
             try:
                 self.conn.execute(alt)
@@ -321,12 +325,14 @@ class SqliteMemoryStore:
             self.conn.execute(
                 """INSERT INTO market_observations
                    (mint, observed_at, volume_m5_usd, price_usd, liquidity_usd, source,
-                    market_cap_usd, buys, sells, txns, unique_buyers, unique_sellers, volume_since_gate)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    market_cap_usd, buys, sells, txns, unique_buyers, unique_sellers, volume_since_gate,
+                    pair_address, dex_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (r["mint"], r["observed_at"], r.get("volume_m5_usd"), r.get("price_usd"),
                  r.get("liquidity_usd"), r.get("source") or "observed",
                  r.get("market_cap_usd"), r.get("buys"), r.get("sells"), r.get("txns"),
-                 r.get("unique_buyers"), r.get("unique_sellers"), r.get("volume_since_gate")),
+                 r.get("unique_buyers"), r.get("unique_sellers"), r.get("volume_since_gate"),
+                 r.get("pair_address"), r.get("dex_id")),
             )
         for r in snap.get("investigations") or []:
             nested = dict(r)
@@ -439,7 +445,7 @@ class SqliteMemoryStore:
             r["promote"] = bool(r.get("promote"))
             r["alert_ok"] = bool(r.get("alert_ok"))
         mem.load_decisions(decs)
-        ticks = rows("SELECT mint, observed_at, volume_m5_usd, price_usd, liquidity_usd, source, market_cap_usd, buys, sells, txns, unique_buyers, unique_sellers, volume_since_gate FROM market_observations")
+        ticks = rows("SELECT mint, observed_at, volume_m5_usd, price_usd, liquidity_usd, source, market_cap_usd, buys, sells, txns, unique_buyers, unique_sellers, volume_since_gate, pair_address, dex_id FROM market_observations")
         mem.load_market_ticks(ticks)
         try:
             invs = rows("SELECT mint, gate1_at, discovered_at, protocol, volume_5m_at_gate, liquidity_at_gate, market_cap_at_gate, price_at_gate, pair_identifier, creator, gate_decision, investigation_status, correlation_id, row FROM intelligence_investigations")
