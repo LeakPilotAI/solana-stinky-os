@@ -43,6 +43,8 @@ class EntityService:
         self._http = httpx.AsyncClient(timeout=10.0)
         self._running = False
         self._funding_scanned_wallets: set[str] = set()
+        self._funding_scan_tasks: dict[str, asyncio.Task[None]] = {}
+        self._funding_scan_semaphore = asyncio.Semaphore(2)
         self._phase10_captured_entities: set[tuple[str, str, str]] = set()
         self._batch_task: asyncio.Task[None] | None = None
 
@@ -97,6 +99,12 @@ class EntityService:
                 await self._batch_task
             except asyncio.CancelledError:
                 pass
+        funding_tasks = list(self._funding_scan_tasks.values())
+        for task in funding_tasks:
+            task.cancel()
+        if funding_tasks:
+            await asyncio.gather(*funding_tasks, return_exceptions=True)
+        self._funding_scan_tasks.clear()
         if self._redis:
             await self._redis.aclose()
         await self._http.aclose()
@@ -307,6 +315,18 @@ class EntityService:
         except Exception as exc:
             logger.warning("entity.phase10_snapshot_capture_failed", trigger=trigger, mint=mint, entity_id=entity_id, error=str(exc)[:200])
 
+    def _schedule_wallet_funding(self, wallet: str) -> None:
+        """Enrich buyer funding without blocking Redis stream intake."""
+        if not wallet or wallet in self._funding_scanned_wallets or wallet in self._funding_scan_tasks:
+            return
+        task = asyncio.create_task(self._observe_wallet_funding_bounded(wallet))
+        self._funding_scan_tasks[wallet] = task
+        task.add_done_callback(lambda _task, key=wallet: self._funding_scan_tasks.pop(key, None))
+
+    async def _observe_wallet_funding_bounded(self, wallet: str) -> None:
+        async with self._funding_scan_semaphore:
+            await self._observe_wallet_funding(wallet)
+
     async def _observe_wallet_funding(self, wallet: str) -> None:
         """Capture funding once after a successful bounded scan; failed scans stay retryable."""
         if not wallet or wallet in self._funding_scanned_wallets:
@@ -408,7 +428,7 @@ class EntityService:
         elif et == "post_migration.buy":
             wallet = payload.get("wallet")
             if isinstance(wallet, str) and wallet:
-                await self._observe_wallet_funding(wallet)
+                self._schedule_wallet_funding(wallet)
 
         elif et == "post_migration.tracking_completed":
             mint, status, metadata = self._outcome_payload(event)
