@@ -152,8 +152,7 @@ def test_life_slices_hide_future_ticks():
     by = {s["offset_sec"]: s for s in at_60["slices"]}
     assert by[0]["volume_m5_usd"] == 150_000
     assert by[60]["volume_m5_usd"] == 180_000
-    assert by[300]["volume_m5_usd"] == 180_000  # last known as-of T+90s, not the future 400k
-    assert by[300]["volume_m5_usd"] != 400_000
+    assert by[300]["volume_m5_usd"] is None  # T+300 has not elapsed as of T+90
     full = life_slices(mem, mint=MINT_A, t0=T0, as_of=T0 + timedelta(seconds=400))
     assert {s["offset_sec"]: s for s in full["slices"]}[300]["volume_m5_usd"] == 400_000
 

@@ -1,7 +1,15 @@
 """Unit tests for canonical admission (no network)."""
 
+import pytest
+
 from sentinel.admission import evaluate_pump_quality, evaluate_alert_payload
+from sentinel.config import settings
 from sentinel.qualify import MIN_GLOBAL_FEES_PAID_SOL
+
+
+@pytest.fixture(autouse=True)
+def _strict_fee_mode(monkeypatch):
+    monkeypatch.setattr(settings, "require_global_fees", True)
 
 
 def test_min_floor_is_five():

@@ -17,9 +17,6 @@ set PYTHONIOENCODING=utf-8
 set PYTHONUNBUFFERED=1
 rem No `start` — Windows Terminal turns every START into a new window.
 rem pythonw has no console. Watchdog/desktop must not pile cmd windows.
-if exist "%PYW%" (
-  "%PYW%" "%~dp0run_genesis_service.py" --name "%NAME%"
-) else (
-  "%PY%" "%~dp0run_genesis_service.py" --name "%NAME%"
-)
+rem Keep worker supervisors attached to their launcher.
+"%PY%" "%~dp0run_genesis_service.py" --name "%NAME%"
 exit /b 0

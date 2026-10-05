@@ -23,6 +23,7 @@ async def test_http_delivery_preserves_original_identity(
     publisher = EventPublisher()
     publisher._transport = AsyncMock()
     publisher._connected = connected
+    publisher._http = AsyncMock()
     publisher._http.post = AsyncMock(return_value=httpx.Response(200))
     event = Event(
         event_id=UUID("00000000-0000-4000-8000-000000000001"),

@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     database_url: str = "postgresql+asyncpg://stinky:stinky@localhost:5433/stinky"
+    database_connect_timeout_sec: float = 5.0
+    database_command_timeout_sec: float = 10.0
+    runtime_database_timeout_sec: float = 12.0
     redis_url: str = "redis://localhost:6380/0"
     event_stream: str = "stinky.events"
     # Dedicated name so STINKY_CONSUMER_GROUP in .env does not override

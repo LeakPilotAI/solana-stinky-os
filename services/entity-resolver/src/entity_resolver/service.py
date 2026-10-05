@@ -21,6 +21,15 @@ from entity_resolver.store import EntityStore
 
 logger = structlog.get_logger(__name__)
 
+ENTITY_RELEVANT_EVENT_TYPES = frozenset({
+    "token.launch",
+    "token.migrated",
+    "post_migration.buy",
+    "post_migration.tracking_completed",
+    "token.transfer",
+})
+ENTITY_STREAM_READ_COUNT = 500
+
 
 class EntityService:
     def __init__(self) -> None:
@@ -34,7 +43,10 @@ class EntityService:
         self._http = httpx.AsyncClient(timeout=10.0)
         self._running = False
         self._funding_scanned_wallets: set[str] = set()
+        self._funding_scan_tasks: dict[str, asyncio.Task[None]] = {}
+        self._funding_scan_semaphore = asyncio.Semaphore(2)
         self._phase10_captured_entities: set[tuple[str, str, str]] = set()
+        self._batch_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         await self._store.ensure_schema()
@@ -47,7 +59,7 @@ class EntityService:
             settings.redis_url,
             decode_responses=True,
             socket_connect_timeout=3,
-            socket_timeout=10,
+            socket_timeout=5,
             retry_on_timeout=False,
             health_check_interval=30,
             socket_keepalive=True,
@@ -67,10 +79,32 @@ class EntityService:
             stream=settings.event_stream,
             group=settings.entity_consumer_group,
         )
-        await self._resolver.run_batch()
+        self._schedule_batch()
+
+    async def _run_batch_guarded(self) -> None:
+        try:
+            await self._resolver.run_batch()
+        except Exception as exc:
+            logger.warning("entity.batch_error", error=str(exc)[:240])
+
+    def _schedule_batch(self) -> None:
+        if self._batch_task is None or self._batch_task.done():
+            self._batch_task = asyncio.create_task(self._run_batch_guarded())
 
     async def stop(self) -> None:
         self._running = False
+        if self._batch_task is not None and not self._batch_task.done():
+            self._batch_task.cancel()
+            try:
+                await self._batch_task
+            except asyncio.CancelledError:
+                pass
+        funding_tasks = list(self._funding_scan_tasks.values())
+        for task in funding_tasks:
+            task.cancel()
+        if funding_tasks:
+            await asyncio.gather(*funding_tasks, return_exceptions=True)
+        self._funding_scan_tasks.clear()
         if self._redis:
             await self._redis.aclose()
         await self._http.aclose()
@@ -85,6 +119,7 @@ class EntityService:
         assert self._redis is not None
         consumer = f"entity-{id(self)}"
         last_batch = asyncio.get_event_loop().time()
+        last_pending_recovery = 0.0
         backoff = 1.0
         while self._running:
             try:
@@ -92,23 +127,94 @@ class EntityService:
                     groupname=settings.entity_consumer_group,
                     consumername=consumer,
                     streams={settings.event_stream: ">"},
-                    count=20,
+                    count=ENTITY_STREAM_READ_COUNT,
                     block=5000,
                 )
                 backoff = 1.0
                 if rows:
                     for _stream, messages in rows:
+                        ignored_ids: list[str] = []
                         for msg_id, fields in messages:
+                            event_type = self._stream_event_type(fields)
+                            if event_type is not None and event_type not in ENTITY_RELEVANT_EVENT_TYPES:
+                                ignored_ids.append(msg_id)
+                                continue
                             await self._handle(msg_id, fields)
+                        if ignored_ids:
+                            await self._redis.xack(
+                                settings.event_stream,
+                                settings.entity_consumer_group,
+                                *ignored_ids,
+                            )
 
                 now = asyncio.get_event_loop().time()
+                if now - last_pending_recovery >= 5.0:
+                    await self._recover_pending(consumer, max_batches=1)
+                    last_pending_recovery = now
                 if now - last_batch >= settings.batch_interval_sec:
-                    await self._resolver.run_batch()
+                    self._schedule_batch()
                     last_batch = now
             except Exception as exc:
                 logger.warning("entity_service.loop_error", error=str(exc)[:240], backoff=backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
+
+    async def _recover_pending(self, consumer: str, *, max_batches: int = 1) -> None:
+        """Recover stale PEL entries without starving fresh stream intake."""
+        assert self._redis is not None
+        start_id = "0-0"
+        batches = 0
+        while batches < max_batches:
+            batches += 1
+            claimed = await self._redis.xautoclaim(
+                settings.event_stream,
+                settings.entity_consumer_group,
+                consumer,
+                min_idle_time=30_000,
+                start_id=start_id,
+                count=ENTITY_STREAM_READ_COUNT,
+            )
+            if not claimed or len(claimed) < 2:
+                return
+            next_id = str(claimed[0])
+            messages = claimed[1] or []
+            ignored_ids: list[str] = []
+            relevant_messages: list[tuple[str, dict[str, str]]] = []
+            for msg_id, fields in messages:
+                event_type = self._stream_event_type(fields)
+                if event_type is not None and event_type not in ENTITY_RELEVANT_EVENT_TYPES:
+                    ignored_ids.append(msg_id)
+                else:
+                    relevant_messages.append((msg_id, fields))
+            if ignored_ids:
+                await self._redis.xack(
+                    settings.event_stream,
+                    settings.entity_consumer_group,
+                    *ignored_ids,
+                )
+            for msg_id, fields in relevant_messages:
+                await self._handle(msg_id, fields)
+            if next_id == "0-0" or not messages:
+                return
+            start_id = next_id
+
+    @classmethod
+    def _stream_event_type(cls, fields: dict[str, str]) -> str | None:
+        """Return the event type when an envelope is safely classifiable."""
+        raw = fields.get("data") or fields.get("payload") or ""
+        if not raw:
+            for value in fields.values():
+                if isinstance(value, str) and value.startswith("{"):
+                    raw = value
+                    break
+        if not raw:
+            return None
+        try:
+            event = cls._parse_stream_event(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError, TypeError):
+            return None
+        event_type = event.get("event_type") or event.get("type")
+        return str(event_type) if event_type else None
 
     @staticmethod
     def _parse_stream_event(raw: str | bytes) -> dict[str, object]:
@@ -208,6 +314,18 @@ class EntityService:
             logger.info("entity.phase10_snapshot_capture_completed", trigger=trigger, mint=mint, entity_id=entity_id, status_code=response.status_code)
         except Exception as exc:
             logger.warning("entity.phase10_snapshot_capture_failed", trigger=trigger, mint=mint, entity_id=entity_id, error=str(exc)[:200])
+
+    def _schedule_wallet_funding(self, wallet: str) -> None:
+        """Enrich buyer funding without blocking Redis stream intake."""
+        if not wallet or wallet in self._funding_scanned_wallets or wallet in self._funding_scan_tasks:
+            return
+        task = asyncio.create_task(self._observe_wallet_funding_bounded(wallet))
+        self._funding_scan_tasks[wallet] = task
+        task.add_done_callback(lambda _task, key=wallet: self._funding_scan_tasks.pop(key, None))
+
+    async def _observe_wallet_funding_bounded(self, wallet: str) -> None:
+        async with self._funding_scan_semaphore:
+            await self._observe_wallet_funding(wallet)
 
     async def _observe_wallet_funding(self, wallet: str) -> None:
         """Capture funding once after a successful bounded scan; failed scans stay retryable."""
@@ -310,7 +428,7 @@ class EntityService:
         elif et == "post_migration.buy":
             wallet = payload.get("wallet")
             if isinstance(wallet, str) and wallet:
-                await self._observe_wallet_funding(wallet)
+                self._schedule_wallet_funding(wallet)
 
         elif et == "post_migration.tracking_completed":
             mint, status, metadata = self._outcome_payload(event)

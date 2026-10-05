@@ -68,7 +68,7 @@ def test_simulation_full_pipeline_sqlite_restart():
     )
     assert mem.record_investigation(rec) is True
     assert mem.record_investigation(dict(rec, volume_5m_at_gate=999_999)) is False
-    mem.record_market_tick(mint=MINT, observed_at=T0, volume_m5_usd=172_000, liquidity_usd=50_000, price_usd=1.0)
+    mem.record_market_tick(mint=MINT, observed_at=T0, volume_m5_usd=172_000, liquidity_usd=50_000, price_usd=1.0, pair_address="PairA", dex_id="pumpswap")
     mem.record_market_tick(
         mint=MINT, observed_at=T0 + timedelta(seconds=15), volume_m5_usd=168_000, liquidity_usd=49_000, price_usd=0.98
     )
@@ -76,7 +76,7 @@ def test_simulation_full_pipeline_sqlite_restart():
         mint=MINT, observed_at=T0 + timedelta(seconds=60), volume_m5_usd=40_000, liquidity_usd=28_000, price_usd=0.4
     )
     mem.record_market_tick(
-        mint=MINT, observed_at=T0 + timedelta(seconds=300), volume_m5_usd=8_000, liquidity_usd=4_000, price_usd=0.05
+        mint=MINT, observed_at=T0 + timedelta(seconds=300), volume_m5_usd=8_000, liquidity_usd=4_000, price_usd=0.05, pair_address="PairA", dex_id="pumpswap"
     )
     mem.record_market_tick(
         mint=MINT, observed_at=T0 + timedelta(seconds=900), volume_m5_usd=5_000, liquidity_usd=3_500, price_usd=0.04

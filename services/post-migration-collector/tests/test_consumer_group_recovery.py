@@ -79,8 +79,8 @@ def test_startup_database_probe_precedes_schema_and_recovery_writes():
     ).read_text(encoding="utf-8")
     start = source[source.index("    async def start(self) -> None:"):source.index("    async def _ensure_consumer_group")]
     probe = start.index("await self._require_startup_database()")
-    schema = start.index("await self._store.ensure_schema()")
-    recovery = start.index("await self._store.fail_stale_active_tracks")
+    schema = start.index("self._store.ensure_schema(),")
+    recovery = start.index("self._store.fail_stale_active_tracks")
     assert probe < schema < recovery
 
 
@@ -135,3 +135,47 @@ def test_recovery_uses_configured_stream_and_group():
     redis = CaptureRedis()
     service = service_with(redis)
     assert asyncio.run(service._ensure_consumer_group()) is True
+
+
+def test_runtime_backfill_timeout_resets_pool(monkeypatch):
+    service = object.__new__(CollectorService)
+
+    class StuckStore:
+        def __init__(self):
+            self.reset_calls = 0
+
+        async def reset_pool(self):
+            self.reset_calls += 1
+
+    async def stuck_backfill(*, limit):
+        await asyncio.Event().wait()
+
+    service._store = StuckStore()
+    service.backfill_from_events = stuck_backfill
+    monkeypatch.setattr(settings, "runtime_database_timeout_sec", 0.01)
+
+    result = asyncio.run(service._bounded_backfill(limit=12, phase="periodic"))
+
+    assert result == 0
+    assert service._store.reset_calls == 1
+
+
+def test_store_configures_bounded_asyncpg_transport():
+    source = __import__("pathlib").Path(
+        __import__("post_migration.store", fromlist=["__file__"]).__file__
+    ).read_text(encoding="utf-8")
+    assert '"timeout": settings.database_connect_timeout_sec' in source
+    assert '"command_timeout": settings.database_command_timeout_sec' in source
+    assert "pool_recycle=180" in source
+
+
+def test_startup_database_writes_are_bounded():
+    source = __import__("pathlib").Path(
+        __import__("post_migration.service", fromlist=["__file__"]).__file__
+    ).read_text(encoding="utf-8")
+    start = source[source.index("    async def start(self) -> None:"):source.index("    async def _ensure_consumer_group")]
+    assert "await asyncio.wait_for(" in start
+    assert "self._store.ensure_schema()," in start
+    assert "self._store.fail_stale_active_tracks(" in start
+    assert "collector.startup_database_write_timeout" in start
+    assert "socket_timeout=10" in start

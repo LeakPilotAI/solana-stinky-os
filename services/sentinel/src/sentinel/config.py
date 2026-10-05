@@ -60,8 +60,9 @@ class Settings(BaseSettings):
     allowed_dex_ids: str = "pumpswap,pumpfun,pump"
     denied_dex_ids: str = "meteora,raydium,orca,phoenix,lifinity,saber,aldrin,fluxbeam,pumpamm"
     require_pump_mint_suffix: bool = True
-    # Optional evidence floor. NOT a Gate 1 reject.
-    min_fees_sol: float = 1.0
+    # Optional evidence floor. NOT a Gate 1 reject unless strict mode is enabled.
+    min_fees_sol: float = 5.0
+    require_global_fees: bool = False
     birdeye_api_key: str | None = None
 
     # Gate 1 — investigation trigger (not a buy signal)

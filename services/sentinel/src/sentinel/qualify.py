@@ -18,7 +18,7 @@ from sentinel.filter_engine import (
     evaluate_market,
 )
 
-MIN_GLOBAL_FEES_PAID_SOL = 1.0  # optional evidence floor, not a gate
+MIN_GLOBAL_FEES_PAID_SOL = 5.0  # optional evidence floor, not a gate
 
 
 def is_post_migration_dex(dex_id: str | None) -> bool:
@@ -53,6 +53,7 @@ def qualify_fresh_pump_migration(
     require_pump_mint_suffix: bool = True,
     allowed_dex_ids: set[str] | None = None,
     denied_dex_ids: set[str] | None = None,
+    require_global_fees: bool = False,
 ) -> QualifyResult:
     """Gate 1: mint + DEX + 5m volume. Unknown fees do not reject."""
     required = clamp_gate1_volume(
@@ -63,15 +64,17 @@ def qualify_fresh_pump_migration(
         return QualifyResult(False, ReasonCode.INVALID_MINT, required=required)
 
     if require_pump_mint_suffix and not mint_s.lower().endswith("pump"):
-        return QualifyResult(False, ReasonCode.INVALID_MARKET_DATA, required=required)
+        return QualifyResult(False, "NOT_PUMP_MINT", required=required)
 
     cfg = FilterConfig(
         min_volume_usd=required,
-        require_fees=False,
+        min_global_fees_sol=float(min_fees_sol),
+        require_fees=require_global_fees,
         require_liquidity=False,
+        require_volume=volume_m5_usd is not None,
         require_market_cap=False,
         require_at_least_one_social=False,
-        require_migrated=True,
+        require_migrated=volume_m5_usd is not None,
         record_stats=EARLY_GATE_CONFIG.record_stats,
     )
     if allowed_dex_ids:
@@ -95,13 +98,28 @@ def qualify_fresh_pump_migration(
             "dex_id": dex_id,
             "volume_usd": volume_m5_usd,
             "global_fees_sol": global_fees_paid_sol,
-            "global_fees_verified": global_fees_verified,
+            "global_fees_verified": (
+                global_fees_verified
+                if global_fees_verified is not None
+                else (True if global_fees_paid_sol is not None else None)
+            ),
             "migrated": False if bonding else True,
             "tab": None if bonding else "migrated",
         },
         config=cfg,
     )
     reason = "ok" if decision.eligible else (decision.rejection_reason or ReasonCode.NOT_ELIGIBLE)
+    if (
+        decision.eligible
+        and not require_global_fees
+        and global_fees_paid_sol is None
+        and volume_m5_usd is None
+    ):
+        reason = "ok_fees_unknown"
+    elif reason == ReasonCode.FEES_UNKNOWN:
+        reason = "GLOBAL_FEES_UNKNOWN"
+    elif reason == ReasonCode.FEES_BELOW_MIN:
+        reason = "LOW_GLOBAL_FEES"
     fees = decision.normalized_metrics.get("global_fees_sol")
     vol = decision.normalized_metrics.get("volume_usd")
     try:

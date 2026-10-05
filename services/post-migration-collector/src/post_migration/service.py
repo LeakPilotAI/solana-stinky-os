@@ -25,6 +25,8 @@ logger = structlog.get_logger(__name__)
 # schema/recovery write is attempted. This is deliberately a read-only bound:
 # stale Windows<->Docker sockets fail closed without creating an uncertain write.
 COLLECTOR_STARTUP_DB_PROBE_TIMEOUT_SEC = 10.0
+COLLECTOR_STARTUP_REDIS_TIMEOUT_SEC = 10.0
+COLLECTOR_STARTUP_TOTAL_TIMEOUT_SEC = 45.0
 
 
 class CollectorService:
@@ -59,6 +61,20 @@ class CollectorService:
             raise ConnectionError("collector startup database health probe failed")
 
     async def start(self) -> None:
+        try:
+            await asyncio.wait_for(
+                self._start_bounded(),
+                timeout=COLLECTOR_STARTUP_TOTAL_TIMEOUT_SEC,
+            )
+        except TimeoutError:
+            logger.error(
+                "collector.startup_total_timeout",
+                timeout_sec=COLLECTOR_STARTUP_TOTAL_TIMEOUT_SEC,
+            )
+            await self._store.reset_pool()
+            raise
+
+    async def _start_bounded(self) -> None:
         # New measured-outcome metadata is forward-only from this collector process.
         # Backfilled tracks that began before deployment may complete normally but
         # cannot become post-fix prospective outcome evidence.
@@ -66,19 +82,40 @@ class CollectorService:
         # This read-only probe is intentionally before ensure_schema() and the
         # stale-track recovery UPDATE. A wedged transport therefore exits before
         # any startup write can become uncertain.
+        logger.info("collector.startup_phase", phase="database_health")
         await self._require_startup_database()
-        await self._store.ensure_schema()
-        stale = await self._store.fail_stale_active_tracks(max_duration_sec=settings.track_max_duration_sec)
+        try:
+            logger.info("collector.startup_phase", phase="ensure_schema")
+            await asyncio.wait_for(
+                self._store.ensure_schema(),
+                timeout=settings.runtime_database_timeout_sec,
+            )
+            logger.info("collector.startup_phase", phase="stale_track_recovery")
+            stale = await asyncio.wait_for(
+                self._store.fail_stale_active_tracks(
+                    max_duration_sec=settings.track_max_duration_sec
+                ),
+                timeout=settings.runtime_database_timeout_sec,
+            )
+        except TimeoutError:
+            await self._store.reset_pool()
+            logger.error(
+                "collector.startup_database_write_timeout",
+                timeout_sec=settings.runtime_database_timeout_sec,
+            )
+            raise
         if stale:
             logger.warning("collector.interrupted_tracks_failed_closed", count=len(stale), mints=stale[:20])
+        logger.info("collector.startup_phase", phase="publisher_connect")
         await self._publisher.connect()
         self._redis = redis.from_url(
             settings.redis_url,
             decode_responses=True,
             socket_connect_timeout=5,
-            socket_timeout=None,
+            socket_timeout=10,
         )
-        await self._ensure_consumer_group()
+        logger.info("collector.startup_phase", phase="consumer_group")
+        await asyncio.wait_for(self._ensure_consumer_group(), timeout=COLLECTOR_STARTUP_REDIS_TIMEOUT_SEC)
         self._running = True
         logger.info(
             "collector.started",
@@ -144,13 +181,30 @@ class CollectorService:
             await self._redis.aclose()
         logger.info("collector.stopped", metrics=metrics.snapshot())
 
+    async def _bounded_backfill(self, *, limit: int, phase: str) -> int:
+        """Keep database recovery work from blocking live Redis intake."""
+        try:
+            return await asyncio.wait_for(
+                self.backfill_from_events(limit=limit),
+                timeout=settings.runtime_database_timeout_sec,
+            )
+        except TimeoutError:
+            logger.warning(
+                "collector.database_backfill_timeout",
+                phase=phase,
+                timeout_sec=settings.runtime_database_timeout_sec,
+            )
+            metrics.inc("database_backfill_timeouts")
+            await self._store.reset_pool()
+            return 0
+
     async def run_forever(self) -> None:
         await self.start()
         assert self._redis is not None
         consumer = f"collector-{id(self)}"
         last_backfill = 0.0
         try:
-            n0 = await self.backfill_from_events(limit=12)
+            n0 = await self._bounded_backfill(limit=12, phase="startup")
             logger.info("collector.startup_backfill", tracks=n0)
         except Exception as exc:
             logger.warning("collector.startup_backfill_failed", error=str(exc)[:200])
@@ -166,7 +220,7 @@ class CollectorService:
                     if now - last_backfill >= 90.0:
                         last_backfill = now
                         try:
-                            n = await self.backfill_from_events(limit=12)
+                            n = await self._bounded_backfill(limit=12, phase="periodic")
                             if n:
                                 logger.info("collector.periodic_backfill", tracks=n)
                         except Exception as bexc:

@@ -28,6 +28,11 @@ class Store:
             database_url or settings.database_url,
             pool_pre_ping=True,
             pool_size=5,
+            pool_recycle=180,
+            connect_args={
+                "timeout": settings.database_connect_timeout_sec,
+                "command_timeout": settings.database_command_timeout_sec,
+            },
         )
         self._sessions = async_sessionmaker(
             self._engine, class_=AsyncSession, expire_on_commit=False
@@ -35,6 +40,10 @@ class Store:
 
     async def close(self) -> None:
         await self._engine.dispose()
+
+    async def reset_pool(self) -> None:
+        """Drop pooled connections without waiting on stale transports."""
+        await self._engine.dispose(close=False)
 
     async def health(self) -> bool:
         try:
@@ -275,6 +284,38 @@ class Store:
                 {
                     "mint": mint,
                     "coverage": __import__("orjson").dumps(coverage).decode(),
+                },
+            )
+            await session.commit()
+
+    async def fail_track_for_exception(
+        self,
+        mint: str,
+        *,
+        error_type: str,
+        error_message: str,
+    ) -> None:
+        async with self._sessions() as session:
+            await session.execute(
+                text(
+                    """
+                    UPDATE migration_tracks
+                    SET status = 'failed',
+                        completed_at = now(),
+                        meta = COALESCE(meta, '{}'::jsonb)
+                               || jsonb_build_object(
+                                    'tracking_failure_reason', 'tracker_exception',
+                                    'tracking_exception_type', :error_type,
+                                    'tracking_exception_message', :error_message,
+                                    'tracking_failed_at', now()
+                                  )
+                    WHERE mint = :mint
+                    """
+                ),
+                {
+                    "mint": mint,
+                    "error_type": error_type[:200],
+                    "error_message": error_message[:2000],
                 },
             )
             await session.commit()

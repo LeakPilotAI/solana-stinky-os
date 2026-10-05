@@ -476,9 +476,20 @@ class MintTracker:
                 # this still-current observation window from persisted evidence.
                 return
             metrics.inc("errors")
-            logger.error("track.failed", mint=self.mint, error=str(exc))
+            error_type = type(exc).__name__
+            error_message = str(exc) or repr(exc)
+            logger.error(
+                "track.failed",
+                mint=self.mint,
+                error=error_message,
+                error_type=error_type,
+            )
             try:
-                await self._store.complete_track(self.mint, status=TrackStatus.FAILED)
+                await self._store.fail_track_for_exception(
+                    self.mint,
+                    error_type=error_type,
+                    error_message=error_message,
+                )
             except Exception:
                 pass
 

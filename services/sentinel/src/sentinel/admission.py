@@ -94,7 +94,7 @@ def evaluate_pump_quality(
     )
     reason = result.reason
     if reason == "LOW_GLOBAL_FEES" and result.global_fees_paid_sol is not None:
-        reason = f"LOW_GLOBAL_FEES:{result.global_fees_paid_sol:.4f}<{result.required}"
+        reason = f"LOW_GLOBAL_FEES:{result.global_fees_paid_sol:.4f}<{required}"
     return AdmissionDecision(
         accepted=bool(result.accepted),
         reason=reason if not result.accepted else "ok",

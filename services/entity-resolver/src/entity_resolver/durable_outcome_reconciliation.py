@@ -255,7 +255,7 @@ class DurableOutcomeReconciler:
         # dedup remains the durable authority; no historical snapshot is backdated.
         return await self._capture(mint, entity_id)
 
-    async def reconcile_once(self, *, limit: int = 500) -> dict[str, int]:
+    async def reconcile_once(self, *, limit: int = 25) -> dict[str, int]:
         try:
             rows = await self._completed_candidates(limit=limit)
         except Exception as exc:

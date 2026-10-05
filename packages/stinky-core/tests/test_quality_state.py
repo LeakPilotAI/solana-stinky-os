@@ -68,9 +68,13 @@ def test_noise_band_ignored():
 
 def test_liquidity_watch_and_failed():
     mem = IntelligenceMemory()
-    mem.record_market_tick(mint=MINT, observed_at=T0, volume_m5_usd=180_000, liquidity_usd=50_000)
     mem.record_market_tick(
-        mint=MINT, observed_at=T0 + timedelta(seconds=300), volume_m5_usd=160_000, liquidity_usd=28_000
+        mint=MINT, observed_at=T0, volume_m5_usd=180_000, liquidity_usd=50_000,
+        pair_address="PairA", dex_id="pumpswap",
+    )
+    mem.record_market_tick(
+        mint=MINT, observed_at=T0 + timedelta(seconds=300), volume_m5_usd=160_000, liquidity_usd=28_000,
+        pair_address="PairA", dex_id="pumpswap",
     )
     st = evaluate_quality_state(mem, mint=MINT, t0=T0, as_of=T0 + timedelta(seconds=300))
     assert st["state"] == WATCH
@@ -78,7 +82,7 @@ def test_liquidity_watch_and_failed():
     assert quality_dip(st) is not None
 
     mem.record_market_tick(
-        mint=MINT, observed_at=T0 + timedelta(seconds=600), volume_m5_usd=20_000, liquidity_usd=4_000
+        mint=MINT, observed_at=T0 + timedelta(seconds=600), volume_m5_usd=20_000, liquidity_usd=4_000, pair_address="PairA", dex_id="pumpswap"
     )
     st2 = evaluate_quality_state(mem, mint=MINT, t0=T0, as_of=T0 + timedelta(seconds=600), previous_state=WATCH)
     assert st2["state"] == FAILED

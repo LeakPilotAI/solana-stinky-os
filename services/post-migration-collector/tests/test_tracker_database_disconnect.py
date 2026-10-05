@@ -53,7 +53,8 @@ async def test_non_database_failure_still_fails_track_closed():
 
     await _tracker(store).run()
 
-    store.complete_track.assert_awaited_once_with(
+    store.fail_track_for_exception.assert_awaited_once_with(
         "DisconnectMint111111111111111111111111111111",
-        status=TrackStatus.FAILED,
+        error_type="ValueError",
+        error_message="bad evidence",
     )
