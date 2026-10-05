@@ -30,6 +30,7 @@ ENTITY_RELEVANT_EVENT_TYPES = frozenset({
 })
 ENTITY_STREAM_READ_COUNT = 500
 ENTITY_EVENT_HANDLE_TIMEOUT_SEC = 30.0
+ENTITY_STARTUP_STEP_TIMEOUT_SEC = 15.0
 
 
 class EntityService:
@@ -50,12 +51,20 @@ class EntityService:
         self._batch_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
-        await self._store.ensure_schema()
-        await self._launch_history.ensure_schema()
-        await self._launch_history.ensure_reputation_projection_schema()
-        await self._market_outcomes.ensure_schema()
-        await self._behavior.ensure_schema()
-        await self._relationships.ensure_schema()
+        startup_steps = (
+            ("entity_store_schema", self._store.ensure_schema),
+            ("launch_history_schema", self._launch_history.ensure_schema),
+            ("reputation_projection_schema", self._launch_history.ensure_reputation_projection_schema),
+            ("market_outcomes_schema", self._market_outcomes.ensure_schema),
+            ("behavior_schema", self._behavior.ensure_schema),
+            ("relationships_schema", self._relationships.ensure_schema),
+        )
+        for step_name, step in startup_steps:
+            try:
+                await asyncio.wait_for(step(), timeout=ENTITY_STARTUP_STEP_TIMEOUT_SEC)
+            except asyncio.TimeoutError:
+                logger.error("entity.startup_step_timeout", step=step_name, timeout_sec=ENTITY_STARTUP_STEP_TIMEOUT_SEC)
+                raise
         self._redis = redis.from_url(
             settings.redis_url,
             decode_responses=True,
