@@ -572,7 +572,27 @@ def main() -> int:
         elif name == "paper-runtime":
             code = run_supervised([py, "-m", "stinky_api.paper_runtime_worker"])
         elif name == "maintain":
-            next_job = 0.0
+            # Slow six-hour maintenance must never starve the one-minute prospective
+            # capture cadence. Keep it isolated in a daemon thread; research capture
+            # remains PAPER/evidence-only in this supervisor's main loop.
+            def slow_maintenance_loop() -> None:
+                while True:
+                    try:
+                        run_job_with_retry([py, "-m", "post_migration.cli", "learn-success"])
+                        run_job_with_retry([py, "-m", "post_migration.cli", "recompute-performance"])
+                    except Exception as exc:
+                        msg = "[%s] slow maintenance error %s\n" % (utc_stamp(), str(exc)[:200])
+                        sys.stdout.write(msg)
+                        sys.stdout.flush()
+                        append_log(msg)
+                    time.sleep(21600)
+
+            slow_thread = threading.Thread(
+                target=slow_maintenance_loop,
+                name="genesis-slow-maintenance",
+                daemon=True,
+            )
+            slow_thread.start()
             while True:
                 try:
                     watchdog_tick()
@@ -582,7 +602,6 @@ def main() -> int:
                     sys.stdout.write(msg)
                     sys.stdout.flush()
                     append_log(msg)
-                now = time.time()
                 # Prospective intelligence research capture. PAPER/evidence only:
                 # score eligible T+60 tracks, then classify only tracks that are
                 # still incomplete. The fixed boundary prevents historical backfill.
@@ -595,10 +614,6 @@ def main() -> int:
                     [py, str(root / "scripts" / "run_intelligence_paper_decisions.py"),
                      "--boundary", research_boundary, "--limit", "500"], attempts=1
                 )
-                if now >= next_job:
-                    run_job_with_retry([py, "-m", "post_migration.cli", "learn-success"])
-                    run_job_with_retry([py, "-m", "post_migration.cli", "recompute-performance"])
-                    next_job = time.time() + 21600
                 time.sleep(60)
     finally:
         append_log("[%s] exit LASTEXITCODE=%s" % (utc_stamp(), code))
