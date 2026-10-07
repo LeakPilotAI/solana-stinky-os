@@ -1058,6 +1058,46 @@ async def _trending_m5(
 
 
 
+@app.get("/v1/paper/status")
+async def paper_status(session: AsyncSession = Depends(get_session)) -> dict:
+    """Read-only paper observability over the API DB pool; never shells through Docker."""
+    from sqlalchemy import text
+    authority = {"live_execution": False, "trading_authority": False, "rpc_contacted": False,
+                 "transaction_signed": False, "order_submitted": False, "wallet_mutated": False}
+    try:
+        row = (await session.execute(text("""
+            SELECT
+              (SELECT count(*)::int FROM paper_prospective_candidate) AS candidates,
+              (SELECT count(*)::int FROM paper_prospective_candidate WHERE canonical_outcome='RUNNER') AS runners,
+              (SELECT count(*)::int FROM paper_prospective_candidate WHERE canonical_outcome='HELD') AS held,
+              (SELECT count(*)::int FROM paper_prospective_candidate WHERE canonical_outcome='FADE') AS fades,
+              (SELECT count(*)::int FROM paper_runtime_record WHERE shadow_action='WOULD_WATCH') AS would_watch,
+              (SELECT count(*)::int FROM paper_runtime_record WHERE shadow_action='WOULD_SKIP') AS would_skip,
+              (SELECT count(*)::int FROM paper_runtime_record WHERE shadow_action='WOULD_ENTER') AS would_enter,
+              (SELECT count(*)::int FROM paper_runtime_record WHERE paper_status='SIMULATED_OPEN') AS paper_open,
+              (SELECT count(*)::int FROM paper_runtime_record WHERE paper_status='SIMULATED_CLOSED') AS paper_closed,
+              (SELECT count(*)::int FROM paper_runtime_intake WHERE processed_at IS NULL) AS intake_unprocessed,
+              (SELECT count(*)::int FROM paper_runtime_intake WHERE processed_at IS NOT NULL) AS intake_processed,
+              (SELECT producer_version FROM paper_intake_producer_state WHERE singleton=TRUE LIMIT 1) AS producer_version,
+              (SELECT prospective_started_at FROM paper_intake_producer_state WHERE singleton=TRUE LIMIT 1) AS prospective_started_at
+        """))).mappings().one()
+        candidates=int(row["candidates"] or 0); closed=int(row["runners"] or 0)+int(row["held"] or 0)+int(row["fades"] or 0)
+        return {"status":"OBSERVED","paper_only":True,"live_trading":"LOCKED",
+            "producer":"UNKNOWN","paper_runtime":"UNKNOWN","producer_version":row["producer_version"],
+            "prospective_started_at":row["prospective_started_at"],"candidates":candidates,
+            "outcomes":{"RUNNER":row["runners"],"HELD":row["held"],"FADE":row["fades"],"UNKNOWN":max(0,candidates-closed),"closed":closed},
+            "decisions":{"WOULD_WATCH":row["would_watch"],"WOULD_SKIP":row["would_skip"],"WOULD_ENTER":row["would_enter"],"UNKNOWN":0},
+            "paper":{"SIMULATED_OPEN":row["paper_open"],"SIMULATED_CLOSED":row["paper_closed"],"UNKNOWN":0},
+            "intake":{"processed":row["intake_processed"],"unprocessed":row["intake_unprocessed"]},
+            "policy":{"status":"NOT_SET","version":None,"horizon":None,"notional_usd":None},
+            "prospective_evidence":{"status":"ACCUMULATING" if candidates else "AWAITING_CANDIDATES","closed_outcomes":closed,
+              "pending_outcomes":max(0,candidates-closed),"thresholds_invented":False},
+            "authority":authority}
+    except Exception as exc:
+        logger.warning("paper_status.unavailable", error=f"{type(exc).__name__}: {exc}"[:240])
+        return {"status":"UNKNOWN","paper_only":True,"live_trading":"LOCKED","error":"paper status unavailable","authority":authority}
+
+
 @app.get("/v1/command-center")
 async def command_center() -> dict:
     """Home feed. Coalesced. Sections must not cancel in-flight SQL (leaks pool)."""
@@ -1096,24 +1136,26 @@ async def command_center() -> dict:
             pass
 
     async def _counts():
-        async with SessionLocal() as session:
-            await _prep(session)
-            out: dict = {}
-            for key, sql in (
-                ("migrations", "SELECT COUNT(*)::int FROM events WHERE event_type='token.migrated'"),
-                ("tracks", "SELECT COUNT(*)::int FROM migration_tracks"),
-                ("launches", "SELECT COUNT(*)::int FROM events WHERE event_type='token.launch'"),
-                ("entities", "SELECT COUNT(*)::int FROM entities"),
-                ("wallets", "SELECT COUNT(*)::int FROM wallet_performance"),
-                ("buyers", "SELECT COUNT(*)::int FROM migration_buyers"),
-                ("alerts", "SELECT COUNT(*)::int FROM events WHERE event_type='alert.candidate'"),
-            ):
-                try:
+        # A timed-out PostgreSQL statement aborts its transaction. Isolate each
+        # count so one expensive source cannot poison every later dashboard count.
+        out: dict = {}
+        for key, sql in (
+            ("migrations", "SELECT COUNT(*)::int FROM events WHERE event_type='token.migrated'"),
+            ("tracks", "SELECT COUNT(*)::int FROM migration_tracks"),
+            ("launches", "SELECT COUNT(*)::int FROM events WHERE event_type='token.launch'"),
+            ("entities", "SELECT COUNT(*)::int FROM entities"),
+            ("wallets", "SELECT COUNT(*)::int FROM wallet_performance"),
+            ("buyers", "SELECT COUNT(*)::int FROM migration_buyers"),
+            ("alerts", "SELECT COUNT(*)::int FROM events WHERE event_type='alert.candidate'"),
+        ):
+            try:
+                async with SessionLocal() as session:
+                    await _prep(session)
                     out[key] = (await session.execute(text(sql))).scalar() or 0
-                except Exception as exc:
-                    out[key] = None
-                    section_failures[f"counts.{key}"] = f"{type(exc).__name__}: {exc}"[:240]
-            return out
+            except Exception as exc:
+                out[key] = None
+                section_failures[f"counts.{key}"] = f"{type(exc).__name__}: {exc}"[:240]
+        return out
 
     async def _runners():
         """Opportunity runners from fee-gated alert.candidate only (no live HTTP)."""

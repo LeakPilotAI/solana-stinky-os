@@ -17,7 +17,6 @@ from stinky_api.db import get_session
 from stinky_api.entity_readiness_transition_audit import (
     AUTHORITY,
     describe_entity_readiness_transition,
-    ensure_entity_readiness_audit_table,
 )
 
 router = APIRouter(prefix="/v1/entity-graph", tags=["entity-graph"])
@@ -106,7 +105,7 @@ async def command_center_readiness_summary(
     if as_of is not None and cutoff is None:
         return {"status": "UNKNOWN", "items": [], "blockers": ["INVALID_AS_OF"], "evidence_only": True}
     try:
-        await ensure_entity_readiness_audit_table(session)
+        # Read surfaces never run DDL. Startup/schema gates own table and index creation.
         clause = "WHERE ers.observed_at <= :as_of AND ers.ingested_at <= :as_of" if cutoff is not None else ""
         params: dict[str, Any] = {"row_limit": max(50, min(1000, int(limit) * 100))}
         if cutoff is not None:
