@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse,asyncio,json,os
 from collections import Counter,defaultdict
 from datetime import datetime,timezone
+from statistics import median
 import asyncpg
 EVAL_VERSION="genesis-expectancy-v1"
 POLICY_VERSION="genesis-evidence-paper-v3"
@@ -40,12 +41,20 @@ def summarize(rows,boundary):
         by[r["decision"]][label]+=1
         peak=o.get("peak_multiple")
         if isinstance(peak,(int,float)): peaks[r["decision"]].append(float(peak))
+    def peak_summary(values):
+        ordered=sorted(values)
+        def quantile(p):
+            if len(ordered)==1:return ordered[0]
+            pos=(len(ordered)-1)*p; lo=int(pos); hi=min(lo+1,len(ordered)-1); frac=pos-lo
+            return ordered[lo]+(ordered[hi]-ordered[lo])*frac
+        return {"n":len(ordered),"mean":sum(ordered)/len(ordered),"median":median(ordered),
+                "p75":quantile(.75),"p90":quantile(.90),"max":ordered[-1]}
     return {"evaluation_version":EVAL_VERSION,"policy_version":POLICY_VERSION,"frozen_threshold":FROZEN_THRESHOLD,
       "prospective_boundary":boundary.isoformat(),"status":"EVALUATE" if adequate else "COLLECTION_MODE",
       "minimums":{"matured_total":MIN_MATURED_TOTAL,"per_decision":MIN_MATURED_PER_DECISION},
       "rows_total":len(rows),"matured":len(matured),"pending":pending,
       "matured_by_decision":dict(counts),"outcomes_by_decision":{k:dict(v) for k,v in by.items()},
-      "peak_multiple_by_decision":{k:{"n":len(v),"mean":sum(v)/len(v)} for k,v in peaks.items() if v},
+      "peak_multiple_by_decision":{k:peak_summary(v) for k,v in peaks.items() if v},
       "threshold_retuning_permitted":False,"live_trading_authority":False,"generated_at":datetime.now(timezone.utc).isoformat()}
 async def run(boundary):
     c=await asyncpg.connect(dsn())
