@@ -32,6 +32,62 @@ def test_owned_supervisor_requires_matching_fresh_identity(monkeypatch, tmp_path
     assert not starter._owned_supervisor(123, "paper-runtime", wrong_service, now=now)
 
 
+
+def test_windows_supervisor_identity_accepts_service_outside_worker_tuple(monkeypatch):
+    class Result:
+        returncode = 0
+        stdout = (
+            '"C:\\Python\\python.exe" '
+            '"D:\\Work\\Project-Genesis\\scripts\\run_genesis_service.py" '
+            '--name "collector"'
+        )
+        stderr = ""
+
+    monkeypatch.setattr(starter.os, "name", "nt")
+    monkeypatch.setattr(
+        starter.subprocess,
+        "run",
+        lambda *args, **kwargs: Result(),
+    )
+
+    assert "collector" not in starter.WORKERS
+    assert starter._windows_supervisor_identity(
+        123,
+        "collector",
+    )
+
+
+def test_windows_supervisor_identity_rejects_wrong_service_command(monkeypatch):
+    class Result:
+        returncode = 0
+        stdout = (
+            '"C:\\Python\\python.exe" '
+            '"D:\\Work\\Project-Genesis\\scripts\\run_genesis_service.py" '
+            '--name "paper-runtime"'
+        )
+        stderr = ""
+
+    monkeypatch.setattr(starter.os, "name", "nt")
+    monkeypatch.setattr(
+        starter.subprocess,
+        "run",
+        lambda *args, **kwargs: Result(),
+    )
+
+    assert not starter._windows_supervisor_identity(
+        123,
+        "collector",
+    )
+
+
+def test_windows_supervisor_identity_rejects_empty_service(monkeypatch):
+    monkeypatch.setattr(starter.os, "name", "nt")
+
+    assert not starter._windows_supervisor_identity(
+        123,
+        "",
+    )
+
 def test_owned_supervisor_rejects_failed_or_stale_state(monkeypatch, tmp_path):
     monkeypatch.setattr(starter, "_alive", lambda pid: True)
     now = datetime(2026, 9, 30, 7, 10, tzinfo=timezone.utc)

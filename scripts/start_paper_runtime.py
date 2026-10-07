@@ -134,8 +134,8 @@ def _legacy_supervisor_instance_identity(pid: int, name: str, logs: Path) -> boo
 
 
 def _windows_supervisor_identity(pid: int, name: str) -> bool:
-    """Prove a live Windows PID is this exact Genesis paper supervisor."""
-    if os.name != "nt" or pid <= 0 or name not in WORKERS:
+    """Prove a live Windows PID is this exact Genesis service supervisor."""
+    if os.name != "nt" or pid <= 0 or not name:
         return False
     escaped = str(int(pid))
     ps = (
