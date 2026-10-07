@@ -305,8 +305,8 @@ class Store:
                         meta = COALESCE(meta, '{}'::jsonb)
                                || jsonb_build_object(
                                     'tracking_failure_reason', 'tracker_exception',
-                                    'tracking_exception_type', :error_type,
-                                    'tracking_exception_message', :error_message,
+                                    'tracking_exception_type', CAST(:error_type AS text),
+                                    'tracking_exception_message', CAST(:error_message AS text),
                                     'tracking_failed_at', now()
                                   )
                     WHERE mint = :mint
@@ -752,6 +752,10 @@ class Store:
                     {"wallet": wallet},
                 )
             ).mappings().all()
+            # Read-only query: explicitly end the implicit transaction after
+            # materializing rows so performance processing cannot retain an
+            # idle-in-transaction database connection.
+            await session.rollback()
         out: list[ObservedTrade] = []
         for r in rows:
             out.append(
