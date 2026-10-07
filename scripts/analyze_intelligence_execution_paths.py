@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Read-only execution-path diagnostics for prospective execution-v1.
 
 Descriptive post-outcome research only. Path extrema are hindsight diagnostics,
@@ -355,4 +355,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
