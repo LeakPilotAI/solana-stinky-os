@@ -19,3 +19,12 @@ def test_shadow_persists_provenance():
     m=M.read_text(encoding="utf-8")
     for x in ("calibration_version","calibration_sha256","migration_at","cutoff_at","scored_at","market_observed_at","feature_payload","score_payload"):
         assert x in m
+
+def test_shadow_db_connect_is_bounded_and_single_event_loop():
+    s=P.read_text(encoding="utf-8")
+    assert "async def connect_db(attempts:int=3)" in s
+    assert "timeout=10,command_timeout=30" in s
+    assert "except (OSError,ConnectionError,asyncio.TimeoutError)" in s
+    assert "items,inserted=asyncio.run(cycle())" in s
+    assert "asyncio.run(build_scores" not in s
+    assert "asyncio.run(persist" not in s

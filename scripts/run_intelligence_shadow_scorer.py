@@ -30,6 +30,17 @@ AND NOT EXISTS (SELECT 1 FROM intelligence_shadow_scores iss
  WHERE iss.track_id=mt.track_id AND iss.score_version=$3 AND iss.horizon_sec=$1)
 ORDER BY mt.migration_at,mt.track_id LIMIT $4"""
 def dsn(): return os.getenv("STINKY_DATABASE_URL","postgresql://stinky:stinky@localhost:5433/stinky").replace("postgresql+asyncpg://","postgresql://",1)
+async def connect_db(attempts:int=3):
+    delay=.5
+    last=None
+    for attempt in range(1,attempts+1):
+        try:
+            return await asyncpg.connect(dsn(),timeout=10,command_timeout=30)
+        except (OSError,ConnectionError,asyncio.TimeoutError) as exc:
+            last=exc
+            if attempt==attempts: raise
+            await asyncio.sleep(delay); delay=min(delay*2,2)
+    raise last
 def score_module():
     spec=importlib.util.spec_from_file_location("ges",SCORE_PATH)
     mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); return mod
@@ -38,7 +49,7 @@ def features(row):
     return {k:row.get(k) for k in ("price_usd","liquidity_usd","volume_m5_usd","market_cap_usd","early_buyer_count","meaningful_buyer_count","buyer_sol_spent")}
 async def build_scores(cal_path:Path,limit:int,boundary:datetime):
     raw=cal_path.read_bytes(); cal=json.loads(raw); scorer=score_module(); clock=datetime.now(timezone.utc)
-    conn=await asyncpg.connect(dsn())
+    conn=await connect_db()
     try:
         rows=await conn.fetch(QUERY,HORIZON_SEC,clock,scorer.SCORE_VERSION,limit,boundary); out=[]
         for rec in rows:
@@ -50,7 +61,7 @@ async def build_scores(cal_path:Path,limit:int,boundary:datetime):
         return out
     finally: await conn.close()
 async def persist(items):
-    conn=await asyncpg.connect(dsn()); inserted=0
+    conn=await connect_db(); inserted=0
     try:
         for row,payload,score,score_version,cal_version,cal_hash,clock in items:
             args=(row["track_id"],row["mint"],SHADOW_VERSION,score_version,cal_version,cal_hash,HORIZON_SEC,row["migration_at"],row["cutoff_at"],clock,row.get("market_observed_at"),json.dumps(payload,default=str),json.dumps(score,default=str))
@@ -61,6 +72,9 @@ async def persist(items):
 
 def main():
     ap=argparse.ArgumentParser(); ap.add_argument("--calibration",type=Path,default=DEFAULT_CAL); ap.add_argument("--limit",type=int,default=500); ap.add_argument("--boundary",required=True); a=ap.parse_args()
-    items=asyncio.run(build_scores(a.calibration,a.limit,datetime.fromisoformat(a.boundary))); inserted=asyncio.run(persist(items))
+    async def cycle():
+        items=await build_scores(a.calibration,a.limit,datetime.fromisoformat(a.boundary))
+        return items,await persist(items)
+    items,inserted=asyncio.run(cycle())
     print(json.dumps({"eligible":len(items),"inserted":inserted,"shadow_version":SHADOW_VERSION},sort_keys=True))
 if __name__=="__main__": main()
