@@ -614,6 +614,13 @@ def main() -> int:
                     [py, str(root / "scripts" / "run_intelligence_paper_decisions.py"),
                      "--boundary", research_boundary, "--limit", "500"], attempts=1
                 )
+                # Prospective paper execution starts at a later, frozen boundary so
+                # the already-observed V3 evaluation cohort cannot tune its policy.
+                execution_boundary = "2026-10-07T07:09:02.404079+00:00"
+                run_job_with_retry(
+                    [py, str(root / "scripts" / "run_intelligence_paper_execution_plans.py"),
+                     "--boundary", execution_boundary, "--limit", "500"], attempts=1
+                )
                 time.sleep(60)
     finally:
         append_log("[%s] exit LASTEXITCODE=%s" % (utc_stamp(), code))

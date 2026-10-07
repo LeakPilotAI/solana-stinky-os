@@ -39,3 +39,11 @@ def test_capture_contract_stays_paper_only_and_one_minute():
     assert "time.sleep(60)" in maintain
     assert "run_intelligence_shadow_scorer.py" in maintain
     assert "run_intelligence_paper_decisions.py" in maintain
+
+def test_prospective_execution_has_later_frozen_boundary_and_order():
+    s=source()
+    paper=s.index("run_intelligence_paper_decisions.py")
+    execution=s.index("run_intelligence_paper_execution_plans.py")
+    assert paper < execution
+    assert "2026-10-07T07:09:02.404079+00:00" in s
+    assert "already-observed V3 evaluation cohort cannot tune" in s
