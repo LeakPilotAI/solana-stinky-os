@@ -593,6 +593,35 @@ def main() -> int:
                 daemon=True,
             )
             slow_thread.start()
+
+            # V2 has a frozen 30-second pre-entry admission deadline. Keep its
+            # prospective PAPER/evidence capture independent of the slower
+            # one-minute research loop so scheduler phase cannot systematically
+            # miss otherwise eligible decisions.
+            def intelligence_execution_v2_loop() -> None:
+                while True:
+                    try:
+                        run_job_with_retry(
+                            [py, str(root / "scripts" / "run_intelligence_execution_v2.py")],
+                            attempts=1,
+                        )
+                    except Exception as exc:
+                        msg = "[%s] intelligence V2 capture error %s\n" % (
+                            utc_stamp(),
+                            str(exc)[:200],
+                        )
+                        sys.stdout.write(msg)
+                        sys.stdout.flush()
+                        append_log(msg)
+                    time.sleep(10)
+
+            v2_thread = threading.Thread(
+                target=intelligence_execution_v2_loop,
+                name="genesis-intelligence-execution-v2",
+                daemon=True,
+            )
+            v2_thread.start()
+
             while True:
                 try:
                     watchdog_tick()
@@ -621,10 +650,8 @@ def main() -> int:
                     [py, str(root / "scripts" / "run_intelligence_paper_execution_plans.py"),
                      "--boundary", execution_boundary, "--limit", "500"], attempts=1
                 )
-                # Independent frozen V2 registry; never reuses or advances V1's boundary.
-                run_job_with_retry(
-                    [py, str(root / "scripts" / "run_intelligence_execution_v2.py")], attempts=1
-                )
+                # V2 prospective capture runs independently at a faster cadence above.
+                # Keep this research/V1 loop at its existing one-minute cadence.
                 time.sleep(60)
     finally:
         append_log("[%s] exit LASTEXITCODE=%s" % (utc_stamp(), code))

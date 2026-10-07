@@ -159,3 +159,28 @@ def test_adequacy_requires_predeclared_session_and_complete_path_gates(m,source)
     assert not m.summarize(rows)["evaluation_ready"]
     rows[0]["result"]["net_multiple"]=1000
     with pytest.raises(ValueError,match="integrity"):m.summarize(rows)
+
+
+def test_service_gives_v2_independent_sub_deadline_cadence():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    service = (
+        root / "scripts" / "run_genesis_service.py"
+    ).read_text(encoding="utf-8")
+
+    assert "def intelligence_execution_v2_loop()" in service
+    assert 'name="genesis-intelligence-execution-v2"' in service
+    assert 'run_intelligence_execution_v2.py' in service
+
+    loop_start = service.index("def intelligence_execution_v2_loop()")
+    loop_end = service.index("v2_thread = threading.Thread", loop_start)
+    v2_loop = service[loop_start:loop_end]
+
+    assert "time.sleep(10)" in v2_loop
+    assert "time.sleep(60)" not in v2_loop
+
+    research_marker = (
+        "# V2 prospective capture runs independently at a faster cadence above."
+    )
+    assert research_marker in service
