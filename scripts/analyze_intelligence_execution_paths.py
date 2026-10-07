@@ -12,7 +12,7 @@ import asyncio
 import json
 import os
 from collections import Counter
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from statistics import median
 
 import asyncpg
@@ -107,6 +107,7 @@ def gap_stats(snaps):
 async def run():
     conn = await asyncpg.connect(dsn())
     results = []
+    as_of = datetime.now(timezone.utc)
 
     try:
         rows = await conn.fetch(ROWS, POLICY)
@@ -116,6 +117,15 @@ async def run():
                 seconds=ENTRY_LATENCY_SEC
             )
             exit_target = entry_target + timedelta(seconds=HOLD_SEC)
+
+            if as_of < exit_target:
+                results.append({
+                    "plan_id": row["plan_id"],
+                    "status": "PENDING",
+                    "window_complete": False,
+                    "reason": "observation_window_not_mature",
+                })
+                continue
 
             # Diagnostic window ends at the frozen V1 exit target.
             snaps = await conn.fetch(
@@ -133,9 +143,10 @@ async def run():
 
             base = {
                 "plan_id": row["plan_id"],
+                "window_complete": True,
                 "snapshot_count": len(snaps),
                 "valid_price_snapshots": len(valid),
-                                "coverage": gap_stats(snaps),
+                "coverage": gap_stats(snaps),
                 "coverage_quality": (
                     "NONE" if len(snaps) == 0
                     else "SPARSE" if len(snaps) < 10
@@ -193,12 +204,6 @@ async def run():
                 })
                 continue
 
-            peak = max(post_entry, key=lambda s: float(s["price_usd"]))
-            trough = min(post_entry, key=lambda s: float(s["price_usd"]))
-
-            peak_multiple = float(peak["price_usd"]) / entry_price
-            trough_multiple = float(trough["price_usd"]) / entry_price
-
             exitrow = first_valid_after(valid, exit_target)
 
             # Because query window ends at exit_target, an observation exactly
@@ -212,13 +217,31 @@ async def run():
                     FROM market_snapshots
                     WHERE mint=$1
                       AND captured_at >= $2
+                      AND captured_at <= $3
                       AND price_usd > 0
                     ORDER BY captured_at
                     LIMIT 1
                     """,
                     row["mint"],
                     exit_target,
+                    as_of,
                 )
+
+            if exitrow is None:
+                results.append({
+                    **base,
+                    "status": "PENDING",
+                    "window_complete": False,
+                    "reason": "exit_observation_missing",
+                    "fixed_exit_status": "PENDING_EXIT",
+                })
+                continue
+
+            peak = max(post_entry, key=lambda s: float(s["price_usd"]))
+            trough = min(post_entry, key=lambda s: float(s["price_usd"]))
+
+            peak_multiple = float(peak["price_usd"]) / entry_price
+            trough_multiple = float(trough["price_usd"]) / entry_price
 
             below_entry = [
                 s for s in post_entry[1:]
@@ -261,21 +284,18 @@ async def run():
                 ),
             }
 
-            if exitrow is None:
-                result["fixed_exit_status"] = "PENDING_EXIT"
-            else:
-                gross = float(exitrow["price_usd"]) / entry_price
-                result.update({
-                    "fixed_exit_status": "OBSERVED",
-                    "exit_at": exitrow["captured_at"].isoformat(),
-                    "gross_multiple": gross,
-                    "net_multiple": gross * (1.0 - COST_PCT),
-                })
+            gross = float(exitrow["price_usd"]) / entry_price
+            result.update({
+                "fixed_exit_status": "OBSERVED",
+                "exit_at": exitrow["captured_at"].isoformat(),
+                "gross_multiple": gross,
+                "net_multiple": gross * (1.0 - COST_PCT),
+            })
 
             results.append(result)
 
         statuses = Counter(r["status"] for r in results)
-        paths = [r for r in results if r["status"] == "PATH_OBSERVED"]
+        paths = [r for r in results if r["status"] == "PATH_OBSERVED" and r["window_complete"]]
         exited = [
             r for r in paths
             if r.get("fixed_exit_status") == "OBSERVED"
@@ -284,6 +304,7 @@ async def run():
         return {
             "version": "genesis-execution-path-diagnostic-v1",
             "source_execution_policy": POLICY,
+            "as_of": as_of.isoformat(),
             "assumptions": {
                 "entry_latency_sec": ENTRY_LATENCY_SEC,
                 "hold_sec": HOLD_SEC,
