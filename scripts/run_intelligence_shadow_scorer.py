@@ -47,6 +47,21 @@ def score_module():
 
 def features(row):
     return {k:row.get(k) for k in ("price_usd","liquidity_usd","volume_m5_usd","market_cap_usd","early_buyer_count","meaningful_buyer_count","buyer_sol_spent")}
+async def close_db(conn):
+    """Best-effort bounded cleanup for Windows-host -> Docker PostgreSQL."""
+    if conn is None:
+        return
+    try:
+        await asyncio.wait_for(conn.close(timeout=2), timeout=3)
+    except (OSError, ConnectionError, asyncio.TimeoutError):
+        # The primary DB operation has already failed or the transport is gone.
+        # Never let graceful asyncpg cancellation mask that failure or wedge
+        # the prospective maintenance cadence.
+        try:
+            conn.terminate()
+        except Exception:
+            pass
+
 async def build_scores(cal_path:Path,limit:int,boundary:datetime):
     raw=cal_path.read_bytes(); cal=json.loads(raw); scorer=score_module(); clock=datetime.now(timezone.utc)
     conn=await connect_db()
@@ -59,7 +74,7 @@ async def build_scores(cal_path:Path,limit:int,boundary:datetime):
             if score["trade_signal"] or score["predictive_authority"] or score["authority"]!="evidence_only": raise RuntimeError("shadow authority invariant violated")
             out.append((row,payload,score,scorer.SCORE_VERSION,cal.get("profile_version","UNKNOWN"),hashlib.sha256(raw).hexdigest(),clock))
         return out
-    finally: await conn.close()
+    finally: await close_db(conn)
 async def persist(items):
     conn=await connect_db(); inserted=0
     try:
@@ -68,7 +83,7 @@ async def persist(items):
             result=await conn.execute("INSERT INTO intelligence_shadow_scores (track_id,mint,shadow_version,score_version,calibration_version,calibration_sha256,horizon_sec,migration_at,cutoff_at,scored_at,market_observed_at,feature_payload,score_payload,authority,trade_signal,predictive_authority) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13::jsonb,'evidence_only',false,false) ON CONFLICT(track_id,score_version,horizon_sec) DO NOTHING",*args)
             inserted+=int(result.endswith("1"))
         return inserted
-    finally: await conn.close()
+    finally: await close_db(conn)
 
 def main():
     ap=argparse.ArgumentParser(); ap.add_argument("--calibration",type=Path,default=DEFAULT_CAL); ap.add_argument("--limit",type=int,default=500); ap.add_argument("--boundary",required=True); a=ap.parse_args()

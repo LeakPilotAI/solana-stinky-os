@@ -28,3 +28,12 @@ def test_shadow_db_connect_is_bounded_and_single_event_loop():
     assert "items,inserted=asyncio.run(cycle())" in s
     assert "asyncio.run(build_scores" not in s
     assert "asyncio.run(persist" not in s
+
+def test_shadow_db_cleanup_is_bounded_and_transport_safe():
+    s=P.read_text(encoding="utf-8")
+    assert "async def close_db(conn)" in s
+    assert "asyncio.wait_for(conn.close(timeout=2), timeout=3)" in s
+    assert "except (OSError, ConnectionError, asyncio.TimeoutError)" in s
+    assert "conn.terminate()" in s
+    assert s.count("finally: await close_db(conn)") == 2
+    assert "finally: await conn.close()" not in s

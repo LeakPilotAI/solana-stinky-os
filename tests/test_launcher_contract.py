@@ -410,14 +410,23 @@ def test_windows_runtime_installs_connection_reset_handlers():
 def test_command_center_surfaces_prospective_paper_evidence_without_inventing_policy():
     root = Path(__file__).resolve().parents[1]
     route = (root / "apps" / "web" / "src" / "app" / "api" / "paper-status" / "route.ts").read_text(encoding="utf-8")
+    api = (root / "services" / "api" / "src" / "stinky_api" / "main.py").read_text(encoding="utf-8")
     panel = (root / "apps" / "web" / "src" / "components" / "command-center" / "PaperCalibrationPanel.tsx").read_text(encoding="utf-8")
-    assert "prospective_evidence" in route
-    assert "represented_outcome_classes" in route
-    assert "REQUIRES_EXPLICIT_SUFFICIENCY_CRITERIA" in route
-    assert "thresholds_invented: false" in route
+
+    assert "/v1/paper/status" in route
+    assert "AbortSignal.timeout(6_000)" in route
+    assert 'status: "UNKNOWN"' in route
+    assert 'live_trading: "LOCKED"' in route
+
+    assert '@app.get("/v1/paper/status")' in api
+    assert '"prospective_evidence"' in api
+    assert '"thresholds_invented":False' in api
+    assert '"status":"NOT_SET"' in api
+    assert '"paper_only":True' in api
+    assert '"live_trading":"LOCKED"' in api
+
     assert "Prospective evidence" in panel
     assert "Policy remains intentionally unset until explicit evidence-sufficiency criteria are supplied." in panel
-
 
 def test_discord_notifications_are_disabled_during_development():
     launcher = read("start_genesis.py")
@@ -433,22 +442,21 @@ def test_discord_notifications_are_disabled_during_development():
     assert '"discord"' not in names_block
 
 
-def test_command_center_surfaces_explicit_paper_evidence_deficits_without_policy_activation():
+def test_command_center_paper_status_is_api_owned_and_fail_closed():
     root = Path(__file__).resolve().parents[1]
     route = (root / "apps/web/src/app/api/paper-status/route.ts").read_text(encoding="utf-8")
-    panel = (root / "apps/web/src/components/command-center/PaperCalibrationPanel.tsx").read_text(encoding="utf-8")
-    for name in (
-        "STINKY_PAPER_READINESS_MIN_CLOSED_OUTCOMES",
-        "STINKY_PAPER_READINESS_MIN_MARKET_CAP_SAMPLES",
-        "STINKY_PAPER_READINESS_MIN_OUTCOME_CLASSES",
-    ):
-        assert name in route
-    assert '"CRITERIA_NOT_SET"' in route
-    assert '"CRITERIA_CONFIGURED"' in route
-    assert "closed_outcomes_needed" in route
-    assert "outcome_classes_needed" in route
-    assert "market_cap_samples_needed" in route
-    assert "policy_provisioned: false" in route
-    assert "automatic_activation: false" in route
-    assert "Evidence deficits:" in panel
-    assert "no automatic policy activation" in panel
+    api = (root / "services/api/src/stinky_api/main.py").read_text(encoding="utf-8")
+
+    assert "/v1/paper/status" in route
+    assert 'cache: "no-store"' in route
+    assert "AbortSignal.timeout(6_000)" in route
+    assert 'status: "UNKNOWN"' in route
+    assert 'live_trading: "LOCKED"' in route
+
+    assert '@app.get("/v1/paper/status")' in api
+    assert '"paper_only":True' in api
+    assert '"live_trading":"LOCKED"' in api
+    assert '"status":"NOT_SET"' in api
+    assert '"thresholds_invented":False' in api
+    assert '"live_execution": False' in api
+    assert '"trading_authority": False' in api
