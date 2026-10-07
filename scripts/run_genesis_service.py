@@ -621,6 +621,10 @@ def main() -> int:
                     [py, str(root / "scripts" / "run_intelligence_paper_execution_plans.py"),
                      "--boundary", execution_boundary, "--limit", "500"], attempts=1
                 )
+                # Independent frozen V2 registry; never reuses or advances V1's boundary.
+                run_job_with_retry(
+                    [py, str(root / "scripts" / "run_intelligence_execution_v2.py")], attempts=1
+                )
                 time.sleep(60)
     finally:
         append_log("[%s] exit LASTEXITCODE=%s" % (utc_stamp(), code))
