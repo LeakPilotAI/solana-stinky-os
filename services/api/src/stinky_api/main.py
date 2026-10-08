@@ -18,6 +18,7 @@ from stinky_api.db import get_session
 from stinky_api import queries
 from stinky_api.command_center_readiness import router as command_center_readiness_router
 from stinky_api.intelligence_execution_v2 import router as intelligence_execution_v2_router
+from stinky_api.intelligence_execution_v2_details import router as intelligence_execution_v2_details_router
 from stinky_api.entity_graph import router as entity_graph_router
 from stinky_api.paper_cohort_routes import router as paper_cohort_router
 
@@ -75,6 +76,7 @@ app.add_middleware(
 
 app.include_router(command_center_readiness_router)
 app.include_router(intelligence_execution_v2_router)
+app.include_router(intelligence_execution_v2_details_router)
 app.include_router(entity_graph_router)
 app.include_router(paper_cohort_router)
 

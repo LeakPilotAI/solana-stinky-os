@@ -49,3 +49,29 @@ All five authority markers must remain explicitly false across plans/results;
 the six immutable guards must remain present. V2 remains paper-only, read-only,
 and insufficient evidence is never presented as profitability or live authority.
 No Atlas, container, volume, provider, or deployment operations are performed.
+
+## Bounded operator details
+
+`GET /v1/intelligence/execution-v2/details` is a separate read-only diagnostic
+surface. It retains the summary endpoint and frozen adequacy contract. Detail
+statistics cover the latest 500 plan IDs only, explicitly marking older rows
+excluded when the 501st row exists. They are not cohort adequacy statistics.
+Stored registry/hash/schedule/authority evidence is validated with the canonical
+worker before presentation. No worker run or evidence writes occur.
+
+The request uses a repeatable-read, read-only transaction, a 2-second SQL statement
+timeout and 5-second database-stage timeout. Source inspection covers at most
+20 recorded missing-price windows, each reading at most 101 rows and exposing
+at most 100 captures with truncation. Latest capture freshness uses indexed
+per-mint lookups for the selected plan mints; it is not global collector health.
+Each existing collector/maintenance log read is capped at 1 MB. Retained timestamp
+ranges and truncation remain explicit. A window outside the retained range has
+unavailable rate-limit correlation, never a manufactured zero. Correlations are
+service-wide matching lines, noncausal, and not mint-specific incident counts.
+
+Observation statistics use only bound PAPER_PRICED entry/exit clocks. Recording
+delay uses terminal rows; detection receipt remains unavailable. All distributions
+give sample/unavailable counts, median, nearest-rank p90 and maximum. Pending
+plans stay PENDING after maturity when no terminal result exists. No P&L or
+performance evaluation is added. Local heartbeats are explicitly unverified for
+live process identity here, and session ends/downtime remain unavailable.
