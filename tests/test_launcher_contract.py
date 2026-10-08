@@ -21,49 +21,22 @@ def read(rel: str) -> str:
 
 
 @pytest.mark.parametrize("gate_result", [0, 1, 2, OSError("synthetic launch failure")])
-def test_python_startup_requires_strict_schema_success_before_services(monkeypatch, tmp_path, gate_result):
-    spec = importlib.util.spec_from_file_location("launcher_schema_test", ROOT / "start_genesis.py")
-    launcher = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(launcher)
-    calls = []
-    monkeypatch.setattr(launcher, "ROOT", tmp_path)
-    monkeypatch.setattr(launcher, "LOG_DIR", tmp_path / "logs")
-    monkeypatch.setattr(sys, "argv", ["start_genesis.py", "--sync", "--skip-install"])
-    monkeypatch.setattr(launcher.os, "chdir", lambda *args: None)
-    for name in ("configure_stdio", "restore_search_path", "say", "step", "ok", "show_health"):
-        monkeypatch.setattr(launcher, name, lambda *args, **kwargs: None)
-    for name in ("find_docker", "find_npm", "which_exe"):
-        monkeypatch.setattr(launcher, name, lambda *args: None)
-    for name in ("stop_owned_instance", "sync_from_github", "ensure_dotenv", "ensure_venv", "ensure_web", "ensure_docker", "persistence_smoke"):
-        monkeypatch.setattr(launcher, name, lambda *args, _name=name, **kwargs: calls.append(_name))
-    monkeypatch.setattr(launcher, "log_line", lambda *args, **kwargs: calls.append(args))
-    monkeypatch.setattr(launcher, "fail", lambda *args, **kwargs: calls.append("startup_failed"))
-
-    def run(args, **kwargs):
-        assert args == [sys.executable, str(tmp_path / "scripts" / "strict_startup_schema_gate.py")]
-        assert kwargs["cwd"] == str(tmp_path)
-        calls.append("strict_gate")
-        if isinstance(gate_result, Exception):
-            raise gate_result
-        return subprocess.CompletedProcess(args, gate_result)
-
-    def start(*args, **kwargs):
+def test_python_startup_requires_read_only_schema_success_before_services(monkeypatch, tmp_path, gate_result):
+    from argparse import Namespace
+    from types import SimpleNamespace
+    from scripts.safe_genesis_start import recover
+    calls=[]
+    (tmp_path / ".env").write_text("fixture")
+    def gate():
+        calls.append("schema")
+        if gate_result != 0: raise RuntimeError("schema unavailable")
+    def start(name, **kwargs):
         calls.append("application_start")
-        raise RuntimeError("test stops before any real service starts")
-
-    monkeypatch.setattr(launcher.subprocess, "run", run)
-    monkeypatch.setattr(launcher, "start_detached", start)
-    assert launcher.main() == 1
-    assert calls.index("sync_from_github") < calls.index("strict_gate")
-    assert calls.index("ensure_docker") < calls.index("strict_gate")
-    if gate_result == 0:
-        assert calls.index("strict_gate") < calls.index("persistence_smoke") < calls.index("application_start")
-        assert ("schema", "ok") in calls
-    else:
-        assert "persistence_smoke" not in calls
-        assert "application_start" not in calls
-        assert ("schema", "ok") not in calls
-    assert "startup_failed" in calls
+        raise RuntimeError("fixture stops before any service")
+    launcher=SimpleNamespace(ROOT=tmp_path,LOG_DIR=tmp_path/"logs",ensure_docker=lambda:calls.append("dependencies"),apply_schema=gate,start_detached=start,fail=lambda *a,**k:None)
+    assert recover(launcher,Namespace(sync=False,restart=False)) == 1
+    assert calls[:2]==["dependencies","schema"]
+    assert ("application_start" in calls)==(gate_result==0)
 
 
 def test_start_cmd_uses_script_dir_not_cd():
@@ -93,15 +66,11 @@ def test_shortcut_installer_absolute_cmd_exe():
     assert "Stop Genesis.lnk" in t
 
 
-def test_start_has_duplicate_protection_before_stop():
-    t = read("start_genesis.py")
-    already = t.find("ALREADY RUNNING")
-    stop_fn = t.find("def stop_owned_instance")
-    assert already != -1
-    assert stop_fn != -1
-    assert "core_healthy" in t
-    assert "--keep" in t
-    assert "args.keep" in t
+def test_start_has_serialized_native_duplicate_protection():
+    t=read("scripts/safe_genesis_start.py")
+    assert "startup_lock" in t and "service_pid" in t
+    assert "Multiple supervisor chains" in t
+    assert "stop_owned_instance()" not in read("start_genesis.py")
 
 
 def test_start_writes_startup_log_and_redacts_secrets():
@@ -139,7 +108,7 @@ def test_start_health_uses_http_not_only_process():
 
 def test_browser_only_after_frontend_ready():
     t = read("start_genesis.py")
-    assert "frontend is actually ready" in t
+    assert "Final HTTP health unavailable" in read("scripts/safe_genesis_start.py")
     open_at = t.find("open_operator")
     wait_at = t.find("http://127.0.0.1:3000/operator")
     assert wait_at != -1 and open_at != -1
@@ -175,9 +144,9 @@ def test_compose_is_capped_and_not_atlas():
     assert "8001" not in y
     t = read("start_genesis.py")
     assert "project-genesis" in t
-    assert "reset_redis_transport" in t
-    assert "tcp_open" in t
-    assert "6380" in t
+    assert "reset_redis_transport" not in t
+    assert "validate_dependency" in read("scripts/safe_genesis_start.py")
+    assert "6380" in read("scripts/safe_genesis_start.py")
     assert "-p atlas" not in t
     w = read("scripts/run_genesis_service.py")
     assert "project-genesis" in w
@@ -203,27 +172,15 @@ def test_git_sync_is_opt_in():
     assert "if not do_sync or skip_sync" in t
 
 
-def test_default_start_stops_then_starts():
-    t = read("start_genesis.py")
-    assert "def stop_owned_instance" in t
-    stop_at = t.find("stop_owned_instance()")
-    start_at = t.find('start_detached("event-log"')
-    assert 0 <= stop_at < start_at
-    assert "taskkill" in t
-    assert "not Genesis-owned" in t
-    assert "is_launcher_process" in t
-    assert "start-stinky-os.cmd" in t
-    assert "never killed" in t
-    assert '"stinky-"' not in t[t.find("def genesis_owned") : t.find("def kill_pid")]
-    assert "8001" not in t[t.find("def stop_owned_instance") : t.find("def clean_broken_dists")]
-    assert "foreach ($port in 8002, 8010, 3000, 8001)" not in t
-    assert "utf-8-sig" in read("scripts/strict_startup_schema_gate.py")
-    assert "configure_stdio" in t
-    assert "clean_broken_dists" in t
-    assert "stop_genesis_containers" in t
-    assert "stinky-postgres" in t
-    assert "stinky-minio" in t
-    assert "docker stop" in t
+def test_default_start_preserves_dependencies_and_evidence():
+    t=read("start_genesis.py")
+    safe=read("scripts/safe_genesis_start.py")
+    assert "stop_owned_instance" not in t and "stop_genesis_containers" not in t
+    assert "reset_redis_transport" not in t and '"XTRIM"' not in t
+    assert "BEGIN READ ONLY" in safe
+    assert "recovery never applies migrations" in safe
+    assert "strict_startup_schema_gate.py" not in read("Start-Stinky-OS.cmd")
+    assert "start_paper_runtime.py" not in read("Start-Stinky-OS.cmd")
 
 
 def test_sql_migrations_have_no_bom():
@@ -235,7 +192,7 @@ def test_sql_migrations_have_no_bom():
 def test_start_does_not_sleep_then_exit():
     t = read("start_genesis.py").strip()
     assert not t.endswith("time.sleep(6)")
-    assert "return 0" in t and "return 1" in t
+    assert "return 0" in read("scripts/safe_genesis_start.py") and "return 1" in read("scripts/safe_genesis_start.py")
 
 
 def test_redact_line_contract():
@@ -266,7 +223,7 @@ def test_start_restores_explorer_path_and_resolves_tools():
     assert "winreg" in t
     assert "find_docker" in t
     assert "find_npm" in t
-    assert "NOT ON PATH" in t
+    assert "Dependency ownership unavailable" in read("scripts/safe_genesis_start.py")
     assert "Unblock-File" not in t
     assert "main.zip" not in t
 
@@ -431,8 +388,8 @@ def test_command_center_surfaces_prospective_paper_evidence_without_inventing_po
 def test_discord_notifications_are_disabled_during_development():
     launcher = read("start_genesis.py")
     assert 'procs["discord"] = start_detached("discord")' not in launcher
-    assert 'HEALTH["DISCORD"] = "DISABLED"' in launcher
-    assert "no outbound notifications" in launcher
+    assert "launcher.HEALTH['DISCORD']='DISABLED'" in read('scripts/safe_genesis_start.py')
+    assert "no outbound notifications" in read("scripts/safe_genesis_start.py")
     api = read("services/api/src/stinky_api/main.py")
     start = api.index('@app.get("/v1/system/runtime-supervisors")')
     end = api.index("def _probe_postgres", start)

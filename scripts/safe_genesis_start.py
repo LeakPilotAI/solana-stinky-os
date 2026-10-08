@@ -1,0 +1,166 @@
+"""Serialized application-only recovery. Never stops, deletes, trims or migrates."""
+from __future__ import annotations
+from contextlib import contextmanager
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import time
+import uuid
+
+SERVICES = ('event-log','api','sentinel','collector','entities','web','maintain','paper-intake-producer','paper-runtime')
+URLS = {'event-log':'http://127.0.0.1:8002/health','api':'http://127.0.0.1:8010/health','web':'http://127.0.0.1:3000/operator'}
+PORTS = {'event-log':8002,'api':8010,'web':3000}
+MODULES = {'collector':'post_migration.cli','sentinel':'sentinel.cli','entities':'entity_resolver.cli','api':'stinky_api.cli','event-log':'event_log.cli','web':'next','paper-intake-producer':'stinky_api.prospective_paper_policy_runtime','paper-runtime':'stinky_api.paper_runtime_worker'}
+DEPENDENCIES = {'stinky-postgres':('postgres','/var/lib/postgresql/data','5432/tcp','5433'), 'stinky-redis':('redis','/data','6379/tcp','6380'), 'stinky-minio':('minio','/data','9000/tcp','9010')}
+
+@contextmanager
+def startup_lock(path):
+    path.parent.mkdir(parents=True,exist_ok=True)
+    with path.open('a+b') as stream:
+        stream.seek(0);stream.write(b'0');stream.flush();stream.seek(0)
+        if os.name=='nt':
+            import msvcrt
+            msvcrt.locking(stream.fileno(),msvcrt.LK_NBLCK,1)
+        else:
+            import fcntl
+            fcntl.flock(stream,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        try:yield
+        finally:
+            stream.seek(0)
+            if os.name=='nt':msvcrt.locking(stream.fileno(),msvcrt.LK_UNLCK,1)
+            else:fcntl.flock(stream,fcntl.LOCK_UN)
+
+def run(args, **kwargs):
+    result=subprocess.run(args,capture_output=True,text=True,timeout=15,**kwargs)
+    if result.returncode:raise RuntimeError('Required local probe failed; no destructive fallback')
+    return result.stdout
+
+def validate_dependency(record,name):
+    service,dest,port,host=DEPENDENCIES[name]
+    labels=record.get('Config',{}).get('Labels') or {}
+    if record.get('Name')!='/'+name or labels.get('com.docker.compose.project')!='project-genesis' or labels.get('com.docker.compose.service')!=service:
+        raise RuntimeError('Dependency ownership unavailable')
+    mounts=record.get('Mounts',[])
+    if not any(m.get('Destination')==dest and m.get('Type')=='volume' and m.get('Name')=='project-genesis_'+service+'-data' for m in mounts):
+        raise RuntimeError('Dependency persistent volume ownership unavailable')
+    binding=(record.get('HostConfig',{}).get('PortBindings',{}).get(port) or [])
+    if not any(b.get('HostPort')==host for b in binding):raise RuntimeError('Dependency port ownership unavailable')
+    state=record.get('State',{}).get('Status')
+    if state not in ('running','exited','created'):raise RuntimeError('Dependency state unsafe')
+    return state
+
+def ensure_dependencies(launcher):
+    docker=launcher.find_docker()
+    if not docker:raise RuntimeError('Docker unavailable; start it separately')
+    records=json.loads(run([docker,'inspect',*DEPENDENCIES]))
+    if len(records)!=3:raise RuntimeError('Existing Genesis dependencies required; never create containers')
+    states={name:validate_dependency(record,name) for name,record in zip(DEPENDENCIES,records)}
+    for name,state in states.items():
+        if state!='running':run([docker,'start',name])
+    # Healthy running containers are never recycled. Redis history/config untouched.
+    if 'accepting connections' not in run([docker,'exec','stinky-postgres','pg_isready','-U','stinky','-d','stinky']):raise RuntimeError('Postgres unavailable')
+    if run([docker,'exec','stinky-redis','redis-cli','PING']).strip()!='PONG':raise RuntimeError('Redis unavailable')
+    run([docker,'exec','stinky-minio','curl','-f','http://localhost:9000/minio/health/live'])
+
+def verify_schema(launcher):
+    from scripts.strict_startup_schema_gate import REQUIRED_TABLES
+    names=(*REQUIRED_TABLES,'events','intelligence_execution_v2_registry','intelligence_execution_v2_plans','intelligence_execution_v2_results')
+    expressions=','.join("to_regclass('public."+n+"') IS NOT NULL" for n in names)
+    sql="BEGIN READ ONLY; SELECT "+' AND '.join(expressions.split(','))+"; ROLLBACK;"
+    output=run([launcher.find_docker(),'exec','-i','stinky-postgres','psql','-U','stinky','-d','stinky','-v','ON_ERROR_STOP=1','-t','-A'],input=sql)
+    if 't' not in output.splitlines():raise RuntimeError('Schema missing; recovery never applies migrations')
+
+def inventory(launcher):
+    rows=launcher.list_win_processes()
+    if not rows:raise RuntimeError('Native process inventory unavailable')
+    return rows
+
+def service_pid(launcher,name,rows):
+    # Collapse Windows venv wrapper + actual Python into a single service chain.
+    candidates={p:(parent,cmd) for p,parent,exe,cmd in rows if exe.lower() in ('python.exe','pythonw.exe') and re.search(r'run_genesis_service\.py["\s].*--name\s+'+re.escape(name)+r'(?:\s|$)',cmd)}
+    leaves=[p for p in candidates if not any(parent==p for parent,cmd in candidates.values())]
+    if len(leaves)>1:raise RuntimeError('Multiple supervisor chains; manual investigation required')
+    if not leaves:return None
+    pid=leaves[0];parent,cmd=candidates[pid]
+    root=str(launcher.ROOT).replace('/','\\').lower()
+    chaincmd=cmd+' '+candidates.get(parent,(0,''))[1]
+    if root not in chaincmd.replace('/','\\').lower():raise RuntimeError('Supervisor repository ownership unavailable')
+    from scripts.start_paper_runtime import _windows_process_started_at
+    actual=_windows_process_started_at(pid)
+    try:
+        with (launcher.LOG_DIR/f'runtime-state-{name}.json').open('rb') as f:state=json.loads(f.read(16384))
+        start=datetime.fromisoformat(state['supervisor_started_at'].replace('Z','+00:00'))
+        age=(datetime.now(timezone.utc)-datetime.fromisoformat(state['as_of'].replace('Z','+00:00'))).total_seconds()
+        valid=state['service']==name and state['supervisor_pid']==pid and actual is not None and abs((actual-start).total_seconds())<=5 and -5<=age<=180 and state.get('supervisor_phase') in ('RUNNING','SUPERVISING')
+    except (OSError,ValueError,KeyError,TypeError):valid=False
+    if not valid:raise RuntimeError('Existing supervisor identity/heartbeat unverified; no duplicate started')
+    if name in URLS and not launcher.http_ok(URLS[name],3):raise RuntimeError('Existing owned service unhealthy; its watchdog owns recovery')
+    if name == 'maintain':
+        from scripts.genesis_pass_provenance import read_observations
+        source=read_observations(launcher.LOG_DIR/'v2-pass-provenance.jsonl')
+        good=[e for e in source['events'] if e['supervisor_pid']==pid and e['phase']=='FINISH' and e['return_code']==0 and e['observed_at'] and datetime.fromisoformat(e['observed_at'])>=start]
+        if source.get('invalid_lines',0) or source.get('conflicting_event_ids',0) or not good or not -5<=(datetime.now(timezone.utc)-datetime.fromisoformat(good[-1]['observed_at'])).total_seconds()<=180:
+            raise RuntimeError('Maintenance pass activity unverified; no second supervisor started')
+    else:
+        parents={p:parent for p,parent,exe,cmd in rows}
+        def descendant(p):
+            for _ in range(24):
+                p=parents.get(p,0)
+                if p==pid:return True
+                if not p:return False
+            return False
+        if not any(descendant(p) and MODULES[name] in cmd for p,parent,exe,cmd in rows):
+            raise RuntimeError('Owned application child unavailable; no second worker started')
+    return pid
+
+def reject_orphan(launcher,name,rows):
+    needle='run_intelligence_execution_v2.py' if name=='maintain' else MODULES[name]
+    if any(needle in cmd and (' -m '+needle in cmd or str(launcher.ROOT).lower() in cmd.lower()) for p,parent,exe,cmd in rows):
+        raise RuntimeError('Possible orphan application process; no duplicate started')
+    if name in PORTS and launcher.listen_pid(PORTS[name]):raise RuntimeError('Port occupied without proven Genesis supervisor; untouched')
+
+def recover_service(launcher,name):
+    if name not in SERVICES:raise ValueError('Service not allowlisted')
+    rows=inventory(launcher);pid=service_pid(launcher,name,rows)
+    if pid:return pid
+    reject_orphan(launcher,name,rows)
+    runner=launcher.ROOT/'scripts/run_genesis_service.py';exe=launcher.ROOT/'.venv/Scripts/pythonw.exe'
+    if not exe.is_file():exe=launcher.ROOT/'.venv/Scripts/python.exe'
+    if not exe.is_file() or not runner.is_file():raise RuntimeError('Existing environment required; recovery never installs')
+    token=uuid.uuid4().hex;env={**os.environ,'GENESIS_SUPERVISOR_LAUNCH_TOKEN':token,'PYTHONUNBUFFERED':'1','BROWSER':'none'}
+    flags=0x08000000|0x00000200|0x01000000 if os.name=='nt' else 0
+    # Preserve prior service logs; runner writes them, parent transport goes to a separate append-only file.
+    with (launcher.LOG_DIR/f'{name}-starter.log').open('a',encoding='utf-8') as log:
+        proc=subprocess.Popen([str(exe),str(runner),'--name',name],cwd=str(launcher.ROOT),env=env,stdin=subprocess.DEVNULL,stdout=log,stderr=subprocess.STDOUT,creationflags=flags)
+    deadline=time.monotonic()+60
+    while time.monotonic()<deadline:
+        if proc.poll() is not None:raise RuntimeError('Starter exited; no second launch attempted')
+        try:
+            with (launcher.LOG_DIR/f'runtime-state-{name}.json').open('rb') as f:state=json.loads(f.read(16384))
+            if state.get('supervisor_launch_token')==token:
+                pid=service_pid(launcher,name,inventory(launcher))
+                if pid:return pid
+        except (OSError,ValueError,KeyError,RuntimeError):pass
+        time.sleep(.5)
+    raise RuntimeError('Startup ownership/health not proven; existing new process left untouched')
+
+def recover(launcher,args):
+    try:
+        if args.sync or args.restart:raise RuntimeError('Sync/restart are separate reviewed operations; ordinary startup preserves code and services')
+        with startup_lock(launcher.LOG_DIR/'application-start.lock'):
+            if not (launcher.ROOT/'.env').is_file():raise RuntimeError('Existing .env required')
+            launcher.ensure_docker();launcher.apply_schema()
+            procs={}
+            for name in SERVICES:procs[name]=launcher.start_detached(name,required=True)
+            launcher.write_pid_file(procs)
+            launcher.HEALTH['DISCORD']='DISABLED'
+            launcher.say('ALREADY RUNNING or safely recovered; no outbound notifications; paper-only, live authority locked')
+            if not all(launcher.http_ok(url,3) for url in URLS.values()):raise RuntimeError('Final HTTP health unavailable')
+            launcher.open_operator()
+            return 0
+    except Exception as exc:
+        launcher.fail('recovery','DOWN',str(exc),next_step='Inspect ownership/dependency health; do not run a second worker or reset evidence')
+        return 1

@@ -67,7 +67,10 @@ def test_migration_is_immutable_and_launcher_wires_worker_after_main_start():
     starter=(ROOT/"scripts/start_paper_runtime.py").read_text()
     assert "paper_runtime_intake" in migration and "paper_runtime_record" in migration
     assert "paper_runtime_record is immutable" in migration
-    assert launcher.index("start_genesis.py") < launcher.index("start_paper_runtime.py")
+    from scripts.safe_genesis_start import SERVICES
+    assert SERVICES.index("maintain") < SERVICES.index("paper-intake-producer") < SERVICES.index("paper-runtime")
+    assert "start_genesis.py" in launcher
+    assert "start_paper_runtime.py" not in launcher  # unified serialized ownership path
     supervisor=(ROOT/"scripts/run_genesis_service.py").read_text()
     assert '"paper-runtime"' in starter
     assert "stinky_api.paper_runtime_worker" in supervisor

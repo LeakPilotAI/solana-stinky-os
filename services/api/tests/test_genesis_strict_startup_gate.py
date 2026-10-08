@@ -32,14 +32,23 @@ def test_current_executor_persistence_tables_are_mandatory():
     }
 
 
-def test_desktop_launcher_runs_strict_gate_before_start_genesis():
-    text = (ROOT / "Start-Stinky-OS.cmd").read_text(encoding="utf-8")
-    strict = text.index("strict_startup_schema_gate.py")
-    app = text.index("start_genesis.py")
-    assert strict < app
-    between = text[strict:app]
-    assert "if not \"%ERRORLEVEL%\"==\"0\"" in between
-    assert "goto :done" in between
+def test_desktop_recovery_schema_probe_is_read_only_and_fail_closed(monkeypatch):
+    from types import SimpleNamespace
+    import pytest
+    from scripts import safe_genesis_start as recovery
+    calls=[]
+    def probe(args,**kwargs):
+        calls.append((args,kwargs["input"]))
+        return "BEGIN\nt\nROLLBACK\n"
+    monkeypatch.setattr(recovery,"run",probe)
+    recovery.verify_schema(SimpleNamespace(find_docker=lambda:"docker"))
+    assert "ON_ERROR_STOP=1" in calls[0][0]
+    assert "BEGIN READ ONLY" in calls[0][1]
+    assert all(name in calls[0][1] for name in gate.REQUIRED_TABLES)
+    assert "intelligence_execution_v2_results" in calls[0][1]
+    assert "CREATE" not in calls[0][1] and "INSERT" not in calls[0][1]
+    monkeypatch.setattr(recovery,"run",lambda *a,**k:"BEGIN\nf\nROLLBACK\n")
+    with pytest.raises(RuntimeError):recovery.verify_schema(SimpleNamespace(find_docker=lambda:"docker"))
 
 
 def test_gate_contains_no_solana_execution_capability():
@@ -63,11 +72,16 @@ def test_current_observation_persistence_tables_are_mandatory():
     assert set(gate.REQUIRED_OBSERVATION_TABLES).issubset(set(gate.REQUIRED_TABLES))
 
 
-def test_launcher_fails_readiness_when_sentinel_does_not_stay_running():
-    text = (ROOT / "start_genesis.py").read_text(encoding="utf-8")
-    sentinel_health = text.index('HEALTH["SENTINEL"] = "DOWN"')
-    operator_fetch = text.index('op = get_json("http://127.0.0.1:8010/v1/operator")')
-    block = text[sentinel_health:operator_fetch]
-    assert 'fail(' in block
-    assert '"SENTINEL"' in block
-    assert "sentinel process did not remain running after startup" in block
+def test_launcher_fails_readiness_when_sentinel_does_not_stay_running(tmp_path):
+    from argparse import Namespace
+    from types import SimpleNamespace
+    from scripts.safe_genesis_start import recover
+    (tmp_path/".env").write_text("fixture")
+    calls=[]
+    def start(name,**kwargs):
+        calls.append(name)
+        if name=="sentinel":raise RuntimeError("sentinel failed ownership proof")
+        return 1
+    launcher=SimpleNamespace(ROOT=tmp_path,LOG_DIR=tmp_path/"logs",ensure_docker=lambda:None,apply_schema=lambda:None,start_detached=start,fail=lambda *a,**k:None)
+    assert recover(launcher,Namespace(sync=False,restart=False))==1
+    assert calls==["event-log","api","sentinel"]
