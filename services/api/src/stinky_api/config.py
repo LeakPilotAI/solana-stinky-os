@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     event_log_url: str = "http://localhost:8002"
     min_fees_sol: float = 4.0
+    paper_readiness_min_closed_outcomes: str | None = None
+    paper_readiness_min_market_cap_samples: str | None = None
+    paper_readiness_min_outcome_classes: str | None = None
 
 
 settings = Settings()

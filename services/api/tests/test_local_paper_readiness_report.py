@@ -88,9 +88,11 @@ def test_command_center_groups_runtime_by_frozen_policy_identity_without_backfil
     assert "Historical identity is never inferred from the active policy." in panel
 
 
-def test_paper_status_preserves_immutable_cohorts_behavior():
+def test_paper_status_preserves_immutable_cohorts_behavior(monkeypatch):
     import asyncio
     from stinky_api.main import paper_status
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr("stinky_api.paper_status_contract.paper_status_contract", AsyncMock(return_value={}))
 
     cohort = {"policy_version": "LEGACY_UNKNOWN", "policy_sha256": "UNKNOWN",
               "provenance": "UNKNOWN", "policy_identity": None, "records": 2}
@@ -100,7 +102,8 @@ def test_paper_status_preserves_immutable_cohorts_behavior():
             return {**{key: 0 for key in ("candidates", "runners", "held", "fades",
                 "would_watch", "would_skip", "would_enter", "paper_open", "paper_closed",
                 "intake_unprocessed", "intake_processed")},
-                "producer_version": None, "prospective_started_at": None}
+                "producer_version": None, "prospective_started_at": None,
+                "represented": 0, "first_candidate_at": None, "latest_candidate_at": None}
         def all(self): return [cohort]
     class Session:
         statements = []

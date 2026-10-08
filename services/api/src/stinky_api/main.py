@@ -1064,6 +1064,7 @@ async def _trending_m5(
 async def paper_status(session: AsyncSession = Depends(get_session)) -> dict:
     """Read-only paper observability over the API DB pool; never shells through Docker."""
     from sqlalchemy import text
+    from stinky_api.paper_status_contract import paper_status_contract
     authority = {"live_execution": False, "trading_authority": False, "rpc_contacted": False,
                  "transaction_signed": False, "order_submitted": False, "wallet_mutated": False}
     try:
@@ -1073,6 +1074,9 @@ async def paper_status(session: AsyncSession = Depends(get_session)) -> dict:
               (SELECT count(*)::int FROM paper_prospective_candidate WHERE canonical_outcome='RUNNER') AS runners,
               (SELECT count(*)::int FROM paper_prospective_candidate WHERE canonical_outcome='HELD') AS held,
               (SELECT count(*)::int FROM paper_prospective_candidate WHERE canonical_outcome='FADE') AS fades,
+              (SELECT count(DISTINCT canonical_outcome)::int FROM paper_prospective_candidate WHERE canonical_outcome IN ('RUNNER','HELD','FADE')) AS represented,
+              (SELECT min(decided_at) FROM paper_prospective_candidate) AS first_candidate_at,
+              (SELECT max(decided_at) FROM paper_prospective_candidate) AS latest_candidate_at,
               (SELECT count(*)::int FROM paper_runtime_record WHERE shadow_action='WOULD_WATCH') AS would_watch,
               (SELECT count(*)::int FROM paper_runtime_record WHERE shadow_action='WOULD_SKIP') AS would_skip,
               (SELECT count(*)::int FROM paper_runtime_record WHERE shadow_action='WOULD_ENTER') AS would_enter,
@@ -1089,6 +1093,8 @@ async def paper_status(session: AsyncSession = Depends(get_session)) -> dict:
             ORDER BY min(created_at)
         """))).mappings().all()
         candidates=int(row["candidates"] or 0); closed=int(row["runners"] or 0)+int(row["held"] or 0)+int(row["fades"] or 0)
+        compatibility = await paper_status_contract(session, closed=closed, candidates=candidates,
+            represented=row["represented"], first_at=row["first_candidate_at"], latest_at=row["latest_candidate_at"])
         return {"status":"OBSERVED","paper_only":True,"live_trading":"LOCKED",
             "producer":"UNKNOWN","paper_runtime":"UNKNOWN","producer_version":row["producer_version"],
             "prospective_started_at":row["prospective_started_at"],"candidates":candidates,
@@ -1102,7 +1108,7 @@ async def paper_status(session: AsyncSession = Depends(get_session)) -> dict:
             "historical_identity_inference": False,
             "prospective_evidence":{"status":"ACCUMULATING" if candidates else "AWAITING_CANDIDATES","closed_outcomes":closed,
               "pending_outcomes":max(0,candidates-closed),"thresholds_invented":False},
-            "authority":authority}
+            "authority":authority, **compatibility}
     except Exception as exc:
         logger.warning("paper_status.unavailable", error=f"{type(exc).__name__}: {exc}"[:240])
         return {"status":"UNKNOWN","paper_only":True,"live_trading":"LOCKED","error":"paper status unavailable","authority":authority}
