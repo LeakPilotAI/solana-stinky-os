@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api/client";
 import type { ExecutionV2 } from "@/lib/api/intelligence-execution-v2";
+import { IntelligenceExecutionV2Details } from "./IntelligenceExecutionV2Details";
 
 function Gate({ label, observed, required, passed }: { label: string; observed: number; required: number; passed: boolean }) {
   return <div className="rounded-lg border border-terminal-border bg-black/20 p-3">
@@ -45,6 +46,7 @@ export function IntelligenceExecutionV2View({ data, loading = false, error = fal
         <details><summary className="cursor-pointer py-1">Policy SHA256</summary><p className="break-all font-mono">{evidence.policy_sha256}</p></details>
       </div>
     </> : <p className="mt-3 text-[11px] text-terminal-muted">{loading ? "Waiting for the evidence service." : "The evidence service is disconnected or has no verifiable V2 summary. Metrics are unavailable."}</p>}
+    <IntelligenceExecutionV2Details />
     <p className="mt-3 border-t border-terminal-border pt-3 text-[10px] leading-relaxed text-terminal-muted">Adequacy permits descriptive paper review only. Snapshot proxies do not establish profitability, validated predictions or executable fills. No live trading, order submission, signing or wallet mutation.</p>
   </section>;
 }
