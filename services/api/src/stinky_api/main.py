@@ -17,6 +17,7 @@ from stinky_api.config import settings
 from stinky_api.db import get_session
 from stinky_api import queries
 from stinky_api.command_center_readiness import router as command_center_readiness_router
+from stinky_api.intelligence_execution_v2 import router as intelligence_execution_v2_router
 from stinky_api.entity_graph import router as entity_graph_router
 from stinky_api.paper_cohort_routes import router as paper_cohort_router
 
@@ -73,6 +74,7 @@ app.add_middleware(
 
 
 app.include_router(command_center_readiness_router)
+app.include_router(intelligence_execution_v2_router)
 app.include_router(entity_graph_router)
 app.include_router(paper_cohort_router)
 
@@ -1081,6 +1083,11 @@ async def paper_status(session: AsyncSession = Depends(get_session)) -> dict:
               (SELECT producer_version FROM paper_intake_producer_state WHERE singleton=TRUE LIMIT 1) AS producer_version,
               (SELECT prospective_started_at FROM paper_intake_producer_state WHERE singleton=TRUE LIMIT 1) AS prospective_started_at
         """))).mappings().one()
+        policy_cohorts = (await session.execute(text("""
+            SELECT COALESCE(policy_version,'LEGACY_UNKNOWN') AS policy_version, COALESCE(policy_sha256,'UNKNOWN') AS policy_sha256, CASE WHEN policy_evidence_backed IS TRUE THEN 'EVIDENCE_BACKED' WHEN policy_evidence_backed IS FALSE THEN 'MANUAL' ELSE 'UNKNOWN' END AS provenance, record->'policy_identity' AS policy_identity, count(*)::int AS records FROM paper_runtime_record
+            GROUP BY policy_version,policy_sha256,policy_evidence_backed,record->'policy_identity'
+            ORDER BY min(created_at)
+        """))).mappings().all()
         candidates=int(row["candidates"] or 0); closed=int(row["runners"] or 0)+int(row["held"] or 0)+int(row["fades"] or 0)
         return {"status":"OBSERVED","paper_only":True,"live_trading":"LOCKED",
             "producer":"UNKNOWN","paper_runtime":"UNKNOWN","producer_version":row["producer_version"],
@@ -1090,6 +1097,9 @@ async def paper_status(session: AsyncSession = Depends(get_session)) -> dict:
             "paper":{"SIMULATED_OPEN":row["paper_open"],"SIMULATED_CLOSED":row["paper_closed"],"UNKNOWN":0},
             "intake":{"processed":row["intake_processed"],"unprocessed":row["intake_unprocessed"]},
             "policy":{"status":"NOT_SET","version":None,"horizon":None,"notional_usd":None},
+            "policy_cohorts":[dict(cohort) for cohort in policy_cohorts],
+            "aggregate_scope":"ALL_IMMUTABLE_POLICY_COHORTS",
+            "historical_identity_inference": False,
             "prospective_evidence":{"status":"ACCUMULATING" if candidates else "AWAITING_CANDIDATES","closed_outcomes":closed,
               "pending_outcomes":max(0,candidates-closed),"thresholds_invented":False},
             "authority":authority}

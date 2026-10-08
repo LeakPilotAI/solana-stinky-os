@@ -74,13 +74,45 @@ def test_cli_requires_explicit_criteria_and_contains_no_policy_writes():
 
 
 def test_command_center_groups_runtime_by_frozen_policy_identity_without_backfill():
-    route=(ROOT/"apps/web/src/app/api/paper-status/route.ts").read_text(encoding="utf-8")
+    # Database reads moved from the web proxy to the API pool; preserve the
+    # original identity assertions at their actual implementation boundary.
+    route=(ROOT/"services/api/src/stinky_api/main.py").read_text(encoding="utf-8")
     panel=(ROOT/"apps/web/src/components/command-center/PaperCalibrationPanel.tsx").read_text(encoding="utf-8")
     assert "policy_cohorts" in route
     assert "LEGACY_UNKNOWN" in route
     assert "policy_evidence_backed" in route
-    assert 'historical_identity_inference: false' in route
+    assert '"historical_identity_inference": False' in route
     cohort_query=next(line for line in route.splitlines() if "LEGACY_UNKNOWN" in line and "paper_runtime_record" in line)
     assert "paper_policy_active" not in cohort_query
     assert "Immutable policy cohorts" in panel
     assert "Historical identity is never inferred from the active policy." in panel
+
+
+def test_paper_status_preserves_immutable_cohorts_behavior():
+    import asyncio
+    from stinky_api.main import paper_status
+
+    cohort = {"policy_version": "LEGACY_UNKNOWN", "policy_sha256": "UNKNOWN",
+              "provenance": "UNKNOWN", "policy_identity": None, "records": 2}
+    class Result:
+        def mappings(self): return self
+        def one(self):
+            return {**{key: 0 for key in ("candidates", "runners", "held", "fades",
+                "would_watch", "would_skip", "would_enter", "paper_open", "paper_closed",
+                "intake_unprocessed", "intake_processed")},
+                "producer_version": None, "prospective_started_at": None}
+        def all(self): return [cohort]
+    class Session:
+        statements = []
+        async def execute(self, statement):
+            self.statements.append(str(statement))
+            return Result()
+    session = Session()
+    result = asyncio.run(paper_status(session))
+    assert result["status"] == "OBSERVED"
+    assert result["policy_cohorts"] == [cohort]
+    assert result["historical_identity_inference"] is False
+    assert result["aggregate_scope"] == "ALL_IMMUTABLE_POLICY_COHORTS"
+    assert "paper_policy_active" not in session.statements[1]
+    assert all(statement.lstrip().startswith("SELECT") for statement in session.statements)
+    assert result["authority"]["live_execution"] is False

@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     service_name: str = "api"
     environment: str = "development"
     log_level: str = "INFO"
-    database_url: str = "postgresql+asyncpg://stinky:stinky@localhost:5433/stinky"
+    database_url: str = "postgresql+asyncpg://stinky:stinky@127.0.0.1:5433/stinky"
     redis_url: str = "redis://localhost:6380/0"
     event_stream: str = "stinky.events"
     api_port: int = 8010
