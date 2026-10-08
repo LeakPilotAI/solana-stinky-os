@@ -598,12 +598,18 @@ def main() -> int:
             # prospective PAPER/evidence capture independent of the slower
             # one-minute research loop so scheduler phase cannot systematically
             # miss otherwise eligible decisions.
+            from genesis_pass_provenance import Recorder, observe_pass
+            pass_recorder = Recorder(log_dir / "v2-pass-provenance.jsonl")
+
             def intelligence_execution_v2_loop() -> None:
                 while True:
                     try:
-                        run_job_with_retry(
-                            [py, str(root / "scripts" / "run_intelligence_execution_v2.py")],
-                            attempts=1,
+                        observe_pass(
+                            lambda: run_job_with_retry(
+                                [py, str(root / "scripts" / "run_intelligence_execution_v2.py")],
+                                attempts=1,
+                            ),
+                            pass_recorder,
                         )
                     except Exception as exc:
                         msg = "[%s] intelligence V2 capture error %s\n" % (
