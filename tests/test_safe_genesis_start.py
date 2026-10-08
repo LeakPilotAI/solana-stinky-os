@@ -81,12 +81,12 @@ def test_stale_pid_file_does_not_prove_health(launcher):
  assert safe.service_pid(l,'collector',[(999,0,'other.exe','unrelated')]) is None
 
 def test_duplicate_chains_fail_closed(launcher):
- l,_,_=launcher;cmd=f'{l.ROOT}/scripts/run_genesis_service.py --name collector'
+ l,_,_=launcher;cmd=f'python.exe "{l.ROOT}/scripts/run_genesis_service.py" --name collector'
  with pytest.raises(RuntimeError,match='Multiple'):safe.service_pid(l,'collector',[(1,0,'python.exe',cmd),(2,0,'python.exe',cmd)])
 
 def test_owned_wrapper_is_single_chain_and_stale_heartbeat_blocks(launcher,monkeypatch):
  from scripts import start_paper_runtime as paper
- l,_,_=launcher;now=datetime.now(timezone.utc);cmd=f'{l.ROOT}/scripts/run_genesis_service.py --name collector'
+ l,_,_=launcher;now=datetime.now(timezone.utc);cmd=f'python.exe "{l.ROOT}/scripts/run_genesis_service.py" --name collector'
  rows=[(1,0,'python.exe',cmd),(2,1,'python.exe',cmd),(3,2,'python.exe','python -m post_migration.cli')]
  monkeypatch.setattr(paper,'_windows_process_started_at',lambda pid:now)
  p=l.LOG_DIR/'runtime-state-collector.json';state={'service':'collector','supervisor_pid':2,'supervisor_started_at':now.isoformat(),'as_of':now.isoformat(),'supervisor_phase':'SUPERVISING'};p.write_text(json.dumps(state))
@@ -178,3 +178,57 @@ def test_desktop_default_core_explicit_full_passes_through():
  assert '"%~dp0start_genesis.py" --core-only' in cmd
  assert '"%~dp0start_genesis.py" %*' in cmd
  assert 'start_paper_runtime.py' not in cmd
+
+@pytest.mark.parametrize('filename',['run_genesis_service.py','RUN_GENESIS_SERVICE.PY','Run_Genesis_Service.Py'])
+@pytest.mark.parametrize('mixed_path',[False,True])
+@pytest.mark.parametrize('service',['collector','COLLECTOR'])
+def test_case_variant_supervisor_is_recognized_but_not_ready_without_child(launcher,monkeypatch,filename,mixed_path,service):
+ from scripts import start_paper_runtime as paper
+ l,_,_=launcher;now=datetime.now(timezone.utc)
+ root=str(l.ROOT).upper() if mixed_path else str(l.ROOT)
+ cmd=f'"{root}/.venv/Scripts/PYTHON.EXE" "{root}/scripts/{filename}" --name {service}'
+ rows=[(123,0,'PYTHON.EXE',cmd)]
+ monkeypatch.setattr(paper,'_windows_process_started_at',lambda pid:now)
+ state={'service':'collector','supervisor_pid':123,'supervisor_started_at':now.isoformat(),'as_of':now.isoformat(),'supervisor_phase':'SUPERVISING'}
+ (l.LOG_DIR/'runtime-state-collector.json').write_text(json.dumps(state))
+ l.list_win_processes=lambda:rows;l.listen_pid=lambda port:0
+ attempts=[];monkeypatch.setattr(safe.subprocess,'Popen',lambda *a,**k:attempts.append(a))
+ with pytest.raises(RuntimeError,match='child unavailable'):safe.recover_service(l,'collector')
+ assert attempts==[]
+ rows.append((124,123,'Python.Exe','python.exe -m POST_MIGRATION.CLI'))
+ assert safe.service_pid(l,'collector',rows)==123
+
+@pytest.mark.parametrize('command',[
+ 'python.exe -c "run_genesis_service.py --name collector"',
+ 'python.exe my_run_genesis_service.py --name collector',
+ 'python.exe run_genesis_service.py.backup --name collector',
+ 'python.exe run_genesis_service.py --name collector-helper',
+ 'node.exe run_genesis_service.py --name collector',
+])
+def test_similar_unrelated_commands_not_claimed(launcher,command):
+ l,_,_=launcher
+ assert safe.service_pid(l,'collector',[(123,0,'node.exe' if command.startswith('node') else 'python.exe',command)]) is None
+
+@pytest.mark.parametrize('command_suffix',['--name collector --name collector','--name collector --name entities','--name=collector --name=collector'])
+def test_ambiguous_service_identity_blocks_duplicate(launcher,command_suffix):
+ l,_,_=launcher;cmd=f'python.exe "{l.ROOT}/scripts/RUN_GENESIS_SERVICE.PY" {command_suffix}'
+ with pytest.raises(RuntimeError,match='Ambiguous'):safe.service_pid(l,'collector',[(123,0,'python.exe',cmd)])
+
+def test_foreign_repository_path_cannot_be_proven_by_parent(launcher):
+ l,_,_=launcher;own=f'python.exe "{l.ROOT}/scripts/run_genesis_service.py" --name collector';foreign=f'python.exe "{l.ROOT}-other/scripts/RUN_GENESIS_SERVICE.PY" --name collector'
+ with pytest.raises(RuntimeError,match='repository ownership'):safe.service_pid(l,'collector',[(123,0,'python.exe',own),(124,123,'python.exe',foreign)])
+
+def test_case_variant_orphan_module_blocks_without_substring_claims(launcher):
+ l,_,_=launcher;l.listen_pid=lambda port:0
+ with pytest.raises(RuntimeError,match='orphan'):safe.reject_orphan(l,'collector',[(123,0,'Python.Exe','python.exe -m POST_MIGRATION.CLI')])
+ safe.reject_orphan(l,'collector',[(123,0,'python.exe','python.exe -c "post_migration.cli"')])
+ safe.reject_orphan(l,'collector',[(123,0,'python.exe','python.exe -m post_migration.cli_backup')])
+
+def test_case_variant_duplicate_chains_fail_closed(launcher):
+ l,_,_=launcher;cmd=f'python.exe "{l.ROOT}/scripts/RUN_GENESIS_SERVICE.PY" --name=COLLECTOR'
+ with pytest.raises(RuntimeError,match='Multiple'):safe.service_pid(l,'collector',[(123,0,'python.exe',cmd),(124,0,'PYTHON.EXE',cmd.lower())])
+
+@pytest.mark.parametrize('command',['','other.exe scripts/run_genesis_service.py --name collector','python.exe "scripts/run_genesis_service.py --name collector'])
+def test_unavailable_or_ambiguous_executable_identity_fails_closed(launcher,command):
+ l,_,_=launcher
+ with pytest.raises(RuntimeError):safe.service_pid(l,'collector',[(123,0,'python.exe',command)])

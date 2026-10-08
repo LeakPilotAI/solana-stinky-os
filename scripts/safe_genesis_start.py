@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
+import ntpath
 import os
 from pathlib import Path
 import re
@@ -80,16 +81,91 @@ def inventory(launcher):
     if not rows:raise RuntimeError('Native process inventory unavailable')
     return rows
 
+def command_tokens(command):
+    # Supported runners use separate, optionally double-quoted argv tokens.
+    # Reject ambiguous quoting rather than interpreting embedded command text.
+    tokens=[];end=0
+    for match in re.finditer(r'(?:^|\s)(?:"([^"\r\n]*)"|([^\s"]+))(?=\s|$)',command):
+        if command[end:match.start()].strip():raise RuntimeError('Ambiguous native command quoting')
+        tokens.append(match.group(1) if match.group(1) is not None else match.group(2));end=match.end()
+    if command[end:].strip():raise RuntimeError('Ambiguous native command quoting')
+    return tokens
+
+
+def windows_path(value):
+    return ntpath.normcase(ntpath.normpath(value.replace('/', '\\')))
+
+
+def invocation(exe,command):
+    executable=exe.casefold()
+    if executable not in ('python.exe','pythonw.exe','node.exe'):return None
+    tokens=command_tokens(command)
+    if not tokens:raise RuntimeError('Native command identity unavailable')
+    expected={'python.exe':('python','python.exe'),'pythonw.exe':('pythonw','pythonw.exe'),'node.exe':('node','node.exe')}[executable]
+    if ntpath.basename(windows_path(tokens[0])) not in expected:raise RuntimeError('Native executable identity mismatch')
+    index=1
+    if executable!='node.exe':
+        while index<len(tokens) and tokens[index] in ('-u','-B','-E','-s','-S','-I'):index+=1
+    return tokens,index
+
+
+def runner_command(exe,command,name):
+    if exe.casefold() not in ('python.exe','pythonw.exe'):return None
+    parsed=invocation(exe,command)
+    if parsed is None or exe.casefold()=='node.exe':return None
+    tokens,index=parsed
+    if index>=len(tokens) or ntpath.basename(windows_path(tokens[index]))!='run_genesis_service.py':return None
+    names=[]
+    for i,t in enumerate(tokens[index+1:],index+1):
+        if t.casefold()=='--name':
+            if i+1>=len(tokens):raise RuntimeError('Missing supervisor service identity')
+            names.append(tokens[i+1].casefold())
+        elif t.casefold().startswith('--name='):names.append(t.split('=',1)[1].casefold())
+    if name.casefold() not in names:return None
+    if len(names)!=1:raise RuntimeError('Ambiguous supervisor service identity')
+    return tokens[0],tokens[index]
+
+
+def repository_runner(launcher,parsed):
+    executable,script=parsed
+    expected=windows_path(str(launcher.ROOT/'scripts/run_genesis_service.py'))
+    if ntpath.isabs(script.replace('/','\\')):return windows_path(script)==expected
+    # Relative runner requires an exact repo-local venv executable in this chain.
+    return windows_path(script)==windows_path('scripts/run_genesis_service.py') and windows_path(executable) in (
+        windows_path(str(launcher.ROOT/'.venv/Scripts/python.exe')),
+        windows_path(str(launcher.ROOT/'.venv/Scripts/pythonw.exe')))
+
+
+def application_command(launcher,name,exe,command):
+    if name!='web' and exe.casefold() not in ('python.exe','pythonw.exe'):return False
+    parsed=invocation(exe,command)
+    if parsed is None:return False
+    tokens,index=parsed
+    if index>=len(tokens):return False
+    if name=='web':
+        return exe.casefold()=='node.exe' and windows_path(tokens[index]) in (
+            windows_path(str(launcher.ROOT/'apps/web/node_modules/next/dist/bin/next')),
+            windows_path(str(launcher.ROOT/'apps/web/node_modules/next/dist/server/lib/start-server.js')))
+    if exe.casefold()=='node.exe':return False
+    if name=='maintain':return windows_path(tokens[index])==windows_path(str(launcher.ROOT/'scripts/run_intelligence_execution_v2.py'))
+    return tokens[index]=='-m' and index+1<len(tokens) and tokens[index+1].casefold()==MODULES[name].casefold()
+
+
 def service_pid(launcher,name,rows):
     # Collapse Windows venv wrapper + actual Python into a single service chain.
-    candidates={p:(parent,cmd) for p,parent,exe,cmd in rows if exe.lower() in ('python.exe','pythonw.exe') and re.search(r'run_genesis_service\.py["\s].*--name\s+'+re.escape(name)+r'(?:\s|$)',cmd)}
+    candidates={}
+    parsed_commands={}
+    for p,parent,exe,cmd in rows:
+        parsed=runner_command(exe,cmd,name)
+        if parsed is not None:
+            candidates[p]=(parent,cmd);parsed_commands[p]=parsed
     leaves=[p for p in candidates if not any(parent==p for parent,cmd in candidates.values())]
     if len(leaves)>1:raise RuntimeError('Multiple supervisor chains; manual investigation required')
     if not leaves:return None
     pid=leaves[0];parent,cmd=candidates[pid]
-    root=str(launcher.ROOT).replace('/','\\').lower()
-    chaincmd=cmd+' '+candidates.get(parent,(0,''))[1]
-    if root not in chaincmd.replace('/','\\').lower():raise RuntimeError('Supervisor repository ownership unavailable')
+    if not repository_runner(launcher,parsed_commands[pid]) and not (
+        windows_path(parsed_commands[pid][1])==windows_path('scripts/run_genesis_service.py') and parent in candidates and repository_runner(launcher,parsed_commands[parent])):
+        raise RuntimeError('Supervisor repository ownership unavailable')
     from scripts.start_paper_runtime import _windows_process_started_at
     actual=_windows_process_started_at(pid)
     try:
@@ -114,13 +190,12 @@ def service_pid(launcher,name,rows):
                 if p==pid:return True
                 if not p:return False
             return False
-        if not any(descendant(p) and MODULES[name] in cmd for p,parent,exe,cmd in rows):
+        if not any(descendant(p) and application_command(launcher,name,exe,cmd) for p,parent,exe,cmd in rows):
             raise RuntimeError('Owned application child unavailable; no second worker started')
     return pid
 
 def reject_orphan(launcher,name,rows):
-    needle='run_intelligence_execution_v2.py' if name=='maintain' else MODULES[name]
-    if any(needle in cmd and (' -m '+needle in cmd or str(launcher.ROOT).lower() in cmd.lower()) for p,parent,exe,cmd in rows):
+    if any(application_command(launcher,name,exe,cmd) for p,parent,exe,cmd in rows):
         raise RuntimeError('Possible orphan application process; no duplicate started')
     if name in PORTS and launcher.listen_pid(PORTS[name]):raise RuntimeError('Port occupied without proven Genesis supervisor; untouched')
 
