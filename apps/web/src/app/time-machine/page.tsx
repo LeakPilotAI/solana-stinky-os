@@ -145,7 +145,7 @@ export default function TimeMachinePage() {
         <div className="panel mb-4 p-3">
           <div className="mb-2 text-2xs uppercase text-terminal-muted">Score history</div>
           <div className="space-y-1">
-            {data.score_series.map((s: any, i: number) => (
+            {data.score_series.map((s, i) => (
               <div key={i} className="flex justify-between text-xs tabular">
                 <span className="text-terminal-dim">{String(s.captured_at || s.at || "").slice(0, 19)}</span>
                 <span>score <strong>{Number(s.score).toFixed(1)}</strong>{s.confidence != null ? ` · conf ${(Number(s.confidence)*100).toFixed(0)}%` : ""}</span>

@@ -106,6 +106,7 @@ export default function SmartMoneyPage() {
             items: [] as SuccessRow[],
             count: 0,
             message: "success endpoint unavailable",
+            engine: undefined,
           })),
         ]);
         if (!c) {

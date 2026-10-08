@@ -5,47 +5,52 @@ const path = require("node:path");
 const vm = require("node:vm");
 const ts = require("typescript");
 
-// Run the actual route with only its external database/process/filesystem edges
-// replaced. No Docker, application database, or credentials are used.
-function route({ env = {}, cohortFailure = false, marketFailure = false, cohortRaw = "", policyRaw = "", registryRaw = "" } = {}) {
+// Execute the current fetch proxy. The backend criteria/SQL semantics are
+// behavior-tested in services/api/tests/test_paper_status_contract.py; these
+// fixtures verify that transport preserves that complete contract unchanged.
+function route({ env = {}, cohortFailure = false, marketFailure = false, cohortRaw = "", policyRaw = "", registryRaw = "", requests = [] } = {}) {
   const source = fs.readFileSync(path.join(__dirname, "../src/app/api/paper-status/route.ts"), "utf8");
   const output = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
   const exports = {};
   vm.runInNewContext(output, {
-    exports, process: { env, cwd: () => "/fixture", platform: "linux" },
+    exports, process: { env }, AbortSignal,
+    fetch: async (url, options) => {
+      requests.push([url, options]);
+      if (cohortFailure) throw new Error("database unavailable");
+      return { ok: true, json: async () => {
+        const criteria = {
+          min_closed_outcomes: fixtureInt(env.STINKY_PAPER_READINESS_MIN_CLOSED_OUTCOMES),
+          min_market_cap_samples: fixtureInt(env.STINKY_PAPER_READINESS_MIN_MARKET_CAP_SAMPLES),
+          min_outcome_classes: fixtureInt(env.STINKY_PAPER_READINESS_MIN_OUTCOME_CLASSES),
+        };
+        const configured = Object.values(criteria).every(x => x !== null) && criteria.min_outcome_classes <= 3;
+        return {
+          status: "OBSERVED", policy_cohorts: cohortRaw.split(/\r?\n/).filter(Boolean).map(JSON.parse),
+          policy: policyRaw ? JSON.parse(policyRaw) : { status: "NOT_SET" },
+          policy_registry: registryRaw.split(/\r?\n/).filter(Boolean).map(JSON.parse),
+          aggregate_scope: "ALL_IMMUTABLE_POLICY_COHORTS", historical_identity_inference: false,
+          prospective_evidence: { readiness: {
+            status: configured ? "CRITERIA_CONFIGURED" : "CRITERIA_NOT_SET", criteria,
+            deficits: configured ? { closed_outcomes_needed: criteria.min_closed_outcomes,
+              outcome_classes_needed: criteria.min_outcome_classes,
+              market_cap_samples_needed: marketFailure ? null : criteria.min_market_cap_samples } : null,
+            observed_market_cap_samples: marketFailure ? null : 0,
+            market_cap_samples_available: !marketFailure, automatic_activation: false,
+          } },
+        };
+      } };
+    },
     require(name) {
       if (name === "next/server") return { NextResponse: { json: x => x } };
-      if (name === "node:fs/promises") return { readFile: async () => { throw new Error("no pid file"); } };
-      if (name === "node:child_process") return { execFile: true };
-      if (name === "node:util") return { promisify: () => async (_file, args) => {
-        const sql = args.at(-1);
-        if (sql.includes("paper_status_snapshot")) {
-          if (cohortFailure) throw new Error("database unavailable");
-          const lines = [
-            "candidate|0",
-            'evidence|{"closed":0,"represented":0,"first_candidate_at":null,"latest_candidate_at":null}',
-            ...cohortRaw.split(/\r?\n/).filter(Boolean).map(line => `cohort|${line}`),
-            ...registryRaw.split(/\r?\n/).filter(Boolean).map(line => `registry|${line}`),
-          ];
-          return { stdout: lines.join("\n") };
-        }
-        if (sql.includes("FROM paper_policy_active a JOIN paper_policy_registry r")) return { stdout: policyRaw };
-        if (sql.includes("FROM paper_policy_registry r LEFT JOIN paper_policy_active a")) return { stdout: registryRaw };
-        if (sql.includes("GROUP BY policy_version,policy_sha256,policy_evidence_backed")) {
-          if (cohortFailure) throw new Error("database unavailable");
-          return { stdout: cohortRaw };
-        }
-        if (sql.includes("FROM market_pattern_outcome_distributions")) {
-          if (marketFailure) throw new Error("relation does not exist");
-          return { stdout: "0" };
-        }
-        return { stdout: "" };
-      } };
-      if (name === "node:path") return path;
       throw new Error(`Unexpected dependency ${name}`);
     },
   });
   return exports.GET;
+}
+function fixtureInt(raw) {
+  if (!raw || !/^[0-9]+$/.test(raw.trim())) return null;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
 test("explicit positive evidence criteria are accepted without defaults", async () => {
@@ -66,13 +71,15 @@ test("cohort database failure stays UNKNOWN instead of a valid empty cohort list
   assert.equal(result.policy_cohorts, undefined);
 });
 
-test("paper status bounds Docker/PostgreSQL probes instead of concurrent fan-out", () => {
+test("paper status uses one bounded API request instead of concurrent Docker probes", async () => {
+  const requests = [];
+  await route({ requests })();
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0][0], "http://127.0.0.1:8010/v1/paper/status");
+  assert.equal(requests[0][1].cache, "no-store");
+  assert.ok(requests[0][1].signal instanceof AbortSignal);
   const source = fs.readFileSync(path.join(__dirname, "../src/app/api/paper-status/route.ts"), "utf8");
-  assert.ok(source.includes("paper_status_snapshot"));
-  assert.ok(source.includes("const snapshotRaw = await psql"));
-  assert.ok(source.includes("const policy = await policyStatus();"));
-  assert.ok(source.includes("const marketRaw = await psql"));
-  assert.ok(!source.includes("await Promise.all(["));
+  assert.ok(!source.includes("execFile") && !source.includes("Promise.all"));
 });
 
 test("missing market-cap source remains unavailable instead of becoming a measured zero", async () => {
@@ -155,7 +162,7 @@ test("paper release evaluation request actually sends only explicit criteria", (
 });
 
 test("paper status distinguishes immutable provisioned registry from active pointer", () => {
-  const routeSource = fs.readFileSync(path.join(__dirname, "../src/app/api/paper-status/route.ts"), "utf8");
+  const routeSource = fs.readFileSync(path.join(__dirname, "../../../services/api/src/stinky_api/paper_status_contract.py"), "utf8");
   const panel = fs.readFileSync(path.join(__dirname, "../src/components/command-center/PaperCalibrationPanel.tsx"), "utf8");
   assert.ok(routeSource.includes("paper_registry_scope") || routeSource.includes("policy_registry_scope"));
   assert.ok(routeSource.includes("LATEST_50_IMMUTABLE_POLICIES"));
@@ -213,10 +220,10 @@ test("evidence-backed status preserves exact content-addressed provenance identi
   assert.equal(result.policy_registry[0].policy_identity.provenance.comparison_evidence_sha256, comparison);
   assert.equal(result.policy_cohorts[0].policy_identity.provenance.comparison_evidence_sha256, comparison);
 
-  const routeSource = fs.readFileSync(path.join(__dirname, "../src/app/api/paper-status/route.ts"), "utf8");
+  const routeSource = fs.readFileSync(path.join(__dirname, "../../../services/api/src/stinky_api/paper_status_contract.py"), "utf8");
   const panel = fs.readFileSync(path.join(__dirname, "../src/components/command-center/PaperCalibrationPanel.tsx"), "utf8");
-  assert.ok(routeSource.includes("'policy_identity',json_build_object"));
-  assert.ok(routeSource.includes("record->'policy_identity'"));
+  assert.ok(routeSource.includes("'policy_identity',jsonb_build_object"));
+  assert.ok(fs.readFileSync(path.join(__dirname, "../../../services/api/src/stinky_api/main.py"), "utf8").includes("record->'policy_identity'"));
   assert.ok(panel.includes("comparison_evidence_sha256"));
   assert.ok(panel.includes("Comparison evidence SHA"));
 });

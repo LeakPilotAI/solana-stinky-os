@@ -1,5 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
+import { test } from "node:test";
+import assert from "node:assert/strict";
+
+// Keep every existing assertion executable with the frontend's Node runner.
+const expect = (value: string) => ({
+  toContain: (expected: string) => assert.ok(value.includes(expected), `Missing ${expected}`),
+  not: { toContain: (expected: string) => assert.ok(!value.includes(expected), `Unexpected ${expected}`) },
+});
 
 const root = process.cwd();
 

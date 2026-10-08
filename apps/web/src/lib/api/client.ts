@@ -16,7 +16,15 @@ import type {
   OutcomesResponse,
 } from "@/types";
 
+import { fetchExecutionV2 } from "./intelligence-execution-v2";
+
 const BASE = "/api/stinky";
+type WalletSuccessResponse = {
+  available?: boolean; message?: string; engine?: string; count?: number;
+  items: Array<{ wallet: string; early_entries?: number; early_on_mega?: number;
+    early_on_runner?: number; early_on_mid?: number; early_on_fade?: number;
+    success_rate?: number | null; sample_size?: number; last_success_at?: string | null }>;
+};
 
 async function getJson<T>(
   path: string,
@@ -40,6 +48,7 @@ async function getJson<T>(
 }
 
 export const api = {
+  intelligenceExecutionV2: fetchExecutionV2,
   health: () => getJson<SystemHealth>("/health", { timeoutMs: 8_000 }),
   commandCenter: () =>
     getJson<CommandCenterData>("/v1/command-center", { timeoutMs: 20_000 }),
@@ -62,7 +71,7 @@ export const api = {
       { timeoutMs: 8_000 }
     ),
   walletsSuccess: (limit = 50) =>
-    getJson<any>(`/v1/wallets/success?limit=${limit}`, { timeoutMs: 8_000 }),
+    getJson<WalletSuccessResponse>(`/v1/wallets/success?limit=${limit}`, { timeoutMs: 8_000 }),
   wallet: (address: string) =>
     getJson<WalletDetail>(`/v1/wallets/${encodeURIComponent(address)}`, {
       timeoutMs: 10_000,

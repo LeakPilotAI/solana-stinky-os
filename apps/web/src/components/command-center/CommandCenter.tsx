@@ -335,17 +335,17 @@ export function CommandCenter() {
       </section>
 
       {/* ── ALERT PRECISION (measured outcomes) ── */}
-      {(data as any).pipeline?.available === false ? (
+      {data.pipeline?.available === false ? (
         <div className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
           PIPELINE EVIDENCE UNAVAILABLE
         </div>
-      ) : (data as any).pipeline?.available ? (
+      ) : data.pipeline?.available ? (
         <div className="rounded border border-terminal-border bg-terminal-panel/80 px-3 py-2 text-2xs">
           <div className="mb-1 text-[9px] font-semibold uppercase tracking-wide text-terminal-dim">
             Pipeline
           </div>
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-terminal-muted">
-            {Object.entries(((data as any).pipeline?.tables as Record<string, number | null>) || {}).map(
+            {Object.entries((data.pipeline?.tables as Record<string, number | null>) || {}).map(
               ([k, v]) => (
                 <span key={k}>
                   <span className="text-terminal-dim">{k}</span>{" "}
@@ -353,11 +353,11 @@ export function CommandCenter() {
                 </span>
               )
             )}
-            {(data as any).pipeline?.maintain_last_utc && (
+            {data.pipeline?.maintain_last_utc && (
               <span>
                 <span className="text-terminal-dim">maintain</span>{" "}
                 <span className="tabular text-terminal-fg">
-                  {String((data as any).pipeline.maintain_last_utc).slice(0, 19)}Z
+                  {String(data.pipeline.maintain_last_utc).slice(0, 19)}Z
                 </span>
               </span>
             )}
@@ -549,7 +549,7 @@ export function CommandCenter() {
           <ul className="flex-1 space-y-0.5 overflow-auto p-1.5">
             {uniqueAlerts.length === 0 && (
               <li className="py-8 text-center text-[12px] text-terminal-muted">
-                No alerts yet.
+                {failed.has("alerts") ? "ALERT EVIDENCE UNAVAILABLE" : "No alerts yet."}
               </li>
             )}
             {uniqueAlerts.map((a) => {
@@ -645,7 +645,7 @@ export function CommandCenter() {
             ))}
             {data.entities.length === 0 && (
               <li className="px-3 py-6 text-center text-[12px] text-terminal-muted">
-                No entities yet.
+                {failed.has("entities") ? "ENTITY EVIDENCE UNAVAILABLE" : "No entities yet."}
               </li>
             )}
           </ul>
