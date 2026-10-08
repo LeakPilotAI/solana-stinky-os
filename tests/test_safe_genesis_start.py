@@ -137,3 +137,44 @@ def test_missing_dependency_never_creates_container(monkeypatch):
  monkeypatch.setattr(safe,'run',lambda a,**k:(calls.append(a) or '[]'))
  with pytest.raises(RuntimeError):safe.ensure_dependencies(SimpleNamespace(find_docker=lambda:'docker'))
  assert len(calls)==1 and calls[0][1]=='inspect'
+
+@pytest.mark.parametrize('full',[False,True])
+def test_absent_paper_services_only_started_by_explicit_full(launcher,full):
+ l,calls,active=launcher
+ for name in safe.PAPER_SERVICES:active.pop(name)
+ args=Namespace(sync=False,restart=False,full=full,core_only=not full)
+ assert safe.recover(l,args)==0;assert safe.recover(l,args)==0
+ started=[x for x in calls if x in safe.SERVICES]
+ assert started==(list(safe.PAPER_SERVICES) if full else [])
+ assert all(n in active for n in safe.CORE_SERVICES)
+
+@pytest.mark.parametrize('argv,expected',[([],safe.CORE_SERVICES),(['--core-only'],safe.CORE_SERVICES),(['--skip-sync'],safe.CORE_SERVICES),(['--full'],safe.SERVICES),(['--full-startup'],safe.SERVICES)])
+def test_cli_profile_selection_without_running_startup(monkeypatch,argv,expected):
+ import start_genesis as l
+ import sys
+ monkeypatch.setattr(sys,'argv',['start_genesis.py',*argv])
+ monkeypatch.setattr(l,'configure_stdio',lambda:None);monkeypatch.setattr(l,'restore_search_path',lambda:None)
+ def recover(launcher,args):
+  assert safe.selected_services(args)==expected
+  return 0
+ monkeypatch.setattr(safe,'recover',recover)
+ assert l.main()==0
+
+def test_profile_conflict_fails_before_probe(launcher):
+ l,calls,_=launcher
+ assert safe.recover(l,Namespace(sync=False,restart=False,core_only=True,full=True))==1
+ assert calls==['failure']
+
+def test_core_metadata_preserves_separately_managed_paper_pids(tmp_path,monkeypatch):
+ import start_genesis as l
+ p=tmp_path/'pids';p.write_text('paper-runtime=123\ncollector=456\n')
+ monkeypatch.setattr(l,'PID_FILE',p)
+ l.write_pid_file({'collector':789})
+ assert p.read_text()=='paper-runtime=123\ncollector=789\n'
+
+def test_desktop_default_core_explicit_full_passes_through():
+ root=Path(__file__).resolve().parents[1];cmd=(root/'Start-Stinky-OS.cmd').read_text()
+ assert 'if "%~1"==""' in cmd
+ assert '"%~dp0start_genesis.py" --core-only' in cmd
+ assert '"%~dp0start_genesis.py" %*' in cmd
+ assert 'start_paper_runtime.py' not in cmd

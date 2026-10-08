@@ -13,8 +13,15 @@ changes Redis configuration or trims streams. Dependency health failure blocks
 application starts. Schema is checked in a read-only transaction; migrations and
 package/environment installation are separate reviewed work.
 
+Default desktop startup explicitly selects `--core-only`. Direct Python startup
+also defaults to core-only. `--full` / `--full-startup` is a separate explicit mode;
+conflicting profile flags fail before any recovery probe. Core-only considers only
+the seven checkpoint 41 services. Existing paper services and their PID metadata
+are preserved; absent paper services are not started. The optional paper workflow
+is reported as unmanaged by core-only, not falsely reported healthy.
+
 Services start in the checkpoint 41 order: event-log, API, Sentinel, collector,
-entities, frontend and maintenance, then the existing paper-intake/paper-runtime services, using the unchanged supported per-service runner.
+entities, frontend and maintenance, and, only with explicit full startup, the existing paper-intake/paper-runtime services, using the unchanged supported per-service runner.
 Existing native supervisor chains are collapsed across Windows venv wrappers and
 verified against repository identity, native creation time and a fresh heartbeat.
 HTTP services additionally require HTTP 200. Stale PID files never establish health.

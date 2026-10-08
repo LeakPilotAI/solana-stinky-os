@@ -10,7 +10,9 @@ import subprocess
 import time
 import uuid
 
-SERVICES = ('event-log','api','sentinel','collector','entities','web','maintain','paper-intake-producer','paper-runtime')
+CORE_SERVICES = ('event-log','api','sentinel','collector','entities','web','maintain')
+PAPER_SERVICES = ('paper-intake-producer','paper-runtime')
+SERVICES = CORE_SERVICES + PAPER_SERVICES
 URLS = {'event-log':'http://127.0.0.1:8002/health','api':'http://127.0.0.1:8010/health','web':'http://127.0.0.1:3000/operator'}
 PORTS = {'event-log':8002,'api':8010,'web':3000}
 MODULES = {'collector':'post_migration.cli','sentinel':'sentinel.cli','entities':'entity_resolver.cli','api':'stinky_api.cli','event-log':'event_log.cli','web':'next','paper-intake-producer':'stinky_api.prospective_paper_policy_runtime','paper-runtime':'stinky_api.paper_runtime_worker'}
@@ -147,17 +149,25 @@ def recover_service(launcher,name):
         time.sleep(.5)
     raise RuntimeError('Startup ownership/health not proven; existing new process left untouched')
 
+def selected_services(args):
+    if getattr(args,'core_only',False) and getattr(args,'full',False):
+        raise ValueError('Choose one startup profile')
+    return SERVICES if getattr(args,'full',False) else CORE_SERVICES
+
+
 def recover(launcher,args):
     try:
         if args.sync or args.restart:raise RuntimeError('Sync/restart are separate reviewed operations; ordinary startup preserves code and services')
+        services=selected_services(args)
         with startup_lock(launcher.LOG_DIR/'application-start.lock'):
             if not (launcher.ROOT/'.env').is_file():raise RuntimeError('Existing .env required')
             launcher.ensure_docker();launcher.apply_schema()
             procs={}
-            for name in SERVICES:procs[name]=launcher.start_detached(name,required=True)
+            for name in services:procs[name]=launcher.start_detached(name,required=True)
             launcher.write_pid_file(procs)
             launcher.HEALTH['DISCORD']='DISABLED'
-            launcher.say('ALREADY RUNNING or safely recovered; no outbound notifications; paper-only, live authority locked')
+            launcher.say(('FULL' if getattr(args,'full',False) else 'CORE-ONLY')+' startup: ALREADY RUNNING or safely recovered; no outbound notifications; paper-only, live authority locked')
+            if not getattr(args,'full',False):launcher.say('Persistent paper intake/processing is not managed by CORE-ONLY; existing paper services stay untouched. Use --full explicitly for that separate workflow.')
             if not all(launcher.http_ok(url,3) for url in URLS.values()):raise RuntimeError('Final HTTP health unavailable')
             launcher.open_operator()
             return 0

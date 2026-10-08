@@ -9,7 +9,11 @@ if not exist "%PY%" (
  set "ERR=1"
  goto :done
 )
-"%PY%" "%~dp0start_genesis.py" %*
+if "%~1"=="" (
+ "%PY%" "%~dp0start_genesis.py" --core-only
+) else (
+ "%PY%" "%~dp0start_genesis.py" %*
+)
 set "ERR=%ERRORLEVEL%"
 :done
 if not "%ERR%"=="0" (

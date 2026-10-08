@@ -9,7 +9,7 @@ Gate 1 is **$33k / 5m volume**, clamp **$200k**. That is an investigation trigge
 ## Windows operator box (`D:\Work\Project-Genesis`)
 
 The Genesis shortcut calls `Start-Stinky-OS.cmd`, then `start_genesis.py`.
-Ordinary startup recovers only missing application services. Healthy services
+Ordinary desktop startup uses `--core-only` and recovers only missing services from the seven-service collection/V2 profile: event-log, API, Sentinel, collector, entities, frontend and maintenance. Healthy services
 and dependency containers remain untouched. Stale, unverified, orphan or duplicate
 process chains fail closed. Native ownership and HTTP 200 are required; PID files
 alone cannot establish health. Concurrent shortcut launches are serialized.
@@ -17,6 +17,12 @@ alone cannot establish health. Concurrent shortcut launches are serialized.
 ```powershell
 .\.venv\Scripts\python.exe .\start_genesis.py --skip-sync
 ```
+
+Use `--full` (alias `--full-startup`) explicitly to also recover the separate
+persistent paper-intake-producer and paper-runtime services. Core-only mode leaves
+any existing paper services untouched; it does not start absent ones. These services
+are not required by frozen Intelligence Execution V2. See the
+[paper-service audit](docs/PAPER_SERVICE_STARTUP_AUDIT.md).
 
 `--skip-sync` never bypasses safety. `--keep` is a compatibility alias for safe
 recovery. `--sync` and `--restart` are rejected; use separately reviewed workflows

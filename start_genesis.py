@@ -569,7 +569,16 @@ def start_detached(name: str, port: int = 0, required: bool = False) -> int:
 
 
 def write_pid_file(procs: dict[str, int]) -> None:
-    lines = ["%s=%s" % (k, v) for k, v in procs.items() if v and int(v) > 0]
+    # A core-only recovery must retain metadata for separately managed services.
+    # These entries remain hints, never health/ownership proof.
+    known = {}
+    if PID_FILE.is_file():
+        for line in PID_FILE.read_text(encoding="ascii", errors="replace").splitlines():
+            match = re.fullmatch(r"([a-z-]+)=(\d+)", line.strip())
+            if match:
+                known[match.group(1)] = int(match.group(2))
+    known.update(procs)
+    lines = ["%s=%d" % (name, pid) for name, pid in known.items() if pid > 0]
     PID_FILE.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="ascii")
 
 
@@ -653,6 +662,9 @@ def main() -> int:
     parser.add_argument("--keep", action="store_true")
     parser.add_argument("--restart", action="store_true")
     parser.add_argument("--skip-install", action="store_true")
+    profile = parser.add_mutually_exclusive_group()
+    profile.add_argument("--core-only", action="store_true", help="default: recover the seven collection/V2 core services only")
+    profile.add_argument("--full", "--full-startup", dest="full", action="store_true", help="also recover the separate persistent paper services")
     args = parser.parse_args()
     configure_stdio()
     restore_search_path()
