@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { fetchV2Details, type V2DetailResponse } from "@/lib/api/intelligence-execution-v2-details";
+import { SupervisorPassStatus } from "./SupervisorPassStatus";
 
 const seconds = (n: number | null) => n === null ? "UNAVAILABLE" : `${n.toFixed(3)}s`;
 const labels: Record<string, string> = { detection_to_admission: "Detection → admission", decision_to_admission: "Decision → admission",
@@ -64,6 +65,6 @@ export function IntelligenceExecutionV2Details() {
   }, [open, revision]);
   return <details onToggle={event => setOpen(event.currentTarget.open)} className="mt-3 border-t border-terminal-border pt-3">
     <summary className="cursor-pointer text-[11px] font-semibold text-terminal-text">Reasons, latency and collection details</summary>
-    {open ? <><button type="button" onClick={() => setRevision(r => r+1)} disabled={loading} className="mt-3 max-w-full rounded border border-terminal-border px-3 py-1 text-left text-[11px] text-terminal-text disabled:opacity-50">Refresh detail snapshot</button><V2DetailsView data={data} loading={loading} error={error} /></> : null}
+    {open ? <><button type="button" onClick={() => setRevision(r => r+1)} disabled={loading} className="mt-3 max-w-full rounded border border-terminal-border px-3 py-1 text-left text-[11px] text-terminal-text disabled:opacity-50">Refresh detail snapshot</button><SupervisorPassStatus revision={revision} /><V2DetailsView data={data} loading={loading} error={error} /></> : null}
   </details>;
 }
