@@ -61,8 +61,11 @@ def validate_dependency(record,name):
     if record.get('Name')!='/'+name or labels.get('com.docker.compose.project')!='project-genesis' or labels.get('com.docker.compose.service')!=service:
         raise RuntimeError('Dependency ownership unavailable')
     mounts=record.get('Mounts',[])
-    if not any(m.get('Destination')==dest and m.get('Type')=='volume' and m.get('Name')=='project-genesis_'+service+'-data' for m in mounts):
+    if not any(m.get('Destination')==dest and m.get('Type')=='volume' and m.get('Name') in (( 'project-genesis_redis-data','project-genesis_redis-durable-data') if service=='redis' else ('project-genesis_'+service+'-data',)) for m in mounts):
         raise RuntimeError('Dependency persistent volume ownership unavailable')
+    if service=='redis' and any(m.get('Name')=='project-genesis_redis-durable-data' for m in mounts):
+        if record.get('Config',{}).get('Cmd')!=['redis-server','/data/redis.conf']:
+            raise RuntimeError('Durable Redis startup configuration unavailable')
     binding=(record.get('HostConfig',{}).get('PortBindings',{}).get(port) or [])
     if not any(b.get('HostPort')==host for b in binding):raise RuntimeError('Dependency port ownership unavailable')
     state=record.get('State',{}).get('Status')
@@ -81,6 +84,14 @@ def ensure_dependencies(launcher):
     if 'accepting connections' not in run([docker,'exec','stinky-postgres','pg_isready','-U','stinky','-d','stinky']):raise RuntimeError('Postgres unavailable')
     if run([docker,'exec','stinky-redis','redis-cli','PING']).strip()!='PONG':raise RuntimeError('Redis unavailable')
     run([docker,'exec','stinky-minio','curl','-f','http://localhost:9000/minio/health/live'])
+    if any(m.get('Name')=='project-genesis_redis-durable-data' for m in records[1].get('Mounts',[])):
+        from scripts.redis_snapshot_integrity import verify_aof_ready
+        text=run([docker,'exec','stinky-redis','redis-cli','INFO','persistence'])
+        info={}
+        for line in text.splitlines():
+            key,sep,value=line.partition(':')
+            if sep:info[key]=int(value) if value.isdigit() else value
+        verify_aof_ready(info)
 
 def verify_schema(launcher):
     from scripts.strict_startup_schema_gate import REQUIRED_TABLES

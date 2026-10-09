@@ -243,3 +243,27 @@ def test_cold_core_application_start_then_repeat_is_idempotent(launcher):
  assert safe.recover(l,args)==0
  assert [x for x in calls if x in safe.SERVICES]==list(safe.CORE_SERVICES)
  assert not set(active)&set(safe.PAPER_SERVICES)
+
+def test_durable_migrated_volume_requires_exact_persistence_startup():
+ r=record('stinky-redis')
+ r['Mounts'][0]['Name']='project-genesis_redis-durable-data'
+ r['Config']['Cmd']=['redis-server','/data/redis.conf']
+ assert safe.validate_dependency(r,'stinky-redis')=='running'
+ r['Config']['Cmd']+=['--appendonly','no']
+ with pytest.raises(RuntimeError,match='startup'):safe.validate_dependency(r,'stinky-redis')
+
+def test_durable_startup_unhealthy_aof_starts_no_apps(monkeypatch):
+ rows=[record(n) for n in safe.DEPENDENCIES]
+ rows[1]['Mounts'][0]['Name']='project-genesis_redis-durable-data'
+ rows[1]['Config']['Cmd']=['redis-server','/data/redis.conf']
+ calls=[]
+ def run(args,**kwargs):
+  calls.append(args)
+  if args[1]=='inspect':return json.dumps(rows)
+  if 'pg_isready' in args:return 'accepting connections'
+  if 'PING' in args:return 'PONG'
+  if 'INFO' in args:return 'aof_enabled:0\n'
+  return ''
+ monkeypatch.setattr(safe,'run',run)
+ with pytest.raises(ValueError,match='AOF'):safe.ensure_dependencies(SimpleNamespace(find_docker=lambda:'docker'))
+ assert all('start' not in call for call in calls)

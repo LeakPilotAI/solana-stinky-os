@@ -9,13 +9,19 @@ def read(rel: str) -> str:
     return (ROOT / rel).read_text(encoding="utf-8", errors="replace")
 
 
-def test_redis_disables_hourly_rdb_and_caps_memory():
+def test_durable_redis_retains_memory_cap_without_automatic_rdb_forks():
     t = read("docker-compose.yml")
-    assert '--save ""' in t or "--save \"\"" in t or '--save ""' in t
-    assert "--save" in t
-    assert "--maxmemory 384mb" in t
-    assert "--appendonly no" in t
-    # never unbounded stream persistence
+    config = read("config/redis.conf")
+    fields = {}
+    for line in config.splitlines():
+        if line and not line.startswith("#"):
+            key, value = line.split(None, 1)
+            fields[key] = value
+    assert fields["save"] == '""'
+    assert fields["maxmemory"] == "384mb"
+    assert fields["appendonly"] == "yes"
+    assert fields["appendfsync"] == "always"
+    assert '["redis-server", "/data/redis.conf"]' in t
     assert "10_000_000" not in read("packages/stinky-core/src/stinky_core/transport/redis_streams.py")
 
 

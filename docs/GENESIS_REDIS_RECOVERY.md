@@ -27,6 +27,46 @@ values/identifiers and records stream IDs, group counters and expiry clocks.
 Serialized stream fingerprints include entries, consumers and pending-entry state.
 Recovery mismatches fail closed; do not normalize away discrepancies to pass.
 
+## Stream recovery integrity gate (checkpoint 57)
+
+Redis 7.4.9 AOF replay applies pending deliveries through XCLAIM, updating consumer
+`seen-time` and `active-time` to replay-time values. RDB/DUMP stores both clocks,
+so their reset changes the object fingerprint and checksum. Checkpoint 57 decoded
+exactly those fields in the failed synthetic fixture; entry bytes, ownership,
+absolute PEL delivery time and delivery count were preserved. References:
+[version-pinned stream implementation](https://github.com/redis/redis/blob/7.4.9/src/t_stream.c)
+and [version-pinned RDB serialization](https://github.com/redis/redis/blob/7.4.9/src/rdb.c).
+
+Keep raw RDB-copy/checksum verification and the existing raw census comparator
+unchanged. For stream recovery use `scripts.redis_stream_integrity`:
+
+- `semantic_census` performs bounded atomic EVAL_RO reads and fingerprints ordered
+  raw field/value bytes with length framing. Duplicate field names and binary
+  values are retained; do not convert stream payload pairs into dictionaries.
+- Compare every entry ID, field count and payload digest; stream counters/cursors;
+  complete group and consumer membership; complete group/consumer PEL ownership,
+  absolute delivery timestamps and delivery counts; key type and absolute expiry.
+- Unknown fields, missing/truncated data, malformed proofs and unsupported Redis
+  versions fail closed. Nonstream values retain exact raw DUMP comparison.
+- RDB mode requires unchanged activity clocks. AOF mode requires an explicit
+  recovery window measured in Redis's own clock domain. Only seen/active clocks
+  may change, and changed values must fall within that window. Idle durations
+  naturally advance; never mistake them for changed absolute PEL delivery times.
+- Return all raw representation and permitted activity-clock changes as diagnostic
+  evidence, retaining original values. Consumer activity replay is not collection
+  freshness or a verified powered experiment session.
+
+This does not ignore an entire key when its hash differs: unchanged evidence and
+PEL state are mandatory even when replay activity clocks legitimately reset.
+Negative tests cover changed payload bytes, missing entries, ownership, delivery
+counts/times, cursor/expiry changes, clock variance outside the replay window and
+incomplete evidence. Production cutover is prohibited during checkpoint 57.
+
+Checkpoint 56 migration preparation is reconciled with this gate, including exact
+candidate volume/mount isolation and an inert corrected proof-step design. Neither
+the proposed Compose config nor those isolated volumes represent active production.
+Do not use Compose-up to bypass the approved, coordinated migration procedure.
+
 The immutable exported file defines the recovered point-in-time baseline. Live
 pre-export counts are not that baseline. Writes, acknowledgements, trims and expiry
 after capture belong to subsequent production state and are not covered by it.
