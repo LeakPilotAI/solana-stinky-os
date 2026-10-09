@@ -232,3 +232,14 @@ def test_case_variant_duplicate_chains_fail_closed(launcher):
 def test_unavailable_or_ambiguous_executable_identity_fails_closed(launcher,command):
  l,_,_=launcher
  with pytest.raises(RuntimeError):safe.service_pid(l,'collector',[(123,0,'python.exe',command)])
+
+def test_cold_core_application_start_then_repeat_is_idempotent(launcher):
+ l,calls,active=launcher
+ active.clear()
+ args=Namespace(sync=False,restart=False,core_only=True,full=False)
+ assert safe.recover(l,args)==0
+ assert [x for x in calls if x in safe.SERVICES]==list(safe.CORE_SERVICES)
+ assert tuple(active)==safe.CORE_SERVICES
+ assert safe.recover(l,args)==0
+ assert [x for x in calls if x in safe.SERVICES]==list(safe.CORE_SERVICES)
+ assert not set(active)&set(safe.PAPER_SERVICES)

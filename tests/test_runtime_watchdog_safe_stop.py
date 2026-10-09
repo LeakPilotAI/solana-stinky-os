@@ -43,30 +43,24 @@ def test_api_child_kill_is_scoped_and_never_targets_docker():
     assert "/IM" not in chunk
 
 
-def test_stop_removes_only_genesis_compose_and_keeps_volumes():
-    t = read("stop-stinky.ps1")
-    assert "compose -p project-genesis" in t
-    assert "down --remove-orphans" in t
-    assert "compose -p atlas" not in t
-    assert "docker system prune" not in t.lower()
-    assert "docker rm" not in t.lower()
-    assert "Docker Desktop remains running" in t
-    assert "ATLAS was not targeted" in t
-
-    # No volume deletion: tomorrow's Genesis start must reuse persistent data.
-    compose_line = next(line for line in t.splitlines() if "down --remove-orphans" in line)
-    assert " -v" not in compose_line
-    assert "--volumes" not in compose_line
+def test_stop_preserves_every_dependency_and_volume():
+    from scripts import safe_genesis_stop as stop
+    from types import SimpleNamespace
+    root=ROOT
+    rows=[(1,0,"docker.exe","docker.exe"),(2,0,"postgres.exe","postgres.exe"),
+          (3,0,"redis.exe","redis.exe"),(4,0,"node.exe","node.exe D:/Work/Project-Atlas/app.js")]
+    assert stop.stop_plan(SimpleNamespace(ROOT=root),rows)==[]
+    assert "compose" not in read("stop-stinky.ps1").lower()
 
 
-def test_stop_never_kills_docker_daemon_and_stops_supervisors_first():
-    t = read("stop-stinky.ps1")
-    assert 'if ($p -and $p.Name -match "(?i)docker|Docker Desktop|com\\.docker|dockerd")' in t
-    assert "run_genesis_service\\.py" in t
-    assert "maintain" in t
-    compose_at = t.index("down --remove-orphans")
-    process_at = t.index("Get-CimInstance Win32_Process")
-    assert process_at < compose_at
+def test_stop_supervisors_first_without_broad_tree_kills():
+    from scripts import safe_genesis_stop as stop
+    from types import SimpleNamespace
+    rows=[(20,10,"python.exe","python.exe -m post_migration.cli"),
+          (10,0,"python.exe",f'python.exe "{ROOT}/scripts/run_genesis_service.py" --name collector')]
+    assert stop.stop_plan(SimpleNamespace(ROOT=ROOT),rows)==[10,20]
+    assert '"/T"' not in read("scripts/safe_genesis_stop.py")
+    assert '"/IM"' not in read("scripts/safe_genesis_stop.py")
 
 
 def test_supervisor_failure_state_is_durable_per_service():

@@ -37,8 +37,22 @@ def startup_lock(path):
             else:fcntl.flock(stream,fcntl.LOCK_UN)
 
 def run(args, **kwargs):
-    result=subprocess.run(args,capture_output=True,text=True,timeout=15,**kwargs)
-    if result.returncode:raise RuntimeError('Required local probe failed; no destructive fallback')
+    # Probe arguments are an internal allowlist. Never expose input SQL/env or raw
+    # output: Docker inspect and provider errors can contain credentials.
+    label=' '.join(str(a) for a in args[1:] if str(a) in (
+        'inspect','exec','start','pg_isready','psql','redis-cli','PING','curl',
+        'stinky-postgres','stinky-redis','stinky-minio')) or 'local probe'
+    try:
+        result=subprocess.run(args,capture_output=True,text=True,timeout=15,**kwargs)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f'Required local probe failed: {label}; timeout=15s; no destructive fallback') from None
+    if result.returncode:
+        # Record bounded safe error categories, not secret-bearing free text.
+        categories=[word for word in ('connection refused','does not exist','permission denied',
+            'no such container','not running','authentication failed','could not connect')
+            if word in (result.stderr or '').lower()]
+        detail=','.join(categories) or ('stderr present (redacted)' if result.stderr else 'stderr empty')
+        raise RuntimeError(f'Required local probe failed: {label}; exit={result.returncode}; {detail}; no destructive fallback')
     return result.stdout
 
 def validate_dependency(record,name):

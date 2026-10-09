@@ -7,7 +7,7 @@ if not exist "%PS%" set "PS=powershell.exe"
 echo.
 echo   GENESIS STOP
 echo   Project: %~dp0
-echo   Only Genesis-owned processes/containers are stopped.
+echo   Only verified Genesis application processes are stopped. Dependencies stay running.
 echo.
 "%PS%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0stop-stinky.ps1" %*
 set "ERR=%ERRORLEVEL%"
@@ -20,5 +20,4 @@ if not "%ERR%"=="0" (
 )
 echo.
 pause
-endlocal
-exit /b %ERR%
+endlocal & exit /b %ERR%

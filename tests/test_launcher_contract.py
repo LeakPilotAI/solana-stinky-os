@@ -117,23 +117,10 @@ def test_browser_only_after_frontend_ready():
 
 def test_stop_is_genesis_owned_only():
     t = read("stop-stinky.ps1")
-    assert "Test-GenesisOwned" in t
-    assert "Get-Process python" not in t
-    assert "Get-Process node" not in t
-    assert "Get-Process npm" not in t
-    assert "taskkill /IM python" not in t.lower()
-    assert "taskkill /IM node" not in t.lower()
-    # must not indiscriminately kill 8001 (ATLAS risk)
-    assert "foreach ($port in 8002, 8010, 3000, 8001)" not in t
-    assert "foreach ($port in 8002, 8010, 3000)" in t
-    assert "not Genesis-owned" in t
-    assert "docker compose" in t
-    assert "Docker Desktop" in t
-    assert "stinky-postgres" in t
-    assert "stinky-redis" in t
-    assert "docker stop" in t
-    assert "-p project-genesis" in t
-    assert "-p atlas" not in t
+    assert "scripts.safe_genesis_stop" in t
+    assert "taskkill" not in t.lower()
+    assert "docker" not in t.lower().replace("# compatibility entry point: application-only, no docker commands or pid-file trust.", "")
+    assert "exit $LASTEXITCODE" in t
 
 
 def test_compose_is_capped_and_not_atlas():
@@ -255,7 +242,7 @@ def test_static_service_runner_is_allowlisted():
     assert "http://127.0.0.1:8002/health" in t
     assert "main.zip" not in t
     s = read("stop-stinky.ps1")
-    assert "run-genesis-service" in s or "run_genesis_service" in s
+    assert "scripts.safe_genesis_stop" in s
     cmd = read("Start-Stinky-OS.cmd")
     assert "start_genesis.py" in cmd
     assert "powershell" not in cmd.lower()
@@ -290,11 +277,10 @@ def test_amsi_start_ps1_removed():
     assert "patch_ensure_schema.py" in inst
 
 
-def test_stop_restores_path_for_docker():
+def test_stop_requires_existing_environment_and_preserves_exit():
     t = read("stop-stinky.ps1")
-    assert "Restore-SearchPath" in t
-    assert "Docker\\Docker\\resources\\bin" in t
-    assert "Test-GenesisOwned" in t
+    assert "Test-Path -LiteralPath $python" in t
+    assert "exit $LASTEXITCODE" in t
 
 
 def test_canonical_launcher_preserves_failure_exit_code():
