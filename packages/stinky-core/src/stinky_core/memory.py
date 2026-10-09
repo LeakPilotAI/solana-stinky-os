@@ -1316,10 +1316,15 @@ class IntelligenceMemory:
         }
 
     def load_wallet_obs(self, rows: Iterable[Any]) -> int:
+        # Reuse single-record validation without scanning every prior observation.
+        # The local index preserves first-record-wins semantics and is discarded
+        # after loading; public lists remain authoritative for subsequent calls.
+        validator = IntelligenceMemory()
+        seen = {(observation.wallet, observation.mint, observation.role) for observation in self.wallet_obs}
         n = 0
         for r in rows:
             d = dict(r)
-            if self.record_wallet(
+            if validator.record_wallet(
                 wallet=str(d.get("wallet") or ""),
                 mint=str(d.get("mint") or ""),
                 observed_at=d.get("observed_at"),
@@ -1332,7 +1337,12 @@ class IntelligenceMemory:
                 exit_price=_maybe_float(d.get("exit_price")),
                 ret_pct=_maybe_float(d.get("ret_pct")),
             ):
-                n += 1
+                observation = validator.wallet_obs.pop()
+                key = (observation.wallet, observation.mint, observation.role)
+                if key not in seen:
+                    self.wallet_obs.append(observation)
+                    seen.add(key)
+                    n += 1
         return n
 
     def load_wallet_outcomes(self, rows: Iterable[Any]) -> int:
@@ -1424,10 +1434,15 @@ class IntelligenceMemory:
         return n
 
     def load_market_ticks(self, rows: Iterable[Any]) -> int:
+        # Reuse single-record validation without scanning every prior observation.
+        # The local index preserves first-record-wins semantics and is discarded
+        # after loading; public lists remain authoritative for subsequent calls.
+        validator = IntelligenceMemory()
+        seen = {(observation.mint, observation.observed_at) for observation in self.market_ticks}
         n = 0
         for r in rows:
             d = dict(r)
-            if self.record_market_tick(
+            if validator.record_market_tick(
                 mint=str(d.get("mint") or ""),
                 observed_at=d.get("observed_at"),
                 volume_m5_usd=_maybe_float(d.get("volume_m5_usd")),
@@ -1444,7 +1459,12 @@ class IntelligenceMemory:
                 unique_sellers=_maybe_int(d.get("unique_sellers")),
                 volume_since_gate=_maybe_float(d.get("volume_since_gate")),
             ):
-                n += 1
+                observation = validator.market_ticks.pop()
+                key = (observation.mint, observation.observed_at)
+                if key not in seen:
+                    self.market_ticks.append(observation)
+                    seen.add(key)
+                    n += 1
         return n
 
     def load_investigations(self, rows: Iterable[Any]) -> int:
