@@ -348,3 +348,37 @@ subsequent separately approved durable cutover. BRPOP remains disabled/unsupport
 Existing production Redis still disables AOF/RDB and exposes emptyHostIp6380; future
 loopback overlay remains unapplied. Full desktop graceful Stop/Start remains blocked.
 No frozen V2, authority, Atlas, historical observation or product-policy changes.
+
+## Checkpoint70 capacity admission — partial certification, activation blocked
+
+The read-only demand sample in `logs/checkpoint70-demand.json` contains two
+five-second intervals from the unchanged production Redis. One interval was idle;
+the other observed 71.7122 XADD/s, 143.2247 XACK/s and 136.0335 XREADGROUP/s.
+This short sample is observed demand, not a peak-load or adapter benchmark.
+There was one DB0 key, zero current expirations, zero recorded expirations and
+evictions, and approximately 29.35 MB used memory. The existing 384 MiB
+allkeys-lru policy remains incompatible with the protected noeviction boundary.
+Absence of past evictions is not evidence that eviction is safe.
+
+`EvidenceArchive.require_epoch_budget` now performs a necessary offline storage
+admission check using independently measured demand, a bounded planned epoch,
+measured protected archive size and existing retained artifacts. It rejects absent,
+quiet-only, nonfinite or oversized measurements and unknown storage. It preserves
+all artifacts and never authorizes writers or certifies throughput. Call it before
+issuing credentials in a future reviewed bootstrap; no production bootstrap calls
+it yet. A positive diagnostic is not an atomic reservation or an activation token.
+
+The current per-trimming-append complete archive has a maximum of128 files. At
+the observed active rate that is less than1.79 seconds, even before byte quota,
+fsync, parsing and accumulated historical verification costs. A60-second epoch
+requires4303 archives and cannot fit. Increasing the quota or ignoring old receipts
+is not a repair. Bounded custody handoff/rotation and realistic concurrent workload
+certification are still required before enabling a normal production workload.
+
+Expiry/eviction and destructive BRPOP remain explicitly rejected in protected mode.
+Optional Discord TTL and the dormant manual-track BRPOP consumer cannot be admitted
+as supported paths. Legacy production behavior is unchanged. Startup integration,
+complete live writer registration, protected broker/anchor lifecycle, real memory-
+pressure and concurrent throughput/recovery testing remain unfinished. The new
+gate has deterministic behavioral coverage, not a complete end-to-end capacity
+certificate. No new fixtures, production operations or activation were performed.

@@ -9,6 +9,7 @@ from __future__ import annotations
 import ctypes
 import hashlib
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -94,7 +95,36 @@ class EvidenceArchive:
         self.max_archives = max_archives
         self.max_total_bytes = max_total_bytes
 
+    def require_epoch_budget(self, *, peak_appends_per_second, epoch_seconds,
+                             measured_archive_bytes):
+        """Necessary storage admission check, never a throughput certificate.
+
+        The caller must supply independently measured demand and archive size.
+        Each current trimming append consumes one complete archive. A quiet
+        sample cannot establish zero demand. No artifact is removed or rotated.
+        Call before credential issuance; passing this check grants no authority.
+        """
+        for value in (peak_appends_per_second, epoch_seconds):
+            if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+                raise AccountingError('Measured demand and bounded epoch required')
+        if epoch_seconds > 3600 or peak_appends_per_second > 1000000:
+            raise AccountingError('Capacity measurement outside bound')
+        if type(measured_archive_bytes) is not int or not 0 < measured_archive_bytes <= LIMIT:
+            raise AccountingError('Measured protected archive size required')
+        retained, count = self._retained_budget()
+        required = math.ceil(peak_appends_per_second * epoch_seconds)
+        available = min(self.max_archives - count,
+                        (self.max_total_bytes - retained) // measured_archive_bytes)
+        if required > available:
+            raise AccountingError('Archive epoch capacity insufficient; activation blocked')
+        return {'required_archives': required, 'available_archives': available,
+                'required_bytes': required * measured_archive_bytes,
+                'throughput_certified': False, 'writers_authorized': False}
+
     def retained_bytes(self):
+        return self._retained_budget()[0]
+
+    def _retained_budget(self):
         total = count = 0
         with os.scandir(self.directory) as rows:
             for row in rows:
@@ -107,7 +137,7 @@ class EvidenceArchive:
                 total += size
                 if total >= self.max_total_bytes:
                     raise AccountingError('Archive byte budget exhausted; preserve all artifacts')
-        return total
+        return total, count
 
     def capture(self, client, *, scope, journal_head, persist_anchor):
         """Persist a full atomic Redis boundary, then anchor it independently.
