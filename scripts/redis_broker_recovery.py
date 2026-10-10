@@ -36,7 +36,7 @@ def fingerprint(value):
     require(isinstance(value, str) and re.fullmatch('[0-9a-f]{64}', value))
 
 
-def recover_held_boundary(path, *, expected_head, next_journal, revoke, verify_revoked):
+def recover_held_boundary(path, *, expected_head, next_journal, revoke, verify_revoked, verify_archive=None, parent_loader=None):
     """Rebuild settled/unknown intents and revoke old principals before returning.
 
     revoke and verify_revoked must use an independently pinned credential authority.
@@ -47,14 +47,29 @@ def recover_held_boundary(path, *, expected_head, next_journal, revoke, verify_r
     rows = read_records(path, expected_head=expected_head)
     require(bool(rows) and rows[0].get('stage') == 'BROKER_ROUTE')
     route = rows[0]
-    require(set(route) == {'stage', 'server_epoch', 'endpoint', 'generation', 'manifest'})
+    require(set(route)-{'parent_head','writers'} == {'stage','server_epoch','endpoint','generation','manifest'})
     require(isinstance(route['server_epoch'], str) and re.fullmatch('[0-9a-f]{40}', route['server_epoch']))
     require(isinstance(route['endpoint'], str) and re.fullmatch('[A-Za-z0-9_-]{1,80}', route['endpoint']))
     require(type(route['generation']) is int and route['generation'] > 0)
     require(isinstance(route['manifest'], list) and 0 < len(route['manifest']) <= 128)
     owners = {o['pid']: identity(o) for o in route['manifest']}
     require(len(owners) == len(route['manifest']))
-    bindings = {}; commands = {}; principals = {}; writers = set()
+    bindings = {}; commands = {}; principals = {}; writers = set(); archives = []; custody = {}
+    if 'writers' in route:
+        require(isinstance(route['writers'],list) and 0<len(route['writers'])<=1024 and len(set(route['writers']))==len(route['writers']))
+        require(all(isinstance(w,str) and any(w.startswith(f"{o['pid']}-{o['creation_ticks']}-") for o in owners.values()) for w in route['writers']))
+        writers=set(route['writers'])
+    if 'parent_head' in route:
+        fingerprint(route['parent_head']); require(callable(parent_loader))
+        parent = parent_loader(route['parent_head'])
+        require(parent.get('source_head') == route['parent_head'] and parent.get('held') is True
+                and isinstance(parent.get('ledger'), HeldRecoveryLedger))
+        require(parent['next_generation'] == route['generation'])
+        parent['ledger'].settled()
+        commands = {token: dict(row) for token,row in parent['ledger'].commands.items()}
+        archives = list(parent.get('archive_anchors', ()))
+        for anchor in archives:
+            require(callable(verify_archive) and verify_archive(anchor) is True)
     for record in rows[1:]:
         require(isinstance(record, dict))
         if 'generation' in record:
@@ -66,6 +81,7 @@ def recover_held_boundary(path, *, expected_head, next_journal, revoke, verify_r
             require(owners.get(owner['pid']) == owner)
             writer = record['writer']
             require(isinstance(writer, str) and writer.startswith(f"{owner['pid']}-{owner['creation_ticks']}-"))
+            if 'writers' in route:require(writer in writers)
             require(type(record['client_id']) is int and record['client_id'] > 0 and record['active'] is True)
             require(record['server_epoch'] == route['server_epoch'] and record['generation'] == route['generation'])
             key = (writer, record['client_id'], record['generation'])
@@ -82,6 +98,7 @@ def recover_held_boundary(path, *, expected_head, next_journal, revoke, verify_r
             require(record.get('state') == 'ISSUED' and record.get('command') in MUTATIONS and record['command'] != 'BRPOP')
             require(record.get('classification') == MUTATIONS[record['command']])
             fingerprint(record.get('args_sha256'))
+            if token in custody:require(record['command']=='XADD' and record['args_sha256']==custody[token])
             key = (record.get('writer'), record.get('connection_id'), record.get('generation'))
             require(key in bindings and bindings[key]['active'])
             required = {'stage', 'token', 'writer', 'command', 'classification', 'args_sha256', 'connection_id', 'generation', 'state'}
@@ -123,6 +140,12 @@ def recover_held_boundary(path, *, expected_head, next_journal, revoke, verify_r
             require(set(record) == {'stage', 'fenced', 'server_epoch'} and type(record['fenced']) is bool and record['server_epoch'] == route['server_epoch'])
         elif stage == 'BROKER_CREDENTIALS_REVOKED':
             require(set(record) == {'stage'})
+        elif stage == 'RETENTION_CUSTODY':
+            require(set(record)=={'stage','next_token','args_sha256','anchor'})
+            token=record['next_token']; require(type(token) is int and token==len(commands)+1 and token not in custody)
+            fingerprint(record['args_sha256'])
+            require(callable(verify_archive) and verify_archive(record['anchor']) is True)
+            custody[token]=record['args_sha256'];archives.append(record['anchor'])
         else:
             raise AccountingError('Unknown broker recovery stage; route held')
     require(bool(writers))
@@ -140,4 +163,85 @@ def recover_held_boundary(path, *, expected_head, next_journal, revoke, verify_r
                           'unresolved': sum(r['state'] != 'ACKNOWLEDGED' for r in commands.values()),
                           'revoked_principals': len(principals)})
     return {'ledger': ledger, 'route': dict(route), 'held': True, 'fenced': True,
-            'next_generation': route['generation'] + 1}
+            'next_generation': route['generation'] + 1, 'source_head': expected_head,
+            'archive_anchors': tuple(archives)}
+
+
+def reauthorize_held_route(recovered, *, journal, credentials, manifest, verify_native,
+                           retention, server_epoch, endpoint, authorize, grant_path, writer_roles=None):
+    """Trusted-controller-only fresh authorization. No production bootstrap/CLI.
+
+    An exclusive fsynced grant consumes this source boundary once. Old receipts
+    remain in the ledger and parent anchor chain; unknown replies prohibit resume.
+    The caller must independently pin scope and preserve every parent journal/head.
+    """
+    import json, hashlib, os
+    from pathlib import Path
+    from scripts.redis_writer_broker import WriterBroker
+    require(recovered.get('held') is True and isinstance(recovered.get('ledger'),HeldRecoveryLedger))
+    recovered['ledger'].settled()
+    fingerprint(recovered.get('source_head'))
+    fresh={pid:identity(verify_native(pid)) for pid in manifest}
+    require(fresh==manifest and bool(fresh) and len(fresh)<=128 and all(pid==owner['pid'] for pid,owner in fresh.items()))
+    credentials.check_scope();require(credentials.verify_principals() is True)
+    require(not credentials.tickets)  # No inherited or sealed old connection.
+    request={'source_head':recovered['source_head'],'generation':recovered['next_generation'],
+             'server_epoch':server_epoch,'endpoint':endpoint,
+             'manifest_sha256':hashlib.sha256(json.dumps(fresh,sort_keys=True,separators=(',',':')).encode()).hexdigest()}
+    require(authorize(dict(request)) is True)
+    # Preserve all old ACKs. Only current native writer IDs may issue new intents.
+    owners=tuple(fresh.values())
+    if writer_roles is None:
+        writers={w for w in recovered['ledger'].writers if any(w.startswith(f"{o['pid']}-{o['creation_ticks']}-") for o in owners)}
+    else:
+        require(set(writer_roles)==set(fresh))
+        oldroles={}
+        for old in recovered['route']['manifest']:
+            prefix=f"{old['pid']}-{old['creation_ticks']}-"
+            oldroles.setdefault(old['service'],set()).update(w[len(prefix):] for w in recovered['ledger'].writers if w.startswith(prefix))
+        require(all(isinstance(roles,(list,tuple)) and roles and len(set(roles))==len(roles) and set(roles)<=oldroles.get(fresh[pid]['service'],set()) for pid,roles in writer_roles.items()))
+        writers={f"{fresh[pid]['pid']}-{fresh[pid]['creation_ticks']}-{role}" for pid,roles in writer_roles.items() for role in roles}
+    require(bool(writers))
+    path=Path(grant_path)
+    require(path.name=='reauthorize-'+recovered['source_head']+'.grant')
+    with path.open('xb') as stream:
+        stream.write(json.dumps(request,sort_keys=True).encode());stream.flush();os.fsync(stream.fileno())
+    ledger=ProductionAcknowledgements(journal,sorted(writers))
+    ledger.commands={token:dict(row) for token,row in recovered['ledger'].commands.items()}
+    broker=WriterBroker(ledger,credentials,fresh,verify_native,retention,server_epoch=server_epoch,
+                       endpoint=endpoint,generation=request['generation'],parent_head=request['source_head'])
+    # Empty ticket state and fresh explicit issuance/seal/registration are required.
+    # No old CID or credential is unfenced here.
+    return broker
+
+
+def expose_readonly_after_quarantined_load(client, *, verify_scope, bootstrap_user):
+    """Inactive bootstrap seam, not production startup or writer activation.
+
+    Redis7.4.9's AOF EXEC rechecks the default user's permissions. Narrow replay
+    permissions are allowed only with default authentication OFF and TCP port0.
+    One EXEC restores normal default fencing and revokes bootstrap before another
+    client can execute. Complete integrity validation and fresh writer authorization
+    remain separate mandatory gates after the endpoint is read-only reachable.
+    """
+    require(verify_scope() is not False)
+    configuration=client.config_get('port')
+    require(isinstance(configuration,dict) and set(configuration)=={'port'} and
+            (configuration['port']=='0' or type(configuration['port']) is int and configuration['port']==0))
+    loading=client.info('persistence').get('loading')
+    require(type(loading) is int and loading==0)
+    require(isinstance(bootstrap_user,str) and re.fullmatch('[A-Za-z0-9_-]{1,80}',bootstrap_user) and bootstrap_user!='default')
+    policy=client.acl_getuser('default')
+    require(isinstance(policy,dict) and {'flags','passwords','categories','selectors','commands'}<=set(policy))
+    require(isinstance(policy['flags'],list) and 'off' in policy['flags'] and 'on' not in policy['flags'] and 'nopass' not in policy['flags'] and policy['passwords']==[])
+    require(policy.get('categories')==['-@all'] and policy.get('selectors')==[] and
+            set(policy.get('commands',()))<= {'+xclaim','+xgroup|setid'})
+    pipe=client.pipeline(transaction=True)
+    pipe.execute_command('ACL','SETUSER','default','off','resetpass','-@all',
+                         '+ping','+info','+client|id','+client|list')
+    pipe.execute_command('CONFIG','SET','port','6379')
+    pipe.execute_command('ACL','SETUSER',bootstrap_user,'off','resetpass','-@all')
+    replies=pipe.execute()
+    require(isinstance(replies,(list,tuple)) and len(replies)==3 and all(value is True or value==b'OK' or value=='OK' for value in replies))
+    require(verify_scope() is not False)
+    return {'state':'READ_ONLY_VERIFICATION_REQUIRED','writers_authorized':False}

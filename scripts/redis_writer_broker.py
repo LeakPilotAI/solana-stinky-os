@@ -30,7 +30,8 @@ class PinnedRedisScope:
             if port!=6380 or volume not in ('project-genesis_redis-data','project-genesis_redis-durable58-data') or certification is not None:
                 raise AccountingError('Production ownership scope unavailable')
         elif not ((name.startswith('genesis-redis-c67-') and volume.startswith('project-genesis_checkpoint67-') and port in (16570,16571,16572,16573) and certification=='checkpoint67') or
-                  (name.startswith('genesis-redis-c68-') and volume.startswith('project-genesis_checkpoint68-') and port in (16574,16575,16576,16577) and certification=='checkpoint68')):
+                  (name.startswith('genesis-redis-c68-') and volume.startswith('project-genesis_checkpoint68-') and port in (16574,16575,16576,16577) and certification=='checkpoint68') or
+                  (name.startswith('genesis-redis-c69-') and volume.startswith('project-genesis_checkpoint69-') and port in (16578,16579,16580,16581) and certification=='checkpoint69')):
             raise AccountingError('Unrecognized Redis authority scope')
 
     def __call__(self, records):
@@ -220,7 +221,7 @@ class ProductionCredentials(SealedCredentials):
 
 
 class WriterBroker:
-    def __init__(self, ledger, credentials, manifest, verify_native, retention, *, server_epoch, endpoint):
+    def __init__(self, ledger, credentials, manifest, verify_native, retention, *, server_epoch, endpoint, generation=1, parent_head=None):
         if not manifest or len(manifest)>128:raise AccountingError('Writer manifest unavailable')
         self.manifest={pid:identity(owner) for pid,owner in manifest.items()}
         if any(pid != owner['pid'] for pid,owner in self.manifest.items()):raise AccountingError('Manifest PID differs')
@@ -229,10 +230,14 @@ class WriterBroker:
         self.sequences={};self.current_owner=None
         if not isinstance(server_epoch,str) or not re.fullmatch('[0-9a-f]{40}',server_epoch) or not re.fullmatch('[A-Za-z0-9_-]{1,80}',endpoint):
             raise AccountingError('Reviewed broker route required')
-        self.server_epoch=server_epoch;self.endpoint=endpoint;self.generation=1
-        self.ledger.journal.persist({'stage':'BROKER_ROUTE','server_epoch':server_epoch,
+        if type(generation) is not int or generation<1 or (parent_head is not None and not re.fullmatch('[0-9a-f]{64}',parent_head)):
+            raise AccountingError('Broker generation/recovery parent unavailable')
+        self.server_epoch=server_epoch;self.endpoint=endpoint;self.generation=generation
+        route={'stage':'BROKER_ROUTE','server_epoch':server_epoch,
             'endpoint':endpoint,'generation':self.generation,
-            'manifest':[self.manifest[pid] for pid in sorted(self.manifest)]})
+            'manifest':[self.manifest[pid] for pid in sorted(self.manifest)],'writers':sorted(ledger.writers)}
+        if parent_head is not None:route['parent_head']=parent_head
+        self.ledger.journal.persist(route)
 
     def owner(self, pid):
         owner=self.manifest.get(pid)
@@ -280,7 +285,7 @@ class WriterBroker:
                     role=args[0][len(prefix):] if isinstance(args[0],str) and args[0].startswith(prefix) else None
                     if not self.credentials.is_bound(owner,role,args[4],self.server_epoch,args[3]):
                         raise AccountingError('Mutation lacks sealed native credential binding')
-                    self.retention.before(args[1],args[2])
+                    if getattr(self.ledger,'custody',None) is not self.retention:self.retention.before(args[1],args[2])
                 allowed={'register_connection','retire_connection','begin_command','complete_command','reject_group_exists','settled'}
                 if method not in allowed:raise AccountingError('Broker method not allowlisted')
                 if method in ('register_connection','retire_connection','begin_command'):

@@ -26,7 +26,7 @@ from scripts.redis_stream_integrity import semantic_census
 
 
 def actor(channel):
-    owner,address,key,port,epoch,role,server_identity=channel.recv()
+    incoming=channel.recv();owner,address,key,port,epoch,role,server_identity=incoming[:7]
     adapter=NativePause()
     def verify():
         ticks,image=native_identity(adapter,os.getpid())
@@ -34,6 +34,7 @@ def actor(channel):
         return dict(owner)
     proxy=PipeProxy(address,key,[writer_id(owner,role)],server_identity=server_identity)
     runtime=Runtime(proxy,verify,endpoint='isolated67',server_epoch=epoch,roles=[role],credentials=proxy)
+    if len(incoming)==8:runtime.generation=incoming[7]
     factory=ClientFactory();factory.configure(runtime)
     client=factory.from_url(f'redis://127.0.0.1:{port}/0',role=role)
     async def run():
@@ -54,6 +55,7 @@ def actor(channel):
                         proxy.begin_command(client.writer,'LPUSH',[b'queue',b'unknown-accepted'],client.connection_id,runtime.generation)
                         value=await Redis.execute_command(client,'LPUSH','queue','unknown-accepted')
                     elif cmd=='trim':value=await client.xadd('proof',{'data':'discard'},maxlen=1)
+                    elif cmd=='trim-safe':value=await client.xadd('proof',{'data':'retained'},maxlen=1,approximate=False)
                     elif cmd=='pop':value=await client.brpop('queue',timeout=1)
                     elif cmd=='disconnect':
                         await client.connection.disconnect()
@@ -81,7 +83,7 @@ def test_real_native_multiprocess_broker_and_fail_closed_boundaries():
     pin=PinnedRedisScope(**config['pins'])
     def scope():return json.loads(subprocess.check_output(['docker','inspect',config['pins']['container_id']],text=True))
     pin(scope())  # Never accept production or a fixture with different storage.
-    assert (config['pins']['certification'],config['pins']['port']) in [('checkpoint67',16570),('checkpoint68',16574)]
+    assert (config['pins']['certification'],config['pins']['port']) in [('checkpoint67',16570),('checkpoint68',16574),('checkpoint69',16578)]
     port=config['pins']['port']
     observer=redis.Redis(host='127.0.0.1',port=port,username='observer',password=config['observer_password'],socket_timeout=3)
     root=Path(config['artifact_root'])
@@ -177,7 +179,7 @@ def test_real_native_multiprocess_broker_and_fail_closed_boundaries():
             # Revoke and persist the final record before closing its journal.
             # Previous principals remain retained, disabled and nonwriting.
             authority.revoke_all();journal.close()
-        if config['pins']['certification']=='checkpoint68':
+        if config['pins']['certification'] in ('checkpoint68','checkpoint69'):
             from scripts.redis_broker_recovery import recover_held_boundary
             recovered_journal=DurableJournal(root/(scenario+'-recovered.jsonl'))
             def revoke(principal):
@@ -201,8 +203,93 @@ def test_real_native_multiprocess_broker_and_fail_closed_boundaries():
                 else:assert recovered['ledger'].settled()==len(ledger.commands)
                 results[scenario]['held_restart_recovery']=True
             finally:recovered_journal.close()
+            if config['pins']['certification']=='checkpoint69' and scenario=='normal':
+                results['reauthorization']=exercise_reauthorization(config,recovered,observer,scope,pin)
     assert observer.lrange('queue',0,-1).count(b'unknown-accepted')==1
     results['stream_entries']=observer.xlen('proof');results['queue_entries']=observer.llen('queue')
     results['pending']=observer.xpending('proof','group')['pending']
     (root/'multiprocess-results.json').write_text(json.dumps(results,indent=2))
     observer.close()
+
+
+def exercise_reauthorization(config,recovered,observer,scope,pin):
+    from scripts.redis_broker_recovery import reauthorize_held_route,recover_held_boundary
+    from scripts.redis_evidence_archive import EvidenceArchive,ArchivedRetention
+    root=Path(config['artifact_root']);folder=root/'normal-custody';folder.mkdir()
+    journal=DurableJournal(root/'reauthorized.jsonl')
+    context=multiprocessing.get_context('spawn');processes=[];channels=[]
+    roles=['redis-streams','api-manual-queue','entity-consumer']
+    for role in roles:
+        parent,child=context.Pipe();p=context.Process(target=actor,args=(child,));p.start()
+        child.close();processes.append(p);channels.append(parent)
+    adapter=NativePause();rows={r[0]:r for r in launcher.list_win_processes()};manifest={};images={}
+    for p in processes:
+        ticks,image=native_identity(adapter,p.pid);images[p.pid]=image
+        manifest[p.pid]={'pid':p.pid,'creation_ticks':ticks,'service':'fixture',
+            'command_sha256':hashlib.sha256(rows[p.pid][3].encode()).hexdigest(),
+            'repository_sha256':hashlib.sha256(str(Path.cwd()).encode()).hexdigest()}
+    def verify(pid):
+        ticks,image=native_identity(adapter,pid)
+        assert ticks==manifest[pid]['creation_ticks'] and image==images[pid]
+        return dict(manifest[pid])
+    port=config['pins']['port'];broker=None
+    admin=lambda:redis.Redis(host='127.0.0.1',port=port,username='broker',password=config['broker_password'],socket_timeout=3)
+    authority=ProductionCredentials(admin,scope,lambda:dict(broker.current_owner),journal,
+        scope_validator=pin,port=port,keys={'redis-streams':['proof'],'api-manual-queue':['queue'],'entity-consumer':['proof']},readers={'observer':config['observer_commands']})
+    broker=reauthorize_held_route(recovered,journal=journal,credentials=authority,manifest=manifest,
+        verify_native=verify,retention=RetentionBoundary(observer.config_get('maxmemory-policy'),0),
+        server_epoch=observer.info('server')['run_id'],endpoint='isolated67',
+        authorize=lambda request:request['source_head']==recovered['source_head'] and request['generation']==2,
+        grant_path=root/('reauthorize-'+recovered['source_head']+'.grant'),
+        writer_roles={p.pid:[role] for p,role in zip(processes,roles)})
+    def pinned_epoch():pin(scope());return observer.info('server')['run_id']
+    custody=ArchivedRetention(EvidenceArchive(folder),observer,broker.ledger,scope=pinned_epoch,
+                              configuration=observer.config_get('maxmemory-policy'),expiring_keys=0)
+    broker.ledger.custody=custody;broker.retention=custody
+    address='\\\\.\\pipe\\genesis-c69-'+uuid.uuid4().hex;key=os.urandom(32);server=PipeServer(address,key,broker)
+    def serve():
+        while True:
+            try:server.serve_one()
+            except (OSError,EOFError,ValueError):return
+    threading.Thread(target=serve,daemon=True).start()
+    server_identity=(os.getpid(),native_identity(adapter,os.getpid())[0])
+    for p,ch,role in zip(processes,channels,roles):
+        ch.send((manifest[p.pid],address,key,port,observer.info('server')['run_id'],role,server_identity,2))
+    def ask(index,command):
+        channels[index].send(command);assert channels[index].poll(20);return channels[index].recv()
+    try:
+        assert all(ask(i,'bind')['ok'] for i in range(3))
+        assert ask(0,'append')['ok'] and ask(0,'append')['ok']
+        assert ask(1,'push')['ok'] and ask(1,'push')['ok']
+        assert ask(0,'trim-safe')['ok'] and observer.xlen('proof')==1
+        assert len(custody.anchors)==1
+        assert custody.verify(broker.ledger,semantic_census(observer))['acknowledged']==12
+        active=[int(r['id']) for r in observer.client_list() if r.get('user') in authority.tickets]
+        assert broker.quiesce(active)==12
+        assert not ask(0,'append')['ok']  # Neither quiescence nor a grant auto-resumes.
+        return {'generation':2,'acknowledged':12,'trimmed_stream_length':1,
+                'verified_archives':1,'fresh_native_writers':3,'stale_principals_disabled':True}
+    finally:
+        for ch,p in zip(channels,processes):
+            if p.is_alive():
+                try:ch.send('finish')
+                except (EOFError,OSError):pass
+            p.join(10);assert not p.is_alive();ch.close()
+        server.close();authority.revoke_all();head=journal.previous;journal.close()
+        audit=DurableJournal(root/'reauthorized-held.jsonl')
+        def revoke(principal):
+            pin(scope());c=admin()
+            try:c.execute_command('ACL','SETUSER',principal,'off','resetpass','-@all')
+            finally:c.close()
+        def revoked(principal):
+            c=admin()
+            try:
+                p=c.acl_getuser(principal)
+                return 'off' in p['flags'] and not p['passwords'] and not p['commands']
+            finally:c.close()
+        try:
+            again=recover_held_boundary(journal.path,expected_head=head,next_journal=audit,
+                revoke=revoke,verify_revoked=revoked,parent_loader=lambda h:recovered,
+                verify_archive=lambda a:custody.store.read(a)[1]['schema']=='redis-recovery-semantic-v1')
+            assert again['next_generation']==3 and again['ledger'].settled()==12 and len(again['archive_anchors'])==1
+        finally:audit.close()

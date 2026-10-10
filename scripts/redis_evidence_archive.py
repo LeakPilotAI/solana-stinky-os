@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 from types import SimpleNamespace
 
-from scripts.redis_stream_integrity import READ, semantic_census, verify_semantic_recovery
+from scripts.redis_stream_integrity import READ, semantic_census, verify_semantic_recovery, framed_hash
 from scripts.redis_snapshot_integrity import MAX_KEYS, MAX_KEY_BYTES
 from scripts.redis_stream_integrity import MAX_ENTRIES, MAX_GROUPS, MAX_CONSUMERS
 from scripts.redis_writer_broker import pack, unpack
@@ -193,3 +193,77 @@ class EvidenceArchive:
         if matches != [{'id': entry_id, 'payload_sha256': payload_sha256, 'field_count': field_count}]:
             raise AccountingError('Required historical payload not archived')
         return True
+
+
+class ArchivedRetention:
+    """Inactive single-flight custody using existing complete encrypted archives.
+
+    Noeviction remains mandatory: Redis can evict on paths outside this controller.
+    Already-expiring values require a prior durable archive, not a late snapshot.
+    This supports stream trimming only; SET/EX remains rejected until value custody
+    can precede expiry installation. It never claims complete production coverage.
+    """
+    def __init__(self, store, client, ledger, *, scope, configuration, expiring_keys):
+        from scripts.redis_writer_broker import RetentionBoundary
+        RetentionBoundary(configuration, expiring_keys)
+        self.store = store; self.client = client; self.ledger = ledger
+        self.scope = scope; self.anchors = []; self.held = False
+
+    def before(self, name, args):
+        from scripts.redis_production_adapters import validate_command
+        validate_command(name, args)
+        if self.held:
+            raise AccountingError('Archive custody held')
+        if name == 'SET':
+            raise AccountingError('Expiry installation requires pre-dispatch value custody')
+        try:
+            self.ledger.settled()  # No competing or uncertain physical operation.
+            if name == 'XADD' and args[1].upper() in (b'MAXLEN', b'MINID'):
+                # Actual production MAXLEN20000 is supported; zero-length writes
+                # could remove the newly returned ID before any post-write census.
+                i = 2 + (args[2] in (b'~', b'='))
+                if args[1].upper() != b'MAXLEN' or not args[i].isdigit() or int(args[i]) < 1:
+                    raise AccountingError('Retention form not certified')
+                if len(self.anchors) >= 128:
+                    raise AccountingError('Archive custody epoch capacity exhausted')
+                anchor = self.store.capture(self.client, scope=self.scope,
+                    journal_head=self.ledger.journal.previous,
+                    persist_anchor=lambda a: self.ledger.journal.persist(
+                        {'stage': 'RETENTION_CUSTODY', 'next_token': len(self.ledger.commands)+1,
+                         'args_sha256': framed_hash(args),
+                         'anchor': a}))
+                # The independent durable receipt exists before begin_command can
+                # issue its intent and before Redis receives a trimming command.
+                self.anchors.append(anchor)
+                point = self.store.read(anchor)[1]
+                if any(key['expires_at_ms'] != -1 for key in point['keys']):
+                    raise AccountingError('Unaccounted automatic expiry at custody boundary')
+                self.verify(self.ledger, point)
+        except BaseException:
+            self.held = True
+            raise
+
+    def verify(self, ledger, proof):
+        """Current-state validation plus actual-byte historical receipt coverage.
+
+        This never normalizes current consumer metadata or proves target recovery.
+        The coordinator must still compare complete current source/target proofs.
+        """
+        try:
+            ledger.settled()
+            verify_semantic_recovery(proof, proof, mode='rdb')
+            history = [proof] + [self.store.read(anchor)[1] for anchor in self.anchors]
+            for row in ledger.commands.values():
+                if row.get('command') != 'XADD':
+                    continue
+                matches = [entry for point in history for key in point['keys']
+                           if key['type'] == 'stream' and key['key_sha256'] == row['key_sha256']
+                           for entry in key['stable']['entries'] if entry['id'] == row['entry_id']]
+                if not matches or any(entry['payload_sha256'] != row['payload_sha256'] or
+                                      entry['field_count'] != row['field_count'] for entry in matches):
+                    raise AccountingError('Acknowledged historical payload absent or contradictory')
+            return {'acknowledged': len(ledger.commands), 'unresolved': 0,
+                    'verified_archive_boundaries': len(self.anchors)}
+        except BaseException:
+            self.held = True
+            raise

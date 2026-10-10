@@ -240,3 +240,111 @@ Never apply a broad Compose operation or change production bindings in this task
 All original containers/volumes, protected backups, frozen V2 files/evidence and
 four pending58 edits remain preserved. Full graceful desktop Stop/Start is still
 blocked on production durability and actual approved lifecycle certification.
+
+
+## Checkpoint69: reconciled safety gates and AOF/ACL root cause
+
+This checkpoint completes the supported stream custody and explicit route recovery
+seams in isolation. Overall production readiness remains **AMBER / BLOCKED**. No
+production actor, credential, network binding or dependency was changed.
+
+| Blocker | Production seam | Invariant and minimum missing work | Certification |
+| --- | --- | --- | --- |
+| Stream trimming | core transport `redis_streams.py:publish`, MAXLEN20000 | Archive actual prior bytes and fsync its independent custody receipt before trimming dispatch. Implemented for positive MAXLEN with noeviction and no unaccounted expiry. | Real exact MAXLEN1 removed prior entries; their actual archived bytes still verify every receipt; corrupt, late or partial custody rejects. |
+| Expiry | optional `discord_bot/alerter.py`, SET/EX48h | Value and expiry custody must precede installation/deletion. Still rejected; no silent optional activation. | Existing expiry and SET fail before permission; complete expiry/crash protocol not certified. |
+| Eviction | original Redis allkeys-lru and384MiB limit | Existing target epoch demands noeviction; actual arbitrary eviction cannot be declared accounted from snapshots. Review policy/memory admission or prove equivalent complete custody before activation. | Evicting configurations still reject; production unchanged. |
+| Broker restart | writer broker, factory/native registrations | Fresh independent authorization, current native manifest, generation and connection bindings; preserve all parent receipts/archives. Implemented inactive. | Three genuinely restarted native writers received generation2; old receipts and archive survived another held reconstruction. Stale generation, role mapping, PID reuse and grant reuse reject. |
+| Rollback | coordinator move/rollback, production ACK bridge | Current fenced source/candidate equality plus every historical receipt's actual-byte coverage. | Actual cutover, eight new writes, rollback and restart preserved18 ACKs, group/PEL and archived trimmed payloads. Lost reply remains unresolved and accepted item survives restart. |
+| Incremental AOF metadata | Redis7.4.9 loading, collector/entity group operations | Internal AOF EXEC must replay under safe quarantine before normal ACL fencing; never normalize away consumers/counters. Root cause/recovery proved. | Identical retained AOF fails under fenced default ACL, succeeds with TCP0/default authenticationOFF and narrowly permitted internal XCLAIM/SETID. Strict comparison unchanged. |
+| BRPOP | dormant Sentinel manual_track consumer | Missing durable processing receipt/lease/redelivery semantics. Remains unsupported. | Real predispatch rejection; queue item remains. Normal core startup has no ManualTrackConsumer instantiation. |
+
+### Automatic custody: limited but real
+
+ProductionAcknowledgements now has an explicitly attached, default-none custody
+hook. Before positive MAXLEN dispatch, ArchivedRetention requires settled earlier
+operations, captures complete actual data with the existing encrypted archive,
+fsyncs RETENTION_CUSTODY into the independent journal and checks all prior receipts
+against current and archived bytes. Unproved history cannot be repaired by taking
+an archive after disappearance. Corruption/failed anchor/unknown reply/stale epoch/
+unaccounted expiry/capacity exhaustion holds rather than dispatches. MINID and
+zero-length retention are not certified. The legacy membership gate is unchanged
+when custody is absent. Current source/target metadata comparison is always strict;
+historical payload custody is not a metadata or rollback waiver.
+
+This protocol deliberately admits only a single physical operation at a time; a
+competing unsettled operation fails closed. It still archives full bounded snapshots,
+so throughput, capacity and long-running epoch rotation are NOT production-certified.
+Bounds remain128archives/1GiB; no artifact deletion. No live workload was switched.
+Expiry and arbitrary eviction are still unsupported and explicitly activation-blocking.
+
+### Explicit route reauthorization
+
+recover_held_boundary now verifies custody records and independent parent boundaries.
+Every parent ACK and archive remains required. reauthorize_held_route checks settled
+history, current native identity and principal inventory, refuses inherited ticket
+state, requires fresh controller authorization and consumes an exclusive fsynced
+source-boundary grant. A restarted writer needs explicit service-compatible role
+mapping. Old bindings are never reused or unfenced. The next journal names its
+parent head; a missing/contradictory parent cannot abandon historical writes. Fresh
+separate connection credentials, native CIDs and generation2 are required before
+mutation. No public RPC resume, environment activation or production bootstrap exists.
+Grant location, parent resolution and independently protected anchors remain trusted
+controller capabilities, not a claim that arbitrary caller-supplied callbacks are
+cryptographically trusted. Production writer completeness is not inferred from labs.
+
+### Proven incremental replay defect and safe recovery
+
+The retained failed fixture is0dbc7074cc1e3b4845c9d801199ff22fbf3fc1e548bd445c493a24e38cc76b0d.
+Its actual log contains alpha XCLAIM, XGROUP SETID with ENTRIESREAD1, and beta XCLAIM
+with retrycount2. Thus the counter argument was not simply absent. Independent
+same-image replay preserved payloads but lost alpha and returned UNKNOWN for1.
+The original strict gate rejected these material differences.
+
+Redis7.4.9's EXEC implementation rechecks permissions while executing queued
+commands. The AOF loader uses a synthetic client; a fenced default ACL therefore
+blocks the internal claim/counter transaction. This mechanism is supported by the
+[pinned EXEC source](https://raw.githubusercontent.com/redis/redis/7.4.9/src/multi.c)
+and [pinned AOF loader source](https://raw.githubusercontent.com/redis/redis/7.4.9/src/aof.c),
+and confirmed by controlled replay of the same retained bytes, not merely inferred
+from source. No data-loss normalization or individual historical counter repair.
+
+The isolated recovery keeps default authentication OFF, disables TCP with port0,
+and allows only XCLAIM/SETID loading on reviewed keys through the local protected
+socket. One EXEC then restores the strict default write fence, enables the mapped
+port and revokes/resetpasses bootstrap authority without external-command interleave.
+The actual expose_readonly_after_quarantined_load function was exercised and strict
+recovery matched both consumers/counter1/PEL/payloads. It returns only
+READ_ONLY_VERIFICATION_REQUIRED, never authorizes writers. Full integrity and fresh
+route authorization remain mandatory after read-only exposure. The original readonly
+failure and all original AOF/config/ACL evidence are retained. Neither source image
+nor strict recovery comparator was modified.
+
+This is not deployed startup. Review the entire real AOF command inventory, scoped
+loader privileges, socket/native ownership, atomic transition failure handling,
+independent anchors and launcher integration before activation. Unknown commands or
+material differences must keep writers blocked. No unrestricted default user on an
+exposed port, no new broker credential policy bypass, no production restart/cutover.
+
+### Isolated results and remaining production requirements
+
+Eight new owned checkpoint69 containers on six independent volumes, all stopped and
+retained; stage/front pairs share storage only serially, never simultaneously. The
+checkpoint budget is exhausted: no more new69 fixtures or relabeling to evade it.
+Three native actors per original nine scenarios plus three restarted actors; fresh
+route12 ACKs and real exact trim; separate coordinator18 ACKs/8postcutover writes,
+rollback and cold restart; one deliberately unresolved accepted LPUSH retained through
+restart. Original102 containers, protected snapshots and Atlas were not controlled.
+The coordinator's late clone check had a lab constructor error (ticket target field);
+separate real negative certification used explicit username/password and passed.
+Other lab-only counter/INFO-parser errors were fixed without weakening assertions;
+failed artifacts retained. No claim that a failing harness invocation passed.
+
+Remaining activation gates: complete expiry custody or explicitly reviewed exclusion;
+review noeviction/memory admission; realistic concurrent throughput/epoch capacity;
+production quarantine startup integration with real command inventory and failure
+certification; exhaustive native writer/bootstrap/connection generation registration;
+protected parent/grant/anchor lifecycle; explicit app-only activation approval and
+subsequent separately approved durable cutover. BRPOP remains disabled/unsupported.
+Existing production Redis still disables AOF/RDB and exposes emptyHostIp6380; future
+loopback overlay remains unapplied. Full desktop graceful Stop/Start remains blocked.
+No frozen V2, authority, Atlas, historical observation or product-policy changes.

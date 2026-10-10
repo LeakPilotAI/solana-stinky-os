@@ -91,7 +91,7 @@ def validate_command(name,args):
 class ProductionAcknowledgements(Acknowledgements):
     """Registered physical-attempt receipts, including list and claim operations."""
     def __init__(self,journal,writers):
-        super().__init__(journal,writers);self.bindings={}
+        super().__init__(journal,writers);self.bindings={};self.custody=None
     def register_connection(self,writer,owner,client_id,server_epoch,generation):
         with self.lock:
             if writer not in self.writers or type(client_id) is not int or client_id<=0 or type(generation) is not int or generation<=0:
@@ -113,6 +113,7 @@ class ProductionAcknowledgements(Acknowledgements):
             if len(self.commands)>=50000:raise AccountingError('Acknowledgement ledger capacity exceeded')
             if not self.bindings.get((writer,client_id,generation),{}).get('active'):
                 raise AccountingError('Mutation connection unregistered or retired')
+            if self.custody is not None:self.custody.before(name,args)
             token=len(self.commands)+1
             row={'token':token,'writer':writer,'command':name,'classification':MUTATIONS[name],
                  'args_sha256':framed_hash(args),'connection_id':client_id,'generation':generation,'state':'ISSUED'}
@@ -131,6 +132,11 @@ class ProductionAcknowledgements(Acknowledgements):
                 if not isinstance(value,str) or not re.fullmatch('[0-9]+-[0-9]+',value):raise AccountingError('Stream acknowledgement malformed')
                 changed['entry_id']=value
             self.journal.persist({'stage':'COMMAND_REPLY',**changed});self.commands[token]=changed
+
+    def verify(self,proof):
+        with self.lock:
+            if self.custody is not None:return self.custody.verify(self,proof)
+            return super().verify(proof)
     def reject_group_exists(self,token,endpoint):
         with self.lock:
             row=self.commands[token]
