@@ -143,3 +143,9 @@ real multi-process coordinator cutover/rollback certification. Application
 activation remains separately authorized only after these gates pass. No hot-pool
 patching, production pause, Redis migration or full desktop Stop certification is
 implied by this implementation checkpoint.
+
+Additional verified ownership prerequisite: production Redis currently declares
+HostIp empty for host port 6380. The broker requires an explicitly loopback-bound
+endpoint and rejects this mapping. No port binding was changed. Resolve that
+constraint through the separately reviewed infrastructure plan; do not falsify
+inspect evidence or relax the pin to claim activation readiness.
