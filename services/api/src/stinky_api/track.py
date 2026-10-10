@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from stinky_core.transport.redis_accounting import redis_client
+
 import json
 from typing import Any
 
@@ -35,7 +37,7 @@ async def enqueue_manual_track(body: TrackRequest) -> dict[str, Any]:
         "pool": (body.pool or "").strip() or None,
         "note": (body.note or "manual").strip()[:120],
     }
-    r = aioredis.from_url(settings.redis_url, decode_responses=True)
+    r = redis_client(settings.redis_url, role="api-manual-queue", legacy_factory=aioredis.from_url, decode_responses=True)
     try:
         await r.lpush(MANUAL_QUEUE, json.dumps(payload))
         qlen = await r.llen(MANUAL_QUEUE)

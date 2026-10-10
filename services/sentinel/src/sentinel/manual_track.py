@@ -10,6 +10,8 @@ On each item:
 
 from __future__ import annotations
 
+from stinky_core.transport.redis_accounting import redis_client
+
 import asyncio
 import json
 import time
@@ -66,7 +68,7 @@ class ManualTrackConsumer:
 
     async def run(self) -> None:
         url = settings.redis_url
-        self._redis = aioredis.from_url(url, decode_responses=False)
+        self._redis = redis_client(url, role="sentinel-manual-consumer", legacy_factory=aioredis.from_url, decode_responses=False)
         logger.info("manual_track.starting", queue=self._queue, redis=url)
         try:
             while not self._stop.is_set():

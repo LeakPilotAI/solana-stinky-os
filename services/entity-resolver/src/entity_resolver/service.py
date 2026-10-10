@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from stinky_core.transport.redis_accounting import redis_client
+
 import asyncio
 import json
 from datetime import datetime, timezone
@@ -65,8 +67,8 @@ class EntityService:
             except asyncio.TimeoutError:
                 logger.error("entity.startup_step_timeout", step=step_name, timeout_sec=ENTITY_STARTUP_STEP_TIMEOUT_SEC)
                 raise
-        self._redis = redis.from_url(
-            settings.redis_url,
+        self._redis = redis_client(
+            settings.redis_url, role="entity-consumer", legacy_factory=redis.from_url,
             decode_responses=True,
             socket_connect_timeout=3,
             socket_timeout=10,

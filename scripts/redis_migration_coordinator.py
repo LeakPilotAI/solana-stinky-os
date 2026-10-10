@@ -7,6 +7,9 @@ from __future__ import annotations
 import hashlib
 import threading
 import re
+import sys
+from pathlib import Path
+from contextlib import contextmanager
 from scripts.genesis_identity_journal import IdentityJournal
 from scripts.genesis_process_diagnostics import compare_snapshots
 from scripts.redis_stream_integrity import framed_hash, verify_semantic_recovery
@@ -35,22 +38,27 @@ def verify_isolated_scope(records):
         ids.add(ident)
         state=r.get('State',{})
         if type(state.get('Running')) is not bool or state.get('Paused') is not False or state.get('Status') not in ('running','created','exited'):raise RuntimeError('Fixture activity state unavailable')
-        if not r.get('Name','').startswith('/genesis-redis-c61-') or r.get('Image')!=IMAGE:
-            raise RuntimeError('Production or unverified container forbidden')
+        name=r.get('Name','')
+        if name.startswith('/genesis-redis-c61-'):
+            certification='checkpoint61';volume_prefix='project-genesis_checkpoint61-';ports=('16470','16471','16472','16473')
+        elif name.startswith('/genesis-redis-c66-'):
+            certification='checkpoint66';volume_prefix='project-genesis_checkpoint66-';ports=('16566','16567','16568','16569')
+        else:raise RuntimeError('Production or unverified container forbidden')
+        if r.get('Image')!=IMAGE:raise RuntimeError('Fixture image unverified')
         labels=r.get('Config',{}).get('Labels',{})
-        if labels.get('genesis.certification')!='checkpoint61' or labels.get('com.docker.compose.project')!='project-genesis' or labels.get('com.docker.compose.service')!='redis':
+        if labels.get('genesis.certification')!=certification or labels.get('com.docker.compose.project')!='project-genesis' or labels.get('com.docker.compose.service')!='redis':
             raise RuntimeError('Fixture ownership unavailable')
         if r['Config'].get('Cmd')!=['redis-server','/data/redis.conf']:
             raise RuntimeError('Fixture loader unverified')
         mounts=r.get('Mounts',[])
-        if len(mounts)!=1 or mounts[0].get('Type')!='volume' or not mounts[0].get('Name','').startswith('project-genesis_checkpoint61-') or mounts[0].get('Destination')!='/data' or mounts[0].get('RW') is not True:
+        if len(mounts)!=1 or mounts[0].get('Type')!='volume' or not mounts[0].get('Name','').startswith(volume_prefix) or mounts[0].get('Destination')!='/data' or mounts[0].get('RW') is not True:
             raise RuntimeError('Fixture storage ownership unavailable')
         volume=mounts[0]['Name']
         if state['Running']:
             if volume in active_volumes:raise RuntimeError('Competing active volume writers')
             active_volumes.add(volume)
         binding=r.get('HostConfig',{}).get('PortBindings',{}).get('6379/tcp')
-        if not isinstance(binding,list) or len(binding)!=1 or binding[0].get('HostIp')!='127.0.0.1' or binding[0].get('HostPort') not in ('16470','16471','16472','16473'):
+        if not isinstance(binding,list) or len(binding)!=1 or binding[0].get('HostIp')!='127.0.0.1' or binding[0].get('HostPort') not in ports:
             raise RuntimeError('Production or nonisolated endpoint forbidden')
 
 
@@ -151,6 +159,16 @@ class Coordinator:
             raise RuntimeError('Native writer owner identity changed or unavailable')
         if set(evidence.get('registered',[]))!=set(self.ledger.writers) or evidence.get('unknown')!=[] or type(evidence.get('inflight')) is not int or evidence['inflight']!=0 or evidence.get('fenced') is not True:
             raise RuntimeError('Writer ownership/completeness or inflight accounting unavailable')
+        if 'writer_owners' in evidence:
+            identities=evidence['writer_owners']
+            if not isinstance(identities,dict) or set(identities)!=set(self.ledger.writers):raise RuntimeError('Writer identity coverage incomplete')
+            for ident in identities.values():
+                if not isinstance(ident,dict) or type(ident.get('pid')) is not int or type(ident.get('creation_ticks')) is not int or ident['pid'] not in owners or owners[ident['pid']]!=ident['creation_ticks']:
+                    raise RuntimeError('Registered writer native identity unavailable or reused')
+                node=next(n for n in self.last_identity['nodes'] if n['pid']==ident['pid'])
+                repo=hashlib.sha256(str(Path(__file__).resolve().parents[1]).encode()).hexdigest()
+                if ident.get('command_sha256')!=node['command_sha256'] or ident.get('repository_sha256')!=repo:
+                    raise RuntimeError('Registered writer command/repository evidence differs')
         self.record('WRITER_FENCE',evidence=evidence)
         return evidence
 
@@ -202,6 +220,31 @@ class Coordinator:
             self.record('ABORT_BLOCKED',failure_type=type(exc).__name__,failure_code=failure_code(exc))
             raise RuntimeError('Abort uncertified; retain current storage and hold managed writers') from None
 
+    @contextmanager
+    def registered_writer_fence(self):
+        actor=self.backend.fence()
+        try:actor.__enter__()
+        except BaseException:
+            self.state='HOLD';self.backend.hold();self.record('WRITER_FENCE_ENTER_FAILED')
+            raise RuntimeError('Writer quiescence uncertified; current storage retained') from None
+        try:
+            yield
+        except BaseException:
+            error=sys.exc_info()
+            try:suppressed=actor.__exit__(*error)
+            except BaseException:
+                self.state='HOLD';self.backend.hold();self.record('WRITER_FENCE_EXIT_FAILED')
+                raise RuntimeError('Writer fence release failed; managed writers held') from None
+            if suppressed:
+                self.state='HOLD';self.backend.hold();self.record('WRITER_FENCE_SUPPRESSION_REJECTED')
+                raise RuntimeError('Writer fence cannot suppress a failed integrity gate') from None
+            raise
+        else:
+            try:actor.__exit__(None,None,None)
+            except BaseException:
+                self.state='HOLD';self.backend.hold();self.record('WRITER_FENCE_EXIT_FAILED')
+                raise RuntimeError('Writer fence release failed; managed writers held') from None
+
     def move(self,target):
         if target not in ('replacement','rollback') or target==self.current:
             self.record('TARGET_REJECTED');raise RuntimeError('Retained original or unknown target forbidden')
@@ -213,7 +256,7 @@ class Coordinator:
         try:self.identity_gate('BEFORE')
         except Exception as exc:
             self.backend.hold();self.record('BEFORE_IDENTITY_FAILED',failure_type=type(exc).__name__);raise
-        with self.backend.fence():
+        with self.registered_writer_fence():
             try:
                 self.gate='WRITER_FENCE'
                 self.identity_gate('DURING');self.check_writers();self.ledger.settled()

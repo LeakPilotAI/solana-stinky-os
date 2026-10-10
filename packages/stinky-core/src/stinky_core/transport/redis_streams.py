@@ -5,6 +5,8 @@ Business logic must never import this module directly.
 
 from __future__ import annotations
 
+from stinky_core.transport.redis_accounting import redis_client, AccountingError
+
 import asyncio
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
@@ -33,8 +35,8 @@ class RedisStreamsTransport(EventTransport):
         self._redis: Redis | None = None
 
     def _new_client(self) -> Redis:
-        return Redis.from_url(
-            self._redis_url,
+        return redis_client(
+            self._redis_url, role="redis-streams", legacy_factory=Redis.from_url,
             decode_responses=False,
             socket_connect_timeout=2,
             socket_timeout=3,
@@ -96,6 +98,8 @@ class RedisStreamsTransport(EventTransport):
                 )
                 return mid
             except Exception as exc:
+                if isinstance(exc, AccountingError):
+                    raise  # Never replay an uncertified managed mutation.
                 last_exc = exc
                 logger.warning(
                     "redis_streams.publish_retry",

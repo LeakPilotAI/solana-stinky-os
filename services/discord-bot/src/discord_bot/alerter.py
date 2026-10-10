@@ -6,6 +6,8 @@ Never every migration. Never creates.
 
 from __future__ import annotations
 
+from stinky_core.transport.redis_accounting import redis_client
+
 import asyncio
 import json
 import sys
@@ -41,8 +43,8 @@ class AlertDispatcher:
         self._quality_last: dict[str, tuple[float, str]] = {}
 
     async def start(self) -> None:
-        self._redis = redis.from_url(
-            settings.redis_url,
+        self._redis = redis_client(
+            settings.redis_url, role="discord-alerts", legacy_factory=redis.from_url,
             decode_responses=True,
             socket_connect_timeout=10,
             socket_timeout=None,

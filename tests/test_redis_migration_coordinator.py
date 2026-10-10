@@ -222,3 +222,39 @@ def test_production_or_unowned_scope_never_reaches_coordinator_control(kind):
     if kind=='label':r['Config']['Labels']={}
     if kind=='command':r['Config']['Cmd']+=['--appendonly','no']
     with pytest.raises(RuntimeError):verify_isolated_scope(records)
+
+def test_writer_fence_entry_failure_holds_without_stopping_source(tmp_path,monkeypatch):
+    c,b,l=setup(tmp_path)
+    @contextmanager
+    def failure():
+        raise RuntimeError('Unresolved drain')
+        yield
+    monkeypatch.setattr(b,'fence',failure)
+    with pytest.raises(RuntimeError,match='quiescence'):c.move('replacement')
+    assert c.state=='HOLD' and b.held and b.live['original']
+    assert 'replacement' not in b.data
+
+def test_writer_fence_exit_failure_does_not_claim_routed_success(tmp_path,monkeypatch):
+    c,b,l=setup(tmp_path)
+    @contextmanager
+    def failure():
+        yield
+        raise RuntimeError('Release failed')
+    monkeypatch.setattr(b,'fence',failure)
+    with pytest.raises(RuntimeError,match='release'):c.move('replacement')
+    assert c.state=='HOLD' and b.held and b.live['replacement']
+    assert l.verify(b.census('replacement'))['acknowledged']==1
+
+def test_checkpoint66_namespace_requires_exact_label_volume_and_isolated_port():
+    record=scope()[0];record['Name']='/genesis-redis-c66-proof'
+    record['Config']['Labels']['genesis.certification']='checkpoint66'
+    record['Mounts'][0]['Name']='project-genesis_checkpoint66-proof'
+    record['HostConfig']['PortBindings']['6379/tcp'][0]['HostPort']='16566'
+    verify_isolated_scope([record])
+    for field in ('label','volume','port','name'):
+        bad=deepcopy(record)
+        if field=='label':bad['Config']['Labels']['genesis.certification']='checkpoint61'
+        elif field=='volume':bad['Mounts'][0]['Name']='project-genesis_redis-data'
+        elif field=='port':bad['HostConfig']['PortBindings']['6379/tcp'][0]['HostPort']='6380'
+        else:bad['Name']='/stinky-redis'
+        with pytest.raises(RuntimeError):verify_isolated_scope([bad])

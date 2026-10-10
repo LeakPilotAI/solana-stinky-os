@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from stinky_core.transport.redis_accounting import redis_client
+
 import asyncio
 import json
 import time
@@ -108,8 +110,8 @@ class CollectorService:
             logger.warning("collector.interrupted_tracks_failed_closed", count=len(stale), mints=stale[:20])
         logger.info("collector.startup_phase", phase="publisher_connect")
         await self._publisher.connect()
-        self._redis = redis.from_url(
-            settings.redis_url,
+        self._redis = redis_client(
+            settings.redis_url, role="collector-consumer", legacy_factory=redis.from_url,
             decode_responses=True,
             socket_connect_timeout=5,
             socket_timeout=10,
