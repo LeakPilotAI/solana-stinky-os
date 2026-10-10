@@ -72,6 +72,30 @@ def validate_dependency(record,name):
     if state not in ('running','exited','created'):raise RuntimeError('Dependency state unsafe')
     return state
 
+def wait_dependency_ready(docker, name, *, started=False):
+    """Readiness probes only; a cold dependency may need time after docker start."""
+    deadline = time.monotonic() + (45 if started else 0)
+    while True:
+        try:
+            if name == 'stinky-postgres':
+                if 'accepting connections' not in run([docker,'exec',name,'pg_isready','-U','stinky','-d','stinky']):
+                    raise RuntimeError('Postgres unavailable')
+            elif name == 'stinky-redis':
+                if run([docker,'exec',name,'redis-cli','PING']).strip() != 'PONG':
+                    raise RuntimeError('Redis unavailable')
+            elif name == 'stinky-minio':
+                run([docker,'exec',name,'curl','-f','http://localhost:9000/minio/health/live'])
+            else:
+                raise ValueError('Dependency not allowlisted')
+            return
+        except RuntimeError:
+            if not started:
+                raise
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f'Dependency readiness timed out: {name}; no restart or destructive fallback') from None
+            time.sleep(.5)
+
+
 def ensure_dependencies(launcher):
     docker=launcher.find_docker()
     if not docker:raise RuntimeError('Docker unavailable; start it separately')
@@ -81,9 +105,8 @@ def ensure_dependencies(launcher):
     for name,state in states.items():
         if state!='running':run([docker,'start',name])
     # Healthy running containers are never recycled. Redis history/config untouched.
-    if 'accepting connections' not in run([docker,'exec','stinky-postgres','pg_isready','-U','stinky','-d','stinky']):raise RuntimeError('Postgres unavailable')
-    if run([docker,'exec','stinky-redis','redis-cli','PING']).strip()!='PONG':raise RuntimeError('Redis unavailable')
-    run([docker,'exec','stinky-minio','curl','-f','http://localhost:9000/minio/health/live'])
+    for name,state in states.items():
+        wait_dependency_ready(docker,name,started=state!='running')
     if any(m.get('Name')=='project-genesis_redis-durable-data' for m in records[1].get('Mounts',[])):
         from scripts.redis_snapshot_integrity import verify_aof_ready
         text=run([docker,'exec','stinky-redis','redis-cli','INFO','persistence'])
