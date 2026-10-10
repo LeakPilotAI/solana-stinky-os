@@ -52,3 +52,94 @@ Artifacts under ignored logs/checkpoint66-* include protected snapshots, certifi
 6. Only afterward consider separately authorized Redis migration: fresh quiesced boundary, protected current snapshots, strict payload/PEL recovery, persistence/fsync/restart proof and rollback preserving post-cutover writes. Keep original storage. Full desktop Stop/Start certification remains pending production durability and actual authorized lifecycle tests.
 
 Internet failures remain degraded external collection, never grounds for infrastructure reset. No historical backfill, frozen V2 changes, Atlas changes or trading authority are introduced.
+
+
+## Checkpoint 67: inactive broker and guarded application recovery
+
+The seven applications were absent at preflight, while all existing dependencies
+were healthy. Authorized application-only recovery used the existing per-service
+runner under the startup lock after ownership, schema and readiness checks. No
+containers, configuration, credentials or production adapters were changed. The
+startup boundary was 2026-10-10T05:22:15.899874Z (00:22:15 America/Chicago); seven
+verified starts completed at 05:22:52.326841Z. Bounded log fingerprints and Windows
+event availability were preserved before startup. Log activity ended around
+October 9 22:44 Chicago; no proven cause was found. Maintenance timeout traces are
+not evidence that all applications crashed. Outage cause remains UNKNOWN.
+
+The new inactive redis_writer_broker module provides a central durable ledger
+bridge for ManagedRedis through PipeProxy. It does not configure the global
+factory, start a broker, or activate anything in application startup. Redis scope
+pins include native container ID/image, exact project/service, mount and loopback
+port. ProductionCredentials requires a separate ACL-manager principal without
+ordinary data-command permission, exact role key scopes, verified native owner,
+unique sealed connection credentials and complete ACL-principal inventory.
+Production scope explicitly rejects fixture identities. Redis
+ACL SETUSER is intrinsically powerful: the ACL manager is a trusted controller and
+can grant privileges. This is reduced normal permission, not proof that a
+compromised ACL administrator cannot escalate. No live credentials were changed.
+
+The local Windows pipe uses bounded typed JSON (never unpickles incoming objects),
+mutual nonce HMAC authentication and native process identity on both ends. Writers
+verify broker PID/creation time; the broker verifies actual pipe peer PID against
+its native manifest. Every physical command intent/reply still uses the fsynced
+ledger. Central generation/epoch/endpoint checks reject stale routes; a ledger
+registration without sealed credentials cannot authorize a mutation. Reply bytes
+must match the typed reply. Server permission fencing precedes drain; missing
+participants, native process loss, missing/unknown CIDs, lost replies, replayed IPC
+or authentication failures cause HOLD and revoke controlled principals. There is
+no automatic actor/process/reply replay and no public resume/routing shortcut.
+
+Real isolated fixtures used three spawned native writers per scenario, not mocks.
+Final scenarios covered normal writing/group claims, drain, an accepted LPUSH
+with a lost acknowledgement, actor crash, unknown native peer, disconnect without
+implicit reconnect, refused trimming/destructive pop, invalid HMAC and wrong
+broker creation identity. Duplicate list insertions stayed distinct; no artificial
+deduplication was introduced. BRPOP remains explicitly unsupported before dispatch;
+no new queue lease, processing ACK or redelivery protocol is claimed. A consumer
+crash cannot discard a popped item through this managed path because it cannot pop.
+
+### Retention and recovery are still activation blockers
+
+Inventory: shared transport appends use approximate MAXLEN 20000; optional Discord
+SET markers expire after 48 hours; the current production configuration and existing
+durable template use allkeys-lru. The only application BRPOP is the dormant manual
+consumer. No application XTRIM/XDEL/explicit EXPIRE call was found in the inspected
+write seams; unknown/admin mutations are not inferred absent merely from that scan.
+
+RetentionBoundary currently demands noeviction, observed zero expiring keys and
+untrimmed appends for a preservation epoch. It rejects MAXLEN/MINID and SET/EX before
+intent or dispatch. The strict payload-membership gate remains unchanged. This is
+a certified refusal mechanism, not complete archive-backed retention accounting.
+It cannot activate against the unchanged normal production publisher semantics.
+An independently certified archival/receipt-epoch protocol is still required to
+preserve existing trimming/expiry behavior; neither behavior was changed here.
+
+A real strict incremental-AOF restart failed: the empty alpha consumer disappeared
+and group entries-read changed from 1 to UNKNOWN, while the surviving beta pending
+entry and payloads remained. This was semantic metadata loss, not a harmless clock
+or serialization exception. Protected before/after/difference artifacts are retained.
+A deterministic regression requires rejection of these differences. Do not relax it.
+
+Fresh isolated full-boundary tests waited for all actors to exit, completed AOF
+rewrite with healthy persistence status, fsynced, then restarted the same fixture.
+Exact payload/group/PEL recovery passed. This certifies controlled full-boundary
+storage recovery only. It does not certify arbitrary incremental replay, abrupt
+power loss, production durability, a new production route, or complete
+multi-process coordinator cutover/rollback. The accepted unknown LPUSH was retained;
+its missing acknowledgement still forbids migration or rollback despite successful
+storage preservation.
+
+Eight checkpoint67 fixtures are stopped and retained on eight separate volumes.
+No original container, volume or protected recovery artifact was removed. The
+checkpoint resource budget is exhausted; do not create more checkpoint67 fixtures
+or evade the budget by relabeling them. Future isolated work must follow the
+recorded retention/budget policy, preserve necessary evidence, and never perform
+unauthorized cleanup. Exact results and IDs are in the ignored checkpoint report.
+
+Remaining prerequisites: archive-backed retention epochs; strict preservation of
+all group metadata across the required restart modes; durable broker restart and
+reviewed native registration/bootstrap; explicit verified route reauthorization and
+real multi-process coordinator cutover/rollback certification. Application
+activation remains separately authorized only after these gates pass. No hot-pool
+patching, production pause, Redis migration or full desktop Stop certification is
+implied by this implementation checkpoint.
