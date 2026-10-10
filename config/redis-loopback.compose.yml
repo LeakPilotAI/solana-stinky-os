@@ -1,0 +1,7 @@
+# Reviewed future overlay only. Never apply it to the existing container without
+# a separately approved evidence-preserving replacement/cutover procedure.
+# !override replaces the inherited wildcard mapping instead of appending to it.
+services:
+  redis:
+    ports: !override
+      - "127.0.0.1:6380:6379"

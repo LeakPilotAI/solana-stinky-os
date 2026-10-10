@@ -29,7 +29,8 @@ class PinnedRedisScope:
         if name=='stinky-redis':
             if port!=6380 or volume not in ('project-genesis_redis-data','project-genesis_redis-durable58-data') or certification is not None:
                 raise AccountingError('Production ownership scope unavailable')
-        elif not (name.startswith('genesis-redis-c67-') and volume.startswith('project-genesis_checkpoint67-') and port in (16570,16571,16572,16573) and certification=='checkpoint67'):
+        elif not ((name.startswith('genesis-redis-c67-') and volume.startswith('project-genesis_checkpoint67-') and port in (16570,16571,16572,16573) and certification=='checkpoint67') or
+                  (name.startswith('genesis-redis-c68-') and volume.startswith('project-genesis_checkpoint68-') and port in (16574,16575,16576,16577) and certification=='checkpoint68')):
             raise AccountingError('Unrecognized Redis authority scope')
 
     def __call__(self, records):
@@ -229,6 +230,9 @@ class WriterBroker:
         if not isinstance(server_epoch,str) or not re.fullmatch('[0-9a-f]{40}',server_epoch) or not re.fullmatch('[A-Za-z0-9_-]{1,80}',endpoint):
             raise AccountingError('Reviewed broker route required')
         self.server_epoch=server_epoch;self.endpoint=endpoint;self.generation=1
+        self.ledger.journal.persist({'stage':'BROKER_ROUTE','server_epoch':server_epoch,
+            'endpoint':endpoint,'generation':self.generation,
+            'manifest':[self.manifest[pid] for pid in sorted(self.manifest)]})
 
     def owner(self, pid):
         owner=self.manifest.get(pid)

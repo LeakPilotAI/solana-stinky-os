@@ -81,8 +81,9 @@ def test_real_native_multiprocess_broker_and_fail_closed_boundaries():
     pin=PinnedRedisScope(**config['pins'])
     def scope():return json.loads(subprocess.check_output(['docker','inspect',config['pins']['container_id']],text=True))
     pin(scope())  # Never accept production or a fixture with different storage.
-    assert config['pins']['certification']=='checkpoint67' and config['pins']['port']==16570
-    observer=redis.Redis(host='127.0.0.1',port=16570,username='observer',password=config['observer_password'],socket_timeout=3)
+    assert (config['pins']['certification'],config['pins']['port']) in [('checkpoint67',16570),('checkpoint68',16574)]
+    port=config['pins']['port']
+    observer=redis.Redis(host='127.0.0.1',port=port,username='observer',password=config['observer_password'],socket_timeout=3)
     root=Path(config['artifact_root'])
     adapter=NativePause()
     results={}
@@ -108,8 +109,8 @@ def test_real_native_multiprocess_broker_and_fail_closed_boundaries():
         journal=DurableJournal(root/(scenario+'-broker.jsonl'))
         ledger=ProductionAcknowledgements(journal,[writer_id(manifest[p.pid],role) for p,role in zip(processes,roles)])
         broker=None
-        admin=lambda:redis.Redis(host='127.0.0.1',port=16570,username='broker',password=config['broker_password'],socket_timeout=3)
-        authority=ProductionCredentials(admin,scope,lambda:dict(broker.current_owner),journal,scope_validator=pin,port=16570,keys={'redis-streams':['proof'],'api-manual-queue':['queue'],'entity-consumer':['proof']},readers={'observer':config['observer_commands']})
+        admin=lambda:redis.Redis(host='127.0.0.1',port=port,username='broker',password=config['broker_password'],socket_timeout=3)
+        authority=ProductionCredentials(admin,scope,lambda:dict(broker.current_owner),journal,scope_validator=pin,port=port,keys={'redis-streams':['proof'],'api-manual-queue':['queue'],'entity-consumer':['proof']},readers={'observer':config['observer_commands']})
         broker=WriterBroker(ledger,authority,manifest,verify,RetentionBoundary(observer.config_get('maxmemory-policy'),0),server_epoch=observer.info('server')['run_id'],endpoint='isolated67')
         server=PipeServer(address,key,broker)
         def serve():
@@ -119,7 +120,7 @@ def test_real_native_multiprocess_broker_and_fail_closed_boundaries():
         thread=threading.Thread(target=serve,daemon=True);thread.start()
         server_identity=(os.getpid(),native_identity(adapter,os.getpid())[0])
         for p,ch,role in zip(processes,pairs,roles):
-            ch.send((manifest[p.pid],address,key,16570,observer.info('server')['run_id'],role,server_identity))
+            ch.send((manifest[p.pid],address,key,port,observer.info('server')['run_id'],role,server_identity))
         def ask(index,cmd):
             pairs[index].send(cmd);assert pairs[index].poll(20)
             return pairs[index].recv()
@@ -176,6 +177,30 @@ def test_real_native_multiprocess_broker_and_fail_closed_boundaries():
             # Revoke and persist the final record before closing its journal.
             # Previous principals remain retained, disabled and nonwriting.
             authority.revoke_all();journal.close()
+        if config['pins']['certification']=='checkpoint68':
+            from scripts.redis_broker_recovery import recover_held_boundary
+            recovered_journal=DurableJournal(root/(scenario+'-recovered.jsonl'))
+            def revoke(principal):
+                pin(scope());client=admin()
+                try:client.execute_command('ACL','SETUSER',principal,'off','resetpass','-@all')
+                finally:client.close()
+            def verify_revoked(principal):
+                pin(scope());client=admin()
+                try:
+                    policy=client.acl_getuser(principal)
+                    return policy is not None and 'off' in policy['flags'] and not policy['passwords'] and policy['categories']==['-@all'] and not policy['commands'] and not policy['selectors']
+                finally:client.close()
+            try:
+                recovered=recover_held_boundary(journal.path,expected_head=journal.previous,
+                    next_journal=recovered_journal,revoke=revoke,verify_revoked=verify_revoked)
+                assert recovered['held'] and recovered['fenced'] and recovered['next_generation']==2
+                assert recovered['ledger'].commands==ledger.commands
+                assert all(not row['active'] for row in recovered['ledger'].bindings.values())
+                if scenario=='lost':
+                    with pytest.raises(RuntimeError,match='Unresolved'):recovered['ledger'].settled()
+                else:assert recovered['ledger'].settled()==len(ledger.commands)
+                results[scenario]['held_restart_recovery']=True
+            finally:recovered_journal.close()
     assert observer.lrange('queue',0,-1).count(b'unknown-accepted')==1
     results['stream_entries']=observer.xlen('proof');results['queue_entries']=observer.llen('queue')
     results['pending']=observer.xpending('proof','group')['pending']

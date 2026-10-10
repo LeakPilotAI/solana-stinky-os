@@ -149,3 +149,94 @@ HostIp empty for host port 6380. The broker requires an explicitly loopback-boun
 endpoint and rejects this mapping. No port binding was changed. Resolve that
 constraint through the separately reviewed infrastructure plan; do not falsify
 inspect evidence or relax the pin to claim activation readiness.
+
+
+## Checkpoint 68: encrypted archive and held restart recovery
+
+Checkpoint68 remains **PARTIAL / AMBER**. The new components are inactive. No
+production process, pool, credential, Redis configuration or network binding was
+changed. These components must not be mistaken for a completed retention protocol,
+resumable broker bootstrap or production migration coordinator.
+
+`redis_evidence_archive.EvidenceArchive` captures bounded atomic DB0 evidence using
+the existing read-only Redis script. It retains actual DUMP bytes, stream IDs,
+ordered duplicate field/value bytes, absolute expiry and complete consumer/group/
+PEL metadata. Windows user-bound DPAPI protects payloads; no plaintext payload or
+secret is written to the journal. Exclusive-new blobs are fsynced and read back,
+decrypted and strictly validated before a separate trusted controller anchors
+ciphertext/plaintext digests, route epoch, timestamp and receipt head. Source epoch
+changes, corruption, missing data, failed fsync/anchor, unknown files, count/byte
+exhaustion fail closed. Existing artifacts are never deleted or overwritten.
+The archive is capped at128 blobs/1GiB and128MiB per encoded blob. It requires one
+serialized controller; cross-process archive admission/rotation is not implemented.
+DPAPI recovery requires the original Windows user protection material; it is not a
+portable backup or hardware/power-loss guarantee. External anchors must themselves
+be protected independently; copying a digest beside an untrusted blob is not proof.
+
+Independent real Redis restore recovered two keys,18 stream entries and1 pending
+entry from encrypted archived raw bytes into a fresh separate volume, with strict
+payload/group/PEL equality. This is synthetic laboratory evidence, never V2 history.
+Delayed archive capture explicitly cannot recover already removed IDs. There is no
+retention exemption in the existing ledger: archived receipt checks do not replace
+current source/candidate equality or authorize rollback. Archive capture is not yet
+wired before every destructive retention action. MAXLEN, expiry and eviction still
+block activation; original allkeys-lru and publisher retention remain unchanged.
+
+The broker now fsyncs its initial native manifest and reviewed epoch/endpoint/
+generation before issuance. `redis_broker_recovery.recover_held_boundary` requires
+an independent trusted original journal head, validates all stage ordering and
+identities, preserves every settled and unknown intent, revokes exact recorded
+principals through a pinned authority and verifies revocation. It returns only an
+immutable inspection ledger: registration, command dispatch and acknowledgements
+are forbidden. All old bindings are inactive; next generation is reported but not
+granted. Failed revocation/verification/fsync, unknown stages, contradictory receipts
+or lost journal tails cannot return a recovered route. The original journal and
+anchor remain required for repeated recovery; the new held-summary journal is not
+self-contained writable state. No broker automatically resumes after restart.
+Unknown accepted LPUSH remains ISSUED and prohibits rollback. Unrecorded principals
+still require complete ACL inventory, not guessed ownership or broad revocation.
+
+Real native three-writer fixtures exercised all nine prior scenarios plus held
+journal reconstruction/revocation. Controlled full-AOF rewrite/fsync/restart retained
+18 stream entries,19 list entries and the pending consumer ownership/count exactly.
+This does not resolve the previous incremental replay loss of an empty consumer and
+entries-read counter, nor certify arbitrary crash recovery. Strict comparison is
+unchanged. No new multi-process coordinator cutover/rollback was performed.
+
+The only inspected BRPOP consumer remains sentinel/manual_track.py. It is dormant
+in normal core startup; managed BRPOP is rejected before dispatch. A durable queue
+replacement would require a processing receipt/redelivery/duplicate contract absent
+from that application. No implicit retries or silent semantics change were added.
+
+### Explicit-loopback network preparation
+
+`config/redis-loopback.compose.yml` is a future review-only overlay using !override
+so the wildcard mapping is replaced, not appended. Local Compose config parsing
+verified exactly127.0.0.1:6380 ->6379 without applying it. New isolated scope uses
+only explicit127.0.0.1:16574..16577, reviewed checkpoint68 labels/native IDs/images/
+independent volumes. Extra wildcard, empty HostIp, foreign mount or identity fails.
+The actual production container still has empty HostIp on6380 and is rejected by
+the new authority. Editing this overlay does not change an existing container.
+Activation requires a separately approved, verified fresh recovery boundary and
+new-container cutover: pin exactloopback mapping, independent durable storage,
+complete writer fencing/ACK coverage/rollback and no competing volume writers.
+Never apply a broad Compose operation or change production bindings in this task.
+
+### Remaining activation blockers
+
+1. Complete pre-disappearance archive custody/receipt epochs preserving actual
+   MAXLEN/expiry semantics, serialized admission, independent anchor recovery and
+   bounded capacity/rotation. A point-in-time archive alone is not this protocol.
+2. Resumable broker bootstrap/route reauthorization with exhaustive native writers,
+   complete ACL inventory and durable independent anchors. Held reconstruction is
+   deliberately not a writable route.
+3. Real multi-process coordinator cutover/abort/rollback certification with those
+   archive epochs, preserving every acknowledged and uncertain mutation.
+4. Strict consumer metadata recovery for required crash modes. Full controlled
+   rewrite proof does not waive incremental AOF metadata loss.
+5. Separately reviewed production loopback binding and graceful adapter activation.
+   No live pool hot patch, restart, credential change or migration is implied.
+
+All original containers/volumes, protected backups, frozen V2 files/evidence and
+four pending58 edits remain preserved. Full graceful desktop Stop/Start is still
+blocked on production durability and actual approved lifecycle certification.
