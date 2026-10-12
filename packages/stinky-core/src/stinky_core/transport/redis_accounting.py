@@ -231,7 +231,7 @@ class ManagedRedis(Redis):
                 except DispatchBusy:
                     if attempt==127 or asyncio.get_running_loop().time()>=deadline:
                         raise DispatchBusy('Known pre-dispatch backlog exceeded bound')
-                    await asyncio.sleep(.01)
+                    await asyncio.sleep(.001)
             self.runtime.inflight.add(token)
             try:
                 reply=await Redis.execute_command(self,*args,**options)

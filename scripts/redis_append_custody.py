@@ -23,6 +23,37 @@ OBSERVE = "return redis.call('XRANGE', KEYS[1], ARGV[1], ARGV[1], 'COUNT', 1)"
 SEGMENT_BYTES = 8 * 1024 * 1024
 
 
+class FixedReadonlyEntryProbe:
+    """Three fixed read-only observations, one transport write; no mutation API.
+
+    The trusted controller supplies the already scoped read-only observer client.
+    Both remote epochs are returned and checked, never inferred from cached state.
+    Payloads are still compared byte-for-byte with freshly decrypted custody.
+    """
+    def __init__(self,client):self.client=client
+    def __call__(self,key,entry_id):
+        if (not isinstance(key,bytes) or not isinstance(entry_id,str) or
+            not re.fullmatch('[0-9]+-[0-9]+',entry_id)):
+            raise AccountingError('Entry observation identity unavailable')
+        # Redis INFO/XRANGE have no mutation or transaction/consumer-state effects.
+        # A read-only retry still has to satisfy both independently returned epochs.
+        with self.client.pipeline(transaction=False) as probe:
+            probe.info('server')
+            probe.execute_command('EVAL_RO',OBSERVE,1,key,entry_id)
+            probe.info('server')
+            rows=probe.execute()
+        if not isinstance(rows,list) or len(rows)!=3:
+            raise AccountingError('Entry observation response incomplete')
+        def epoch(info):
+            if not isinstance(info,dict):raise AccountingError('Observer epoch unavailable')
+            value=info.get('run_id',info.get(b'run_id'))
+            if isinstance(value,bytes):value=value.decode('ascii')
+            if not isinstance(value,str) or not re.fullmatch('[0-9a-f]{40}',value):
+                raise AccountingError('Observer epoch malformed')
+            return value
+        return epoch(rows[0]),rows[1],epoch(rows[2])
+
+
 class AppendStore:
     def __init__(self, directory, *, writable=True, protection=None,
                  segment_bytes=SEGMENT_BYTES, max_segments=128,
@@ -239,12 +270,16 @@ class AppendStore:
 
 class AppendCustody:
     single_flight_backpressure = True
+    atomic_receipt = True
     def __init__(self, store, base_archive, client, ledger, *, scope,
-                 configuration, expiring_keys):
+                 configuration, expiring_keys, entry_probe=None):
         from scripts.redis_writer_broker import RetentionBoundary
         RetentionBoundary(configuration, expiring_keys)
         self.store = store; self.base_archive = base_archive
         self.client = client; self.ledger = ledger; self.scope = scope
+        if entry_probe is not None and not isinstance(entry_probe,FixedReadonlyEntryProbe):
+            raise AccountingError('Fixed read-only observation probe required')
+        self.entry_probe=entry_probe
         self.base_anchor = None; self.observed = {}; self.held = False
 
     def initialize(self):
@@ -290,7 +325,7 @@ class AppendCustody:
             self.held = True
             raise
 
-    def observe(self, row):
+    def observe(self, row, *, persist=None):
         if row['command'] != 'XADD':
             return
         try:
@@ -298,16 +333,21 @@ class AppendCustody:
             args = self.store.read(anchor)
             from scripts.redis_production_adapters import append_fields
             expected = append_fields(args)
-            epoch = self.scope()
+            if self.entry_probe is None:
+                epoch=self.scope()
+                if epoch!=anchor['epoch']:raise AccountingError('Custody source changed before observation')
+                raw=self.client.execute_command('EVAL_RO',OBSERVE,1,args[0],row['entry_id'])
+                after=self.scope()
+            else:epoch,raw,after=self.entry_probe(args[0],row['entry_id'])
             if epoch != anchor['epoch']:
                 raise AccountingError('Custody source changed before observation')
-            raw = self.client.execute_command('EVAL_RO', OBSERVE, 1, args[0], row['entry_id'])
-            if (raw != [[row['entry_id'].encode('ascii'), expected]] or self.scope() != epoch):
+            if (raw != [[row['entry_id'].encode('ascii'), expected]] or after != epoch):
                 raise AccountingError('Actual Redis entry absent or contradicts prepared bytes')
             mark = {'token': token, 'entry_id': row['entry_id'],
                     'anchor': dict(anchor), 'payload_sha256': framed_hash(expected),
                     'field_count': len(expected)//2}
-            self.ledger.journal.persist({'stage': 'CUSTODY_OBSERVED', **mark})
+            if persist is None:self.ledger.journal.persist({'stage': 'CUSTODY_OBSERVED', **mark})
+            else:persist(mark)
             self.observed[token] = mark
         except BaseException:
             self.held = True

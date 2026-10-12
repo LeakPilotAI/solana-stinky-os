@@ -13,6 +13,7 @@ import hmac
 import json
 import os
 import re
+import struct
 import threading
 from multiprocessing.connection import Client, Listener
 
@@ -32,7 +33,8 @@ class PinnedRedisScope:
         elif not ((name.startswith('genesis-redis-c67-') and volume.startswith('project-genesis_checkpoint67-') and port in (16570,16571,16572,16573) and certification=='checkpoint67') or
                   (name.startswith('genesis-redis-c68-') and volume.startswith('project-genesis_checkpoint68-') and port in (16574,16575,16576,16577) and certification=='checkpoint68') or
                   (name.startswith('genesis-redis-c69-') and volume.startswith('project-genesis_checkpoint69-') and port in (16578,16579,16580,16581) and certification=='checkpoint69') or
-                  (name.startswith('genesis-redis-c71-') and volume.startswith('project-genesis_checkpoint71-') and port in (16582,16583,16584,16585) and certification=='checkpoint71')):
+                  (name.startswith('genesis-redis-c71-') and volume.startswith('project-genesis_checkpoint71-') and port in (16582,16583,16584,16585) and certification=='checkpoint71') or
+                  (name.startswith('genesis-redis-c72-') and volume.startswith('project-genesis_checkpoint72-') and port == 16586 and certification=='checkpoint72')):
             raise AccountingError('Unrecognized Redis authority scope')
 
     def __call__(self, records):
@@ -228,6 +230,7 @@ class WriterBroker:
         if any(pid != owner['pid'] for pid,owner in self.manifest.items()):raise AccountingError('Manifest PID differs')
         self.ledger=ledger;self.credentials=credentials;self.verify_native=verify_native
         self.retention=retention;self.fenced=False;self.held=False;self.lock=threading.RLock()
+        self.admission_changed=threading.Condition(self.lock)
         self.sequences={};self.current_owner=None
         if not isinstance(server_epoch,str) or not re.fullmatch('[0-9a-f]{40}',server_epoch) or not re.fullmatch('[A-Za-z0-9_-]{1,80}',endpoint):
             raise AccountingError('Reviewed broker route required')
@@ -252,6 +255,7 @@ class WriterBroker:
         # authentication/identity failure to obtain a fresh intent or credential.
         self.held=True;self.fenced=True
         with self.lock:
+            self.admission_changed.notify_all()
             self.credentials.revoke_all()
 
     def dispatch(self, pid, request):
@@ -310,10 +314,29 @@ class WriterBroker:
                     if len(args)!=3:raise AccountingError('Compact completion shape differs')
                     # Identical canonical receipt bytes, without transporting a
                     # second full representation of a500-entry group response.
-                    return self.ledger.complete_command(args[0],args[1],reply_bytes(args[1]),args[2])
+                    result=self.ledger.complete_command(args[0],args[1],reply_bytes(args[1]),args[2])
+                    self.admission_changed.notify_all()
+                    return result
                 if method=='mark_uncertain':
                     self.ledger.mark_uncertain(*args);self.hold();return {'held':True}
-                result=getattr(self.ledger,method)(*args)
+                if method=='begin_command':
+                    # Only a proven pre-intent conflict may release the broker
+                    # lock. Give the existing physical attempt's completion a
+                    # chance to acquire it rather than repeatedly polling IPC.
+                    for attempt in range(9):
+                        try:
+                            result=self.ledger.begin_command(*args);break
+                        except DispatchBusy:
+                            if attempt==8:raise
+                            self.admission_changed.wait(.025)
+                            owner=self.owner(pid);self.current_owner=owner
+                            if (self.held or self.fenced or self.sequences.get(pid)!=sequence or
+                                args[4]!=self.generation or
+                                not self.credentials.is_bound(owner,role,args[4],self.server_epoch,args[3])):
+                                raise AccountingError('Admission changed while awaiting settlement')
+                else:result=getattr(self.ledger,method)(*args)
+                if method in ('complete_command','reject_group_exists','retire_connection'):
+                    self.admission_changed.notify_all()
                 if self.held and method in ('register_connection','begin_command'):
                     raise AccountingError('Hold arrived during admission; no permission returned')
                 return result
@@ -329,6 +352,7 @@ class WriterBroker:
     def quiesce(self, observed_ids):
         with self.lock:
             self.fenced=True;self.credentials.set_fenced(True)
+            self.admission_changed.notify_all()
             try:
                 self.credentials.verify_principals()
                 for pid in self.manifest:self.owner(pid)
@@ -341,14 +365,35 @@ class WriterBroker:
                 self.hold();raise
 
 
+def session_limit(value):
+    if type(value) is not int or not 1 <= value <= 256:
+        raise AccountingError('Broker session bound unavailable')
+    return value
+
+
+def session_frame(key, kind, session, payload):
+    return signature(key, kind, session, payload) + payload
+
+
+def read_session_frame(connection, key, kind, session):
+    # A session may be idle while a bounded Redis group read is blocked. An
+    # unexpected disconnect/timeout still HOLDs; no automatic replay/reconnect.
+    if not connection.poll(30):raise AccountingError('Broker session deadline exceeded')
+    frame=connection.recv_bytes(1024*1024+32)
+    if len(frame)<32 or not hmac.compare_digest(frame[:32],signature(key,kind,session,frame[32:])):
+        raise AccountingError('Broker session frame authentication failed')
+    return frame[32:]
+
+
 class PipeServer:
     """One serialized bounded RPC; use recv_bytes, never unpickle client objects."""
-    def __init__(self,address,authkey,broker,*,max_workers=1):
+    def __init__(self,address,authkey,broker,*,max_workers=1,max_requests=1):
         if os.name!='nt' or not address.startswith('\\\\.\\pipe\\genesis-') or len(authkey)!=32:
             raise AccountingError('Authenticated Genesis named pipe required')
         if type(max_workers) is not int or not 1<=max_workers<=8:
             raise AccountingError('Broker connection worker bound unavailable')
         self.listener=Listener(address,family='AF_PIPE',authkey=None);self.broker=broker;self.authkey=authkey
+        self.max_requests=session_limit(max_requests)
         self.max_workers=max_workers;self.slots=threading.BoundedSemaphore(max_workers)
         self.workers=set();self.worker_lock=threading.Lock()
 
@@ -382,11 +427,23 @@ class PipeServer:
             if len(answer)!=64 or not hmac.compare_digest(answer[32:],signature(self.authkey,b'client',challenge,answer[:32])):
                 raise AccountingError('Broker client authentication failed')
             connection.send_bytes(signature(self.authkey,b'server',challenge,answer[:32]))
-            request=unpack(json.loads(receive(connection,1024*1024)))
-            response=self.broker.dispatch(pid,request)
-            encoded=json.dumps(pack({'ok':True,'value':response})).encode()
-            if len(encoded)>1024*1024:raise AccountingError('Broker response outside bound')
-            connection.send_bytes(encoded)
+            limit=struct.unpack('>I',answer[28:32])[0] if self.max_requests>1 else 1
+            if not 1<=limit<=self.max_requests:raise AccountingError('Broker session limit differs')
+            session=challenge+answer[:32]
+            for ordinal in range(limit):
+                frame_session=session+struct.pack('>I',ordinal)
+                if native_pipe_pid(connection)!=pid:raise AccountingError('Broker session peer changed')
+                raw=(read_session_frame(connection,self.authkey,b'request',frame_session)
+                     if limit>1 else receive(connection,1024*1024))
+                if limit>1 and not raw:
+                    self.broker.owner(pid)
+                    connection.send_bytes(session_frame(self.authkey,b'response',frame_session,b''))
+                    return  # Authenticated normal close, never a lost reply.
+                request=unpack(json.loads(raw))
+                response=self.broker.dispatch(pid,request)
+                encoded=json.dumps(pack({'ok':True,'value':response}),separators=(',',':')).encode()
+                if len(encoded)>1024*1024:raise AccountingError('Broker response outside bound')
+                connection.send_bytes(session_frame(self.authkey,b'response',frame_session,encoded) if limit>1 else encoded)
         except BaseException:
             self.broker.hold()
             try:connection.send_bytes(json.dumps(pack({'ok':False})).encode())
@@ -403,34 +460,69 @@ class PipeServer:
 
 
 class PipeProxy:
-    def __init__(self,address,authkey,writers,*,server_identity):
+    def __init__(self,address,authkey,writers,*,server_identity,max_requests=1):
         if not isinstance(server_identity,tuple) or len(server_identity)!=2 or any(type(v) is not int or v<=0 for v in server_identity) or len(authkey)!=32:
             raise AccountingError('Reviewed native broker identity required')
         self.address=address;self.authkey=authkey;self.writers=frozenset(writers)
         self.sequence=0;self.lock=threading.RLock();self.failed=False;self.server_identity=server_identity
+        self.max_requests=session_limit(max_requests);self.connection=None;self.session=None;self.requests=0;self.closed=False
+
+    def _connect(self):
+        connection=Client(self.address,family='AF_PIPE',authkey=None)
+        self.connection=connection
+        self._verify_server()
+        challenge=receive(connection,32)
+        nonce=os.urandom(28)+struct.pack('>I',self.max_requests)
+        if len(challenge)!=32:raise AccountingError('Broker challenge unavailable')
+        connection.send_bytes(nonce+signature(self.authkey,b'client',challenge,nonce))
+        if not hmac.compare_digest(receive(connection,32),signature(self.authkey,b'server',challenge,nonce)):
+            raise AccountingError('Broker server authentication failed')
+        self.session=challenge+nonce;self.requests=0
+
+    def _verify_server(self):
+        pid=native_pipe_pid(self.connection,server=True)
+        if (pid,native_creation(pid))!=self.server_identity:
+            raise AccountingError('Unregistered or reused broker server')
+
+    def _disconnect(self):
+        if self.connection is not None:self.connection.close()
+        self.connection=None;self.session=None;self.requests=0
+
+    def close(self):
+        with self.lock:
+            self.closed=True
+            try:
+                if self.connection is not None and not self.failed and self.max_requests>1:
+                    self._verify_server()
+                    frame_session=self.session+struct.pack('>I',self.requests)
+                    self.connection.send_bytes(session_frame(self.authkey,b'request',frame_session,b''))
+                    if read_session_frame(self.connection,self.authkey,b'response',frame_session)!=b'':
+                        raise AccountingError('Broker close reply uncertain')
+            except BaseException:
+                self.failed=True;raise
+            finally:self._disconnect()
 
     def call(self,method,*args):
         with self.lock:
-            if self.failed:raise AccountingError('Lost broker reply; explicit recovery required')
+            if self.failed or self.closed:raise AccountingError('Closed or uncertain broker route; explicit recovery required')
             self.sequence+=1
             try:
-                with Client(self.address,family='AF_PIPE',authkey=None) as connection:
-                    pid=native_pipe_pid(connection,server=True)
-                    if (pid,native_creation(pid))!=self.server_identity:raise AccountingError('Unregistered or reused broker server')
-                    challenge=receive(connection,32);nonce=os.urandom(32)
-                    if len(challenge)!=32:raise AccountingError('Broker challenge unavailable')
-                    connection.send_bytes(nonce+signature(self.authkey,b'client',challenge,nonce))
-                    if not hmac.compare_digest(receive(connection,32),signature(self.authkey,b'server',challenge,nonce)):
-                        raise AccountingError('Broker server authentication failed')
-                    request={'sequence':self.sequence,'method':method,'args':list(args)}
-                    encoded=json.dumps(pack(request)).encode()
-                    if len(encoded)>1024*1024:raise AccountingError('Broker request outside bound')
-                    connection.send_bytes(encoded)
-                    response=unpack(json.loads(receive(connection,1024*1024)))
-                    if response.get('ok') is not True:raise AccountingError('Broker rejected request')
-                    return response['value']
+                if self.connection is None:self._connect()
+                self._verify_server()  # Retained pipe is not permission to cache PID identity.
+                request={'sequence':self.sequence,'method':method,'args':list(args)}
+                encoded=json.dumps(pack(request),separators=(',',':')).encode()
+                if len(encoded)>1024*1024:raise AccountingError('Broker request outside bound')
+                frame_session=self.session+struct.pack('>I',self.requests)
+                self.connection.send_bytes(session_frame(self.authkey,b'request',frame_session,encoded) if self.max_requests>1 else encoded)
+                raw=(read_session_frame(self.connection,self.authkey,b'response',frame_session) if self.max_requests>1
+                     else receive(self.connection,1024*1024))
+                response=unpack(json.loads(raw))
+                if response.get('ok') is not True:raise AccountingError('Broker rejected request')
+                self.requests+=1
+                if self.requests==self.max_requests:self._disconnect()
+                return response['value']
             except BaseException:
-                self.failed=True;raise AccountingError('Broker outcome uncertain; no replay') from None
+                self.failed=True;self._disconnect();raise AccountingError('Broker outcome uncertain; no replay') from None
 
     def __getattr__(self,name):
         if name.startswith('_'):raise AttributeError(name)

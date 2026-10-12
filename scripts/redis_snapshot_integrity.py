@@ -104,3 +104,64 @@ def verify_config_file_startup(command:list[str])->None:
     # deliberately certifies only the explicit isolated config-file design.
     if command!=['redis-server','/data/redis.conf']:
         raise ValueError('Startup may override persistence; conversion not certified')
+
+
+def verify_guarded_stop_snapshot(*,broker,observed_ids,before,after,restored,
+                                 snapshot,protected_copy,check_snapshot,inspect_connections):
+    """Inactive full-Stop recovery gate; performs no stop/start/snapshot mutation.
+
+    A trusted coordinator must first fence/drain EVERY native writer and supply
+    independently captured source/restore proofs and the actual checksum checker.
+    This verifier does not discover writers, create a snapshot, gracefully cancel
+    applications or authorize container controls. Current legacy runtime cannot
+    supply this boundary. A successful BGSAVE status alone is never accepted.
+    """
+    from scripts.redis_stream_integrity import verify_semantic_recovery
+    if broker.held or not broker.fenced or not broker.credentials.fenced:
+        raise ValueError('Authenticated writer boundary not fenced')
+    if (not isinstance(observed_ids,list) or not 1<=len(observed_ids)<=128 or
+        any(type(cid) is not int or cid<=0 for cid in observed_ids) or
+        len(set(observed_ids))!=len(observed_ids)):
+        raise ValueError('Native writer connections unavailable or duplicated')
+    expected={row['client_id'] for row in broker.ledger.bindings.values() if row['active']}
+    if set(observed_ids)!=expected or set(broker.sequences)!=set(broker.manifest):
+        raise ValueError('Unregistered or missing writer at recovery boundary')
+    def verify_live_boundary():
+        evidence=inspect_connections()
+        if (not isinstance(evidence,dict) or set(evidence)!={'server_epoch','writer_ids','maxmemory_policy'} or
+            evidence['server_epoch']!=broker.server_epoch or evidence['maxmemory_policy']!='noeviction' or
+            not isinstance(evidence['writer_ids'],list) or
+            any(type(cid) is not int or cid<=0 for cid in evidence['writer_ids']) or
+            sorted(evidence['writer_ids'])!=sorted(observed_ids) or
+            {r['client_id'] for r in broker.ledger.bindings.values() if r['active']}!=expected):
+            raise ValueError('Fresh server/connection/retention boundary unverified')
+    verify_live_boundary()
+    for pid in broker.manifest:broker.owner(pid)
+    if broker.credentials.verify_principals() is not True:
+        raise ValueError('Server-side writer exclusion unverified')
+    # Caller-owned before/after proofs bracket snapshot plus independent restore.
+    # The RDB mode permits no recovery-clock relaxation of consumer activity.
+    broker.ledger.settled()
+    verify_semantic_recovery(before,after,mode='rdb')
+    verify_semantic_recovery(before,restored,mode='rdb')
+    if any(key['expires_at_ms']!=-1 for key in before['keys']):
+        raise ValueError('Expiry can invalidate the final recovery boundary')
+    snapshot=Path(snapshot);protected_copy=Path(protected_copy)
+    if snapshot.is_symlink() or protected_copy.is_symlink() or snapshot.samefile(protected_copy):
+        raise ValueError('Separate protected snapshot copy required')
+    manifest=verify_same_snapshot(snapshot,protected_copy)
+    if check_snapshot(Path(snapshot),dict(manifest)) is not True:
+        raise ValueError('Independent snapshot checksum/structure check unavailable')
+    # Recheck the artifact and closure after a potentially slow checksum verifier.
+    if manifest!=verify_same_snapshot(Path(snapshot),Path(protected_copy)):
+        raise ValueError('Snapshot changed during verification')
+    if broker.held or not broker.fenced or not broker.credentials.fenced:
+        raise ValueError('Writer fencing changed during recovery verification')
+    verify_live_boundary()
+    for pid in broker.manifest:broker.owner(pid)
+    if broker.credentials.verify_principals() is not True:
+        raise ValueError('Writer exclusion changed during recovery verification')
+    broker.ledger.verify(after)
+    return {'status':'RECOVERY_POINT_VERIFIED','snapshot':{**manifest,'checksum_verified':True},
+            'acknowledged':broker.ledger.settled(),'connections':sorted(expected),
+            'scope':'INACTIVE_GATE_ONLY_NOT_LIFECYCLE_CERTIFICATION'}

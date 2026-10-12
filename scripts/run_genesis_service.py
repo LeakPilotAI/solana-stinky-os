@@ -65,6 +65,49 @@ def stopped_watch_containers(raw: str) -> list[str]:
     ]
 
 
+def recover_watch_dependencies(root, docker, run):
+    """Inactive-until-next-run ownership repair; no health/network restart fallback.
+
+    Serialize with normal Start/Stop. The existing ownership gate verifies the
+    project-genesis project/service labels. Verify ALL dependencies before any
+    start, address containers by pinned ID and verify unchanged storage afterward.
+    Successful start is not itself database/Redis/MinIO readiness certification.
+    """
+    from safe_genesis_start import startup_lock,validate_dependency
+    def inspect():
+        probe=run([docker,'inspect',*WATCH_CONTAINERS],timeout=20)
+        if probe is None or probe.returncode!=0 or len(probe.stdout)>1024*1024:
+            raise RuntimeError('Dependency inventory unavailable; no recovery attempted')
+        records=json.loads(probe.stdout)
+        if not isinstance(records,list) or len(records)!=3:
+            raise RuntimeError('Complete dependency inventory required')
+        by_name={r.get('Name'):r for r in records}
+        if set(by_name)!={'/'+name for name in WATCH_CONTAINERS}:
+            raise RuntimeError('Dependency identity set differs')
+        result={}
+        for name in WATCH_CONTAINERS:
+            row=by_name['/'+name];state=validate_dependency(row,name)
+            if (not re.fullmatch('[0-9a-f]{64}',row.get('Id','')) or
+                not re.fullmatch('sha256:[0-9a-f]{64}',row.get('Image','')) or
+                len(row.get('Mounts',[]))!=1 or row['Mounts'][0].get('RW') is not True):
+                raise RuntimeError('Native dependency/storage identity unavailable')
+            result[name]=(state,row)
+        return result
+    with startup_lock(Path(root)/'logs/application-start.lock'):
+        before=inspect();stopped=[row['Id'] for state,row in before.values() if state!='running']
+        if not stopped:return []
+        outcome=run([docker,'start',*stopped],timeout=40)
+        if outcome is None or outcome.returncode!=0:
+            raise RuntimeError('Owned dependency start failed; no destructive fallback')
+        after=inspect()
+        for name,(state,row) in before.items():
+            new_state,new=after[name]
+            fields=('Id','Image','Name','Mounts','Config','HostConfig')
+            if new_state!='running' or any(new.get(k)!=row.get(k) for k in fields):
+                raise RuntimeError('Dependency start/storage preservation unverified')
+        return stopped
+
+
 CORE_HEALTH = (
     ("event-log", 8002, "http://127.0.0.1:8002/health"),
     ("api", 8010, "http://127.0.0.1:8010/health"),
@@ -515,21 +558,14 @@ def main() -> int:
             return None
 
     def watchdog_tick() -> None:
-        """Start only stopped, existing Genesis dependencies. Never ATLAS.
-
-        project-genesis compose up is only at desktop start; this watchdog never runs compose up.
-        """
+        """Exact-owned recovery only, serialized with Start/Stop. Never ATLAS."""
         docker = find_docker_bin()
         if not docker:
             return
-        probe = hidden_run(
-            [docker, "ps", "-a", "--format", "{{.Names}}|{{.State}}"], timeout=20
-        )
-        if probe is None or probe.returncode != 0:
-            return
-        stopped = stopped_watch_containers(probe.stdout)
-        if stopped:
-            hidden_run([docker, "start", *stopped], timeout=40)
+        try:
+            recover_watch_dependencies(root,docker,hidden_run)
+        except (RuntimeError,OSError,ValueError,TypeError,KeyError):
+            append_log('[%s] dependency watchdog blocked: ownership, lock or engine unverified; no destructive fallback' % utc_stamp())
 
     # Ownership must be provable immediately, before any unrelated core HTTP
     # probes can consume the paper starter's bounded proof window.

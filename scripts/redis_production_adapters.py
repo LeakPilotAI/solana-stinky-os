@@ -19,18 +19,32 @@ class DurableJournal:
         self.stream=self.path.open('xb');self.max_bytes=max_bytes
         self.sequence=0;self.previous='0'*64;self.bytes=0;self.lock=threading.RLock();self.failed=False
     def persist(self,record):
+        self.persist_many([record])
+    def persist_many(self,records):
+        # One physical flush for a bounded, ordered set of metadata records.
+        # There is no timer/background ACK and no deferred mutation receipt.
+        if not isinstance(records,list) or not 1<=len(records)<=8:
+            raise AccountingError('Journal batch bound unavailable')
         with self.lock:
             if self.failed:raise AccountingError('Journal failed; new dispatch prohibited')
-            body={'sequence':self.sequence+1,'previous_sha256':self.previous,'record':record}
-            encoded=json.dumps(body,sort_keys=True,separators=(',',':')).encode()
-            if len(encoded)>4*1024*1024 or self.bytes+len(encoded)+1>self.max_bytes:
+            lines=[];previous=self.previous;sequence=self.sequence
+            for record in records:
+                sequence+=1
+                body={'sequence':sequence,'previous_sha256':previous,'record':record}
+                encoded=json.dumps(body,sort_keys=True,separators=(',',':')).encode()
+                if len(encoded)>4*1024*1024:
+                    raise AccountingError('Durable journal record outside bound')
+                lines.append(encoded+b'\n');previous=hashlib.sha256(encoded).hexdigest()
+            data=b''.join(lines)
+            if self.bytes+len(data)>self.max_bytes:
                 raise AccountingError('Durable journal capacity exceeded; no new mutation permitted')
             try:
-                self.stream.write(encoded+b'\n');self.stream.flush();os.fsync(self.stream.fileno())
+                if self.stream.write(data)!=len(data):raise OSError('Incomplete journal write')
+                self.stream.flush();os.fsync(self.stream.fileno())
             except BaseException:
                 self.failed=True
                 raise
-            self.sequence+=1;self.bytes+=len(encoded)+1;self.previous=hashlib.sha256(encoded).hexdigest()
+            self.sequence=sequence;self.bytes+=len(data);self.previous=previous
     def close(self):self.stream.close()
 
 
@@ -92,6 +106,15 @@ class ProductionAcknowledgements(Acknowledgements):
     """Registered physical-attempt receipts, including list and claim operations."""
     def __init__(self,journal,writers):
         super().__init__(journal,writers);self.bindings={};self.custody=None;self.uncertain=set();self.ack_entries=set()
+        # Historical receipts remain immutable evidence. Admission needs only the
+        # still-issued commands, not an O(history) scan on every physical attempt.
+        # Remove an entry only AFTER its reply has been durably journaled.
+        self.pending_commands={}
+    def begin(self,*args,**kwargs):
+        raise AccountingError('Managed ledger requires registered physical command API')
+    begin_metadata=begin
+    acknowledged=begin
+    acknowledged_metadata=begin
     def register_connection(self,writer,owner,client_id,server_epoch,generation):
         with self.lock:
             if writer not in self.writers or type(client_id) is not int or client_id<=0 or type(generation) is not int or generation<=0:
@@ -116,7 +139,7 @@ class ProductionAcknowledgements(Acknowledgements):
             if self.uncertain:raise AccountingError('Uncertain acknowledged outcome; all dispatch held')
             if self.custody is not None and getattr(self.custody, 'single_flight_backpressure', False):
                 conflict=getattr(self.custody,'conflicts',lambda row,name:True)
-                if any(row['state']!='ACKNOWLEDGED' and conflict(row,name) for row in self.commands.values()):
+                if any(conflict(row,name) for row in self.pending_commands.values()):
                     raise DispatchBusy('Physical operation unsettled; no new intent issued')
             if self.custody is not None:self.custody.before(name,args)
             token=len(self.commands)+1
@@ -125,7 +148,7 @@ class ProductionAcknowledgements(Acknowledgements):
             if name=='XADD':
                 fields=append_fields(args);row.update(key_sha256=hashlib.sha256(args[0]).hexdigest(),payload_sha256=framed_hash(fields),field_count=len(fields)//2)
             else:row['operation']=name
-            self.journal.persist({'stage':'COMMAND_INTENT',**row});self.commands[token]=row;return token
+            self.journal.persist({'stage':'COMMAND_INTENT',**row});self.commands[token]=row;self.pending_commands[token]=row;return token
     def complete_command(self,token,reply,serialized,endpoint):
         with self.lock:
             if token in self.uncertain:
@@ -140,9 +163,18 @@ class ProductionAcknowledgements(Acknowledgements):
                 changed['entry_id']=value
                 if (row['key_sha256'],value) in self.ack_entries:
                     raise AccountingError('Duplicate stream acknowledgement identity')
-            if self.custody is not None and hasattr(self.custody, 'observe'):
+            if (self.custody is not None and getattr(self.custody,'atomic_receipt',False)
+                    and callable(getattr(self.journal,'persist_many',None))):
+                if row['command']=='XADD':
+                    self.custody.observe(changed,persist=lambda mark:self.journal.persist_many([
+                        {'stage':'CUSTODY_OBSERVED',**mark},{'stage':'COMMAND_REPLY',**changed}]))
+                else:self.journal.persist({'stage':'COMMAND_REPLY',**changed})
+            elif self.custody is not None and hasattr(self.custody, 'observe'):
                 self.custody.observe(changed)
-            self.journal.persist({'stage':'COMMAND_REPLY',**changed});self.commands[token]=changed
+                self.journal.persist({'stage':'COMMAND_REPLY',**changed})
+            else:self.journal.persist({'stage':'COMMAND_REPLY',**changed})
+            self.commands[token]=changed
+            self.pending_commands.pop(token,None)
             if row['command']=='XADD':self.ack_entries.add((row['key_sha256'],changed['entry_id']))
 
     def mark_uncertain(self,token,endpoint):
@@ -168,6 +200,7 @@ class ProductionAcknowledgements(Acknowledgements):
             if not re.fullmatch('[A-Za-z0-9_-]{1,80}',endpoint):raise AccountingError('Endpoint identity unavailable')
             changed={**row,'state':'ACKNOWLEDGED','endpoint_id':endpoint,'reply_sha256':hashlib.sha256(b'BUSYGROUP_NO_EFFECT').hexdigest(),'outcome':'REJECTED_NO_EFFECT','error_code':'BUSYGROUP'}
             self.journal.persist({'stage':'COMMAND_REPLY',**changed});self.commands[token]=changed
+            self.pending_commands.pop(token,None)
 
 
 def writer_id(owner,role):return f"{owner['pid']}-{owner['creation_ticks']}-{role}"

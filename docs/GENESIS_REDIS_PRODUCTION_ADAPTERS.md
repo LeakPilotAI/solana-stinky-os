@@ -479,3 +479,79 @@ requires sufficient measured concurrent capacity, complete broker/head/epoch boo
 noeviction/expiry and memory-pressure proof, actual custody coordinator rollback,
 separate app/credential activation approval, then separately approved durable Redis
 cutover and actual lifecycle certification. Keep healthy Genesis running.
+
+### Checkpoint 72 — bounded custody transport and lifecycle gates
+
+Production adapters remain disabled. No application/dependency restart, credential
+change, Redis configuration change or cutover was performed. The four pending
+migration edits remain separate from these changes.
+
+Admission now indexes still-issued commands, retaining all historical receipts
+and removing a pending entry only after its durable reply. Legacy fixture methods
+cannot bypass the registered physical-command API. An authenticated pre-intent
+conflict may wait for a receipt notification, releasing the broker lock for up to
+eight 25ms waits. Each wake rechecks native owner, sequence, generation, sealed
+credential binding and fencing. No physical dispatch or replay occurs during
+that wait. A failed receipt, stale owner or new fence still HOLDs.
+
+The optional named-pipe session transports at most256 requests and remains
+default-one-request. Every reused request still checks native PID/creation and
+broker sequence/authority. Frames authenticate session, direction, ordinal and
+contents; replay/corruption/lost replies HOLD. Final close is authenticated and
+cannot regain the route; normal bounded rotation reauthenticates. At most8 native
+peer workers remain allowed. Controller startup does not automatically opt in.
+
+Observed-entry metadata and its receipt may share one fsync while retaining their
+original ordered hash-chain records. Both records must be durable before ACK or
+pending removal. Partial write/fsync failure poisons the journal and preserves
+custody/uncertainty; no recovery truncates or silently replays. Batches contain at
+most8 metadata records, and the64MiB journal/50000-command limits remain unchanged.
+This is not a batch of physical mutations or a delayed acknowledgement timer.
+
+`FixedReadonlyEntryProbe` optionally sends only INFO/server, exact EVAL_RO/XRANGE
+and INFO/server together through the scoped read-only observer. Both actual
+remote epochs must match the prepared anchor. Custody is freshly decrypted and
+the ordered payload bytes compared literally; no plaintext cache or skipped
+decryption/identity/fsync gate. Managed writer mutation pipelines remain forbidden.
+
+Real repeated trials retain the original targets71.7122/143.4245/286.849 appends/s,
+95% accepted-throughput minimum, p99ACK<=1s, zero refusals and zero lag after bounded
+catch-up. Three producers, two consumers and a queue writer use1100-byte records,
+COUNT20/500 and BLOCK5000. Separate repeat streams preserve prior stream/group
+data; no database reset or deletion. A first repeat failed on attempting to create
+an already-retained group; its failure and artifacts remain, and later repeats
+use explicitly scoped distinct streams rather than weakening that assertion.
+
+Final fixed-probe trials measured34.95/45.45/48.4 and51.1/50.4/47.6 appends/s.
+p99ACKs were0.3511/0.2625/0.2251 and0.1838/0.2287/0.3010s respectively. All throughput
+gates FAILED; lower tails/request/flush counts are not a capacity certificate.
+The earlier baseline36.6/38.95/34.8 and all intermediate profiles remain recorded;
+host/run variation prevents claiming a sustained throughput improvement. Encryption
+remains user-scoped DPAPI with the existing format and bounds. No dependency was
+installed, quota raised or durability/receipt gate disabled.
+
+Each successful trial independently checked exact trim, decrypted custody and
+held reconstruction. Real same-fixture AOF restart/full semantic recovery passed
+with appendfsync=always. The final retained fixture contains6 separate streams and
+269 queue entries, with no pending group entries. All source/candidate comparisons
+use the unchanged strict comparator, including only its previously declared AOF
+activity-clock window. This does not certify production durability or complete
+compact-custody coordinator rollback.
+
+Exactly3 new72 fixtures/volumes were allowed, maximum1 active; all are stopped and
+retained. Repeats used the current72 fixture's new streams/directories, preserving
+every prior source/ledger/custody artifact. No old checkpoint fixture was relabeled,
+reopened, removed or used as disposable storage. Future resource creation requires
+a separately bounded plan; cleanup is not implicitly authorized.
+
+The maintenance watchdog now verifies native owned dependency IDs and storage
+through the existing project/service gate and shares the Start/Stop lock. It starts
+only stopped exact IDs and verifies identity/config/storage afterward; no broad
+container or process operations. Running supervisors were not hot-patched.
+`verify_guarded_stop_snapshot` is an inactive read-only recovery gate that rejects
+unfenced/unregistered writers, pending replies, changed server/custody evidence,
+expiry/eviction, invalid copies, missing checksum or missing independent restore.
+See [the lifecycle design and certification matrix](GENESIS_LIFECYCLE_CERTIFICATION.md).
+Full graceful Stop remains unimplemented and blocked; existing shortcut behavior
+is still application-only. Production controller rollout, epoch/head handoff,
+adequate throughput and native lifecycle certification remain required.

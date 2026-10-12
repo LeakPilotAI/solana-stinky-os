@@ -8,19 +8,30 @@ from scripts.genesis_process_diagnostics import native_identity
 from scripts.redis_writer_broker import WriterBroker,PipeServer,PipeProxy,ProductionCredentials,PinnedRedisScope
 from scripts.redis_production_adapters import DurableJournal,ProductionAcknowledgements,writer_id
 from scripts.redis_evidence_archive import EvidenceArchive
-from scripts.redis_append_custody import AppendStore,AppendCustody
+from scripts.redis_append_custody import AppendStore,AppendCustody,FixedReadonlyEntryProbe
 from scripts.redis_stream_integrity import semantic_census
 from scripts.redis_broker_recovery import recover_held_boundary
 from stinky_core.transport.redis_accounting import Runtime,ClientFactory,DispatchBusy
 
 def actor(channel):
-    owner,address,key,port,epoch,role,server_identity=channel.recv()
+    owner,address,key,port,epoch,role,server_identity,max_requests,stream_key=channel.recv()
     adapter=NativePause()
     def verify():
         ticks,image=native_identity(adapter,os.getpid());assert ticks==owner['creation_ticks']
         return dict(owner)
-    proxy=PipeProxy(address,key,[writer_id(owner,role)],server_identity=server_identity)
+    proxy=PipeProxy(address,key,[writer_id(owner,role)],server_identity=server_identity,max_requests=max_requests)
+    actor_timings={}
+    def timed_sync(call,label):
+        def wrapper(*args,**kwargs):
+            start=time.perf_counter()
+            try:return call(*args,**kwargs)
+            finally:
+                row=actor_timings.setdefault(label,{'calls':0,'seconds':0.0})
+                row['calls']+=1;row['seconds']+=time.perf_counter()-start
+        return wrapper
+    proxy.call=timed_sync(proxy.call,'authenticated_rpc')
     runtime=Runtime(proxy,verify,endpoint='isolated71',server_epoch=epoch,roles=[role],credentials=proxy)
+    runtime.check=timed_sync(runtime.check,'native_actor_check')
     factory=ClientFactory();factory.configure(runtime)
     client=factory.from_url(f'redis://127.0.0.1:{port}/0',role=role)
     async def work():
@@ -32,21 +43,22 @@ def actor(channel):
                 try:
                     if cmd=='bind':value=await client.ping()
                     elif isinstance(cmd,dict) and cmd['task']=='group':
-                        value=await client.xgroup_create('proof',cmd['group'],'0',mkstream=True)
-                    elif cmd=='trim':value=await client.xadd('proof',{'data':b'exact trim'},maxlen=1,approximate=False)
+                        value=await client.xgroup_create(stream_key,cmd['group'],'0',mkstream=True)
+                    elif cmd=='trim':value=await client.xadd(stream_key,{'data':b'exact trim'},maxlen=1,approximate=False)
                     elif cmd=='pop':value=await client.brpop('queue',timeout=1)
                     elif isinstance(cmd,dict):
+                        actor_timings.clear()
                         start=cmd['start'];end=start+cmd['seconds'];latencies=[];count=0;failures=0
                         while time.perf_counter()<start:await asyncio.sleep(.001)
                         while time.perf_counter()<end+10:
                             if time.perf_counter()>=end:
                                 if role in ('redis-streams','api-manual-queue'):break
-                                groups=await client.xinfo_groups('proof')
+                                groups=await client.xinfo_groups(stream_key)
                                 lag=next(g['lag'] for g in groups if g['name']==cmd['group'].encode())
                                 if lag==0:break
                             before=time.perf_counter()
                             if role=='redis-streams':
-                                try:await client.xadd('proof',{'data':b'x'*cmd['payload_bytes']},maxlen=20000)
+                                try:await client.xadd(stream_key,{'data':b'x'*cmd['payload_bytes']},maxlen=20000)
                                 except DispatchBusy:
                                     # Known NOT dispatched/acknowledged. Preserve
                                     # and report explicit refusal; never pretend
@@ -60,17 +72,18 @@ def actor(channel):
                                 await client.lpush('queue',b'bounded manual request');count+=1
                                 await asyncio.sleep(1)
                             else:
-                                found=await client.xreadgroup(cmd['group'],'native-'+str(os.getpid()),{'proof':'>'},count=20 if role=='collector-consumer' else 500,block=5000)
+                                found=await client.xreadgroup(cmd['group'],'native-'+str(os.getpid()),{stream_key:'>'},count=20 if role=='collector-consumer' else 500,block=5000)
                                 for _,entries in found:
                                     for entry,_ in entries:
-                                        await client.xack('proof',cmd['group'],entry);count+=1
-                        value={'count':count,'latencies':latencies,'seconds':time.perf_counter()-start,'failures':failures}
+                                        await client.xack(stream_key,cmd['group'],entry);count+=1
+                        value={'count':count,'latencies':latencies,'seconds':time.perf_counter()-start,'failures':failures,'timings':dict(actor_timings)}
                     else:raise AssertionError('Unknown benchmark action')
                     channel.send({'ok':True,'value':value})
                 except Exception as exc:channel.send({'ok':False,'failure_type':type(exc).__name__})
         finally:
             try:await client.aclose()
             except Exception:pass
+            proxy.close()
             channel.close()
     asyncio.run(work())
 
@@ -81,10 +94,11 @@ def percentile(rows,fraction):
 @pytest.mark.skipif(not os.environ.get('GENESIS_CUSTODY_TEST_FIXTURE'),reason='Explicit protected isolated custody fixture required')
 def test_real_concurrent_custody_and_recovery(monkeypatch):
     config=json.loads(Path(os.environ['GENESIS_CUSTODY_TEST_FIXTURE']).read_text())
-    assert config['pins']['certification']=='checkpoint71' and config['pins']['port']==16582
+    assert (config['pins']['certification'],config['pins']['port']) in {('checkpoint71',16582),('checkpoint72',16586)}
     pin=PinnedRedisScope(**config['pins'])
     def scope():return json.loads(subprocess.check_output(['docker','inspect',config['pins']['container_id']],text=True))
-    pin(scope());port=config['pins']['port'];root=Path(config['artifact_root'])
+    pin(scope());port=config['pins']['port'];root=Path(config['artifact_root']);stream_key=config.get('stream_key','proof')
+    assert isinstance(stream_key,str) and stream_key in ('proof','proof-trial-1','proof-trial-2','proof-trial-3','proof-trial-4','proof-trial-5')
     observer=redis.Redis(host='127.0.0.1',port=port,username='observer',password=config['observer_password'],socket_timeout=10)
     epoch=observer.info('server')['run_id'];context=multiprocessing.get_context('spawn')
     roles=['redis-streams']*3+['collector-consumer','entity-consumer','api-manual-queue']
@@ -104,11 +118,12 @@ def test_real_concurrent_custody_and_recovery(monkeypatch):
     address='\\\\.\\pipe\\genesis-c71-'+uuid.uuid4().hex;key=os.urandom(32);broker=None
     admin=lambda:redis.Redis(host='127.0.0.1',port=port,username='broker',password=config['broker_password'],socket_timeout=10)
     authority=ProductionCredentials(admin,scope,lambda:dict(broker.current_owner),journal,scope_validator=pin,port=port,
-        keys={'redis-streams':['proof'],'collector-consumer':['proof'],'entity-consumer':['proof'],'api-manual-queue':['queue']},readers={'observer':config['observer_commands']})
+        keys={'redis-streams':[stream_key],'collector-consumer':[stream_key],'entity-consumer':[stream_key],'api-manual-queue':['queue']},readers={'observer':config['observer_commands']})
     segment_dir=root/'append-segments';segment_dir.mkdir();base_dir=root/'base-archive';base_dir.mkdir()
     store=AppendStore(segment_dir);base=EvidenceArchive(base_dir)
     custody=AppendCustody(store,base,observer,ledger,scope=lambda:observer.info('server')['run_id'],
-                         configuration=observer.config_get('maxmemory-policy'),expiring_keys=0)
+                         configuration=observer.config_get('maxmemory-policy'),expiring_keys=0,
+                         entry_probe=FixedReadonlyEntryProbe(observer) if config.get('fixed_readonly_probe',False) else None)
     ledger.custody=custody
     broker=WriterBroker(ledger,authority,manifest,verify,custody,server_epoch=epoch,endpoint='isolated71')
     custody.initialize()
@@ -125,17 +140,19 @@ def test_real_concurrent_custody_and_recovery(monkeypatch):
         return wrapper
     monkeypatch.setattr(os,'fsync',timed(os.fsync,'fsync'))
     monkeypatch.setattr(journal,'persist',timed(journal.persist,'journal_persist'))
+    monkeypatch.setattr(journal,'persist_many',timed(journal.persist_many,'journal_batch_persist'))
     monkeypatch.setattr(store,'prepare',timed(store.prepare,'custody_prepare'))
     monkeypatch.setattr(custody,'observe',timed(custody.observe,'entry_observation'))
     monkeypatch.setattr(broker,'owner',timed(broker.owner,'native_owner_check'))
-    server=PipeServer(address,key,broker,max_workers=config.get('broker_workers',1))
+    monkeypatch.setattr(broker,'dispatch',timed(broker.dispatch,'serialized_broker_dispatch'))
+    server=PipeServer(address,key,broker,max_workers=config.get('broker_workers',1),max_requests=config.get('session_requests',1))
     def serve():
         while True:
             try:server.serve_one()
             except (OSError,EOFError,ValueError):return
     thread=threading.Thread(target=serve,daemon=True);thread.start()
     server_identity=(os.getpid(),native_identity(adapter,os.getpid())[0])
-    for p,ch,role in zip(processes,channels,roles):ch.send((manifest[p.pid],address,key,port,epoch,role,server_identity))
+    for p,ch,role in zip(processes,channels,roles):ch.send((manifest[p.pid],address,key,port,epoch,role,server_identity,config.get('session_requests',1),stream_key))
     def ask(i,cmd):
         channels[i].send(cmd);assert channels[i].poll(30);result=channels[i].recv();assert result['ok'],result
         return result['value']
@@ -153,12 +170,13 @@ def test_real_concurrent_custody_and_recovery(monkeypatch):
                 assert ch.poll(seconds+25);result=ch.recv();assert result['ok'],result;actor_rows.append(result['value'])
             latencies=[v for row in actor_rows[:3] for v in row['latencies']]
             count=sum(row['count'] for row in actor_rows[:3]);throughput=count/seconds
-            groups=observer.xinfo_groups('proof');backlog=sum(g['lag'] or 0 for g in groups)
+            groups=observer.xinfo_groups(stream_key);backlog=sum(g['lag'] or 0 for g in groups)
             results[phase]={'target_appends_per_second':target,'appends':count,'appends_per_second':throughput,
                 'median_ack_sec':percentile(latencies,.5),'p90_ack_sec':percentile(latencies,.9),'p99_ack_sec':percentile(latencies,.99),'max_ack_sec':max(latencies),
                 'unresolved_commands':sum(r['state']!='ACKNOWLEDGED' for r in ledger.commands.values()),
                 'consumer_lag':backlog,'used_memory_before':memory_before,'used_memory_after':observer.info('memory')['used_memory'],
                 'pre_dispatch_backpressure':sum(row['failures'] for row in actor_rows),
+                'actor_timings':[row['timings'] for row in actor_rows],
                 'custody_disk_bytes':store.total,'journal_bytes':journal.bytes,'custody_segments':store.count,
                 'capacity_passed':throughput>=target*.95 and percentile(latencies,.99)<=1 and backlog==0 and not any(row['failures'] for row in actor_rows)}
             results[phase]['timings']={label:{'calls':row['calls']-timing_before.get(label,{}).get('calls',0),
@@ -168,7 +186,7 @@ def test_real_concurrent_custody_and_recovery(monkeypatch):
         # All acknowledged payloads must remain independently verifiable after
         # exact retention removes almost the entire current stream.
         assert ask(0,'trim')
-        assert observer.xlen('proof')==1
+        assert observer.xlen(stream_key)==1
         assert custody.verify(ledger,semantic_census(observer))['observed_append_records']==len(store.records)
         store.seal(journal);head=journal.previous
         reader=AppendStore(segment_dir,writable=False)

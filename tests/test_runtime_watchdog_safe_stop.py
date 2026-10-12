@@ -77,10 +77,10 @@ def test_supervisor_failure_state_is_durable_per_service():
 
 def test_dependency_watchdog_starts_only_existing_stopped_containers():
     t = read("scripts/run_genesis_service.py")
-    assert '[docker, "ps", "-a", "--format", "{{.Names}}|{{.State}}"]' in t
-    assert 'if states.get(name) and states[name] != "running"' in t
-    assert "if stopped:" in t
-    assert 'hidden_run([docker, "start", *stopped], timeout=40)' in t
+    assert 'recover_watch_dependencies(root,docker,hidden_run)' in t
+    assert "state!='running'" in t
+    assert "with startup_lock(" in t
+    assert "run([docker,'start',*stopped],timeout=40)" in t
     assert 'hidden_run([docker, "start", *WATCH_CONTAINERS], timeout=40)' not in t
 
 
