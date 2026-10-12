@@ -16,6 +16,7 @@ import re
 import struct
 import threading
 import time
+from collections import deque
 from multiprocessing.connection import Client, Listener
 
 from stinky_core.transport.redis_accounting import AccountingError, DispatchBusy, identity,reply_bytes
@@ -36,7 +37,8 @@ class PinnedRedisScope:
                   (name.startswith('genesis-redis-c69-') and volume.startswith('project-genesis_checkpoint69-') and port in (16578,16579,16580,16581) and certification=='checkpoint69') or
                   (name.startswith('genesis-redis-c71-') and volume.startswith('project-genesis_checkpoint71-') and port in (16582,16583,16584,16585) and certification=='checkpoint71') or
                   (name.startswith('genesis-redis-c72-') and volume.startswith('project-genesis_checkpoint72-') and port == 16586 and certification=='checkpoint72') or
-                  (name.startswith('genesis-redis-c73-') and volume.startswith('project-genesis_checkpoint73-') and port == 16587 and certification=='checkpoint73')):
+                  (name.startswith('genesis-redis-c73-') and volume.startswith('project-genesis_checkpoint73-') and port == 16587 and certification=='checkpoint73') or
+                  (name.startswith('genesis-redis-c74-') and volume.startswith('project-genesis_checkpoint74-') and port == 16589 and certification=='checkpoint74')):
             raise AccountingError('Unrecognized Redis authority scope')
 
     def __call__(self, records):
@@ -215,10 +217,28 @@ class ProductionCredentials(SealedCredentials):
         finally:c.close()
 
     def revoke_all(self):
-        self.fenced=True;c=self.checked_admin()
+        self.fenced=True
+        self.revocation_status={'status':'HOLD','verified':False,'durable':False}
+        c=self.checked_admin()
         try:
             for user in self.tickets:c.execute_command('ACL', 'SETUSER', user, 'off', 'resetpass', '-@all')
-            self.journal.persist({'stage':'BROKER_CREDENTIALS_REVOKED'})
+            # Revocation is an independent security action. A poisoned journal
+            # cannot certify it, but must never prevent disabling credentials.
+            for user in self.tickets:
+                policy=c.acl_getuser(user)
+                if (policy is None or 'off' not in policy['flags'] or policy['passwords'] or
+                    policy['categories']!=['-@all'] or policy['commands'] or policy['selectors']):
+                    raise AccountingError('Credential revocation not verified')
+            if self.journal.failed:
+                self.revocation_status={'status':'HOLD','verified':True,'durable':False}
+                return dict(self.revocation_status)
+            try:self.journal.persist({'stage':'BROKER_CREDENTIALS_REVOKED'})
+            except BaseException:
+                self.revocation_status={'status':'HOLD','verified':True,'durable':False}
+                raise
+            self.revocation_status={'status':'HOLD' if self.journal.committing else 'REVOKED',
+                                    'verified':True,'durable':not self.journal.committing}
+            return dict(self.revocation_status)
         finally:c.close()
 
     def is_bound(self,owner,role,generation,epoch,cid):
@@ -231,7 +251,7 @@ class WriterBroker:
         self.manifest={pid:identity(owner) for pid,owner in manifest.items()}
         if any(pid != owner['pid'] for pid,owner in self.manifest.items()):raise AccountingError('Manifest PID differs')
         self.ledger=ledger;self.credentials=credentials;self.verify_native=verify_native
-        self.retention=retention;self.fenced=False;self.held=False;self.draining=False;self.lock=threading.RLock()
+        self.retention=retention;self.fenced=False;self.held=False;self.draining=False;self.lock=threading.RLock();self.group_active=False
         self.admission_changed=threading.Condition(self.lock)
         self.sequences={};self.current_owner=None
         if not isinstance(server_epoch,str) or not re.fullmatch('[0-9a-f]{40}',server_epoch) or not re.fullmatch('[A-Za-z0-9_-]{1,80}',endpoint):
@@ -335,6 +355,7 @@ class WriterBroker:
                         try:
                             result=self.ledger.begin_command(*args);break
                         except DispatchBusy:
+                            if self.group_active:raise  # Never release an uncommitted group's lock.
                             if attempt==8:raise
                             self.admission_changed.wait(.025)
                             owner=self.owner(pid);self.current_owner=owner
@@ -372,6 +393,48 @@ class WriterBroker:
                 return self.ledger.settled()
             except BaseException:
                 self.hold();raise
+
+    def verify_isolated_group_scope(self):
+        pin=getattr(self.credentials,'scope_validator',None)
+        if (not isinstance(pin,PinnedRedisScope) or pin.certification!='checkpoint74' or
+            any(owner['service']!='fixture' for owner in self.manifest.values())):
+            raise AccountingError('Group commit restricted to reviewed checkpoint74 fixtures')
+        self.credentials.check_scope()
+
+    def dispatch_group(self, requests):
+        """Ordered private results; release them only after one durable group flush."""
+        if not isinstance(requests,list) or not 1<=len(requests)<=4:
+            raise AccountingError('Authenticated request group bound unavailable')
+        pin=getattr(self.credentials,'scope_validator',None)
+        if (not isinstance(pin,PinnedRedisScope) or pin.certification!='checkpoint74' or
+            any(owner['service']!='fixture' for owner in self.manifest.values())):
+            raise AccountingError('Group commit outside isolated authority scope')
+        eligible={'begin_command','complete_reply','complete_command','reject_group_exists'}
+        with self.lock:
+            if self.group_active:raise AccountingError('Nested broker group prohibited')
+            # Known fenced admission is rejected before creating a provisional
+            # group. It has no command intent and cannot poison a usable journal.
+            if self.fenced and any(isinstance(request,dict) and request.get('method')=='begin_command'
+                                   for _,request in requests):
+                self.hold()
+                raise AccountingError('Broker dispatch fenced; no group admitted')
+            try:
+                self.group_active=True;results=[]
+                with self.ledger.journal.group_commit():
+                    for pid,request in requests:
+                        if not isinstance(request,dict) or request.get('method') not in eligible:
+                            raise AccountingError('Control/credential operation outside settlement group')
+                        results.append(self.dispatch(pid,request))
+                    for pid,_ in requests:self.owner(pid)
+                    if self.held:raise AccountingError('Hold arrived before group commit')
+                for pid,_ in requests:self.owner(pid)
+                if self.held:raise AccountingError('Hold arrived during group commit')
+                return results
+            except BaseException:
+                try:self.hold()
+                except BaseException:self.held=True;self.fenced=True
+                raise
+            finally:self.group_active=False
 
     def drain_registered(self, inspect_writer_ids, *, timeout=10):
         """Inactive trusted-controller seam; no process/container lifecycle controls.
@@ -445,15 +508,20 @@ def read_session_frame(connection, key, kind, session):
 
 class PipeServer:
     """One serialized bounded RPC; use recv_bytes, never unpickle client objects."""
-    def __init__(self,address,authkey,broker,*,max_workers=1,max_requests=1):
+    def __init__(self,address,authkey,broker,*,max_workers=1,max_requests=1,group_commit=False):
         if os.name!='nt' or not address.startswith('\\\\.\\pipe\\genesis-') or len(authkey)!=32:
             raise AccountingError('Authenticated Genesis named pipe required')
         if type(max_workers) is not int or not 1<=max_workers<=8:
             raise AccountingError('Broker connection worker bound unavailable')
+        if type(group_commit) is not bool:raise AccountingError('Explicit isolated group selection required')
+        if group_commit:
+            if max_workers<2:raise AccountingError('Concurrent authenticated peers required')
+            broker.verify_isolated_group_scope()
         self.listener=Listener(address,family='AF_PIPE',authkey=None);self.broker=broker;self.authkey=authkey
         self.max_requests=session_limit(max_requests)
         self.max_workers=max_workers;self.slots=threading.BoundedSemaphore(max_workers)
         self.workers=set();self.worker_lock=threading.Lock()
+        self.group_dispatcher=IsolatedGroupDispatcher(broker) if group_commit else None
 
     def serve_one(self):
         if self.max_workers==1:
@@ -498,7 +566,8 @@ class PipeServer:
                     connection.send_bytes(session_frame(self.authkey,b'response',frame_session,b''))
                     return  # Authenticated normal close, never a lost reply.
                 request=unpack(json.loads(raw))
-                response=self.broker.dispatch(pid,request)
+                response=(self.group_dispatcher.submit(pid,request) if self.group_dispatcher is not None
+                          else self.broker.dispatch(pid,request))
                 encoded=json.dumps(pack({'ok':True,'value':response}),separators=(',',':')).encode()
                 if len(encoded)>1024*1024:raise AccountingError('Broker response outside bound')
                 connection.send_bytes(session_frame(self.authkey,b'response',frame_session,encoded) if limit>1 else encoded)
@@ -515,6 +584,58 @@ class PipeServer:
         if any(worker.is_alive() for worker in workers):
             self.broker.hold()
             raise AccountingError('Broker connection drain not verified')
+        if self.group_dispatcher is not None:self.group_dispatcher.close()
+
+
+class IsolatedGroupDispatcher:
+    """At most8 authenticated queued peers,4 per flush; no fill timer or retries."""
+    def __init__(self,broker):
+        broker.verify_isolated_group_scope()
+        self.broker=broker;self.changed=threading.Condition();self.queue=deque();self.closed=False
+        self.stats={'groups':0,'requests':0,'max_group':0,'peak_queue':0,'critical_seconds':0.0}
+        self.thread=threading.Thread(target=self.run,daemon=True);self.thread.start()
+
+    def submit(self,pid,request):
+        item={'pid':pid,'request':request,'done':threading.Event(),'failed':False}
+        with self.changed:
+            if self.closed or len(self.queue)>=8:raise AccountingError('Bounded settlement queue unavailable')
+            self.queue.append(item);self.stats['peak_queue']=max(self.stats['peak_queue'],len(self.queue));self.changed.notify()
+        if not item['done'].wait(30):
+            self.broker.hold();raise AccountingError('Settlement deadline exceeded; no replay')
+        if item['failed']:raise AccountingError('Settlement group held; no replay')
+        return item['result']
+
+    def run(self):
+        while True:
+            with self.changed:
+                while not self.queue and not self.closed:self.changed.wait()
+                if not self.queue:return
+                items=[self.queue.popleft() for _ in range(min(4,len(self.queue)))]
+            started=time.perf_counter()
+            try:
+                eligible={'begin_command','complete_reply','complete_command','reject_group_exists'}
+                if all(isinstance(i['request'],dict) and i['request'].get('method') in eligible for i in items):
+                    values=self.broker.dispatch_group([(i['pid'],i['request']) for i in items])
+                else:values=[self.broker.dispatch(i['pid'],i['request']) for i in items]
+                for item,value in zip(items,values):item['result']=value
+            except BaseException:
+                for item in items:item['failed']=True
+                try:self.broker.hold()
+                except BaseException:pass  # HOLD already published; preserve failed journal.
+            finally:
+                with self.changed:
+                    self.stats['groups']+=1;self.stats['requests']+=len(items)
+                    self.stats['max_group']=max(self.stats['max_group'],len(items))
+                    self.stats['critical_seconds']+=time.perf_counter()-started
+                # No native producer receives a successful response before the
+                # complete cohort is durable and post-commit ownership rechecked.
+                for item in items:item['done'].set()
+
+    def close(self):
+        with self.changed:self.closed=True;self.changed.notify_all()
+        self.thread.join(6)
+        if self.thread.is_alive():
+            self.broker.hold();raise AccountingError('Settlement queue drain unverified')
 
 
 class PipeProxy:

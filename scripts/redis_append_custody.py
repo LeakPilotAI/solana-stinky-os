@@ -367,7 +367,8 @@ class AppendCustody:
                     'field_count': len(expected)//2}
             if persist is None:self.ledger.journal.persist({'stage': 'CUSTODY_OBSERVED', **mark})
             else:persist(mark)
-            self.observed[token] = mark
+            getattr(self.ledger.journal,'after_commit',lambda action:action())(
+                lambda:self.observed.__setitem__(token,mark))
         except BaseException:
             self.held = True
             raise

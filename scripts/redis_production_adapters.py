@@ -8,6 +8,7 @@ NOT silently exempted from the existing payload-membership gate.
 from __future__ import annotations
 import hashlib,json,os,re,threading
 from pathlib import Path
+from contextlib import contextmanager
 from scripts.redis_migration_coordinator import Acknowledgements
 from scripts.redis_stream_integrity import framed_hash
 from stinky_core.transport.redis_accounting import MUTATIONS,AccountingError,DispatchBusy,identity
@@ -17,7 +18,7 @@ class DurableJournal:
     def __init__(self,path,*,max_bytes=64*1024*1024):
         self.path=Path(path);self.path.parent.mkdir(parents=True,exist_ok=True)
         self.stream=self.path.open('xb');self.max_bytes=max_bytes
-        self.sequence=0;self.previous='0'*64;self.bytes=0;self.lock=threading.RLock();self.failed=False
+        self.sequence=0;self.previous='0'*64;self.bytes=0;self.lock=threading.RLock();self.failed=False;self.group=None;self.committing=False;self.commit_actions=None
     def persist(self,record):
         self.persist_many([record])
     def persist_many(self,records):
@@ -27,6 +28,22 @@ class DurableJournal:
             raise AccountingError('Journal batch bound unavailable')
         with self.lock:
             if self.failed:raise AccountingError('Journal failed; new dispatch prohibited')
+            if self.group is not None:
+                # Only the isolated broker's outer lock owns this context. Its
+                # intermediate return values are private until the final fsync.
+                if len(self.group)+len(records)>8:raise AccountingError('Journal group bound exceeded')
+                encoded=[]
+                for index,record in enumerate(records,1):
+                    preview={'sequence':self.sequence+len(self.group)+index,'previous_sha256':'0'*64,'record':record}
+                    body=json.dumps(preview,sort_keys=True,separators=(',',':')).encode()
+                    if len(body)>4*1024*1024:raise AccountingError('Durable group record outside bound')
+                    encoded.append(body)
+                if self.bytes+sum(len(row)+1 for row in self.group+encoded)>self.max_bytes:
+                    raise AccountingError('Durable group capacity exceeded')
+                # Freeze exact request metadata now, not at a later mutable-state
+                # flush. The final writer builds the same canonical hash chain.
+                self.group.extend(encoded)
+                return
             lines=[];previous=self.previous;sequence=self.sequence
             for record in records:
                 sequence+=1
@@ -45,6 +62,34 @@ class DurableJournal:
                 self.failed=True
                 raise
             self.sequence=sequence;self.bytes+=len(data);self.previous=previous
+    @contextmanager
+    def group_commit(self):
+        """Trusted isolated dispatcher only; no caller response before exit.
+
+        Same ordered JSONL/hash-chain format and8-record boundary. No timer or
+        background ACK. A failed group poisons the journal; unknown tails remain.
+        """
+        with self.lock:
+            if self.failed or self.group is not None:
+                raise AccountingError('Journal group unavailable or nested')
+            self.group=[];self.committing=True;self.commit_actions=[]
+            try:
+                yield
+                records=[json.loads(row)['record'] for row in self.group];self.group=None
+                if records:self.persist_many(records)
+                for action in self.commit_actions:action()
+            except BaseException:
+                self.failed=True
+                raise
+            finally:self.group=None;self.committing=False;self.commit_actions=None
+    def after_commit(self, action):
+        with self.lock:
+            if not callable(action):raise AccountingError('Commit action unavailable')
+            if self.committing:
+                if self.commit_actions is None or len(self.commit_actions)>=16:
+                    raise AccountingError('Commit action bound exceeded')
+                self.commit_actions.append(action)
+            else:action()
     def close(self):self.stream.close()
 
 
@@ -181,9 +226,12 @@ class ProductionAcknowledgements(Acknowledgements):
                 self.custody.observe(changed)
                 self.journal.persist({'stage':'COMMAND_REPLY',**changed})
             else:self.journal.persist({'stage':'COMMAND_REPLY',**changed})
-            self.commands[token]=changed
-            self.pending_commands.pop(token,None)
-            if row['command']=='XADD':self.ack_entries.add((row['key_sha256'],changed['entry_id']))
+            def acknowledge():
+                self.commands[token]=changed
+                self.pending_commands.pop(token,None)
+                if row['command']=='XADD':self.ack_entries.add((row['key_sha256'],changed['entry_id']))
+            committed=getattr(self.journal,'after_commit',lambda action:action())
+            committed(acknowledge)
 
     def mark_uncertain(self,token,endpoint):
         with self.lock:
@@ -199,6 +247,8 @@ class ProductionAcknowledgements(Acknowledgements):
 
     def settled(self):
         with self.lock:
+            if getattr(self.journal,'failed',False):raise AccountingError('Failed durable journal; routing prohibited')
+            if getattr(self.journal,'group',None) is not None or getattr(self.journal,'committing',False):raise AccountingError('Uncommitted group; routing prohibited')
             if self.uncertain:raise AccountingError('Unresolved uncertain command; routing prohibited')
             return super().settled()
     def reject_group_exists(self,token,endpoint):
@@ -207,8 +257,9 @@ class ProductionAcknowledgements(Acknowledgements):
             if row['command']!='XGROUP CREATE' or row['state']!='ISSUED':raise AccountingError('Rejection not proven nonmutating')
             if not re.fullmatch('[A-Za-z0-9_-]{1,80}',endpoint):raise AccountingError('Endpoint identity unavailable')
             changed={**row,'state':'ACKNOWLEDGED','endpoint_id':endpoint,'reply_sha256':hashlib.sha256(b'BUSYGROUP_NO_EFFECT').hexdigest(),'outcome':'REJECTED_NO_EFFECT','error_code':'BUSYGROUP'}
-            self.journal.persist({'stage':'COMMAND_REPLY',**changed});self.commands[token]=changed
-            self.pending_commands.pop(token,None)
+            self.journal.persist({'stage':'COMMAND_REPLY',**changed})
+            def acknowledge():self.commands[token]=changed;self.pending_commands.pop(token,None)
+            getattr(self.journal,'after_commit',lambda action:action())(acknowledge)
 
 
 def writer_id(owner,role):return f"{owner['pid']}-{owner['creation_ticks']}-{role}"

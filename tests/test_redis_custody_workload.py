@@ -31,7 +31,10 @@ def actor(channel):
                 row['calls']+=1;row['seconds']+=time.perf_counter()-start
         return wrapper
     proxy.call=timed_sync(proxy.call,'authenticated_rpc')
-    runtime=Runtime(proxy,verify,endpoint='isolated71',server_epoch=epoch,roles=[role],credentials=proxy)
+    import stinky_core.transport.redis_accounting as accounting
+    accounting.command=timed_sync(accounting.command,'input_preparation')
+    accounting.reply_bytes=timed_sync(accounting.reply_bytes,'receipt_serialization')
+    runtime=Runtime(proxy,verify,endpoint='isolated'+str(port),server_epoch=epoch,roles=[role],credentials=proxy)
     runtime.check=timed_sync(runtime.check,'native_actor_check')
     factory=ClientFactory();factory.configure(runtime)
     client=factory.from_url(f'redis://127.0.0.1:{port}/0',role=role)
@@ -61,6 +64,7 @@ def actor(channel):
                 if cmd=='crash':os._exit(71)
                 try:
                     if cmd=='bind':value=await client.ping()
+                    elif cmd=='quiesce':value=await runtime.quiesce(timeout=5)
                     elif isinstance(cmd,dict) and cmd['task']=='group':
                         value=await client.xgroup_create(stream_key,cmd['group'],'0',mkstream=True)
                     elif cmd=='trim':value=await client.xadd(stream_key,{'data':b'exact trim'},maxlen=1,approximate=False)
@@ -151,12 +155,13 @@ def percentile(rows,fraction):
 
 @pytest.mark.skipif(not os.environ.get('GENESIS_CUSTODY_TEST_FIXTURE'),reason='Explicit protected isolated custody fixture required')
 def test_real_concurrent_custody_and_recovery(monkeypatch):
-    config=json.loads(Path(os.environ['GENESIS_CUSTODY_TEST_FIXTURE']).read_text())
-    assert (config['pins']['certification'],config['pins']['port']) in {('checkpoint71',16582),('checkpoint72',16586),('checkpoint73',16587)}
+    from custody_profile import PrivateFixtureConfig
+    config=PrivateFixtureConfig(json.loads(Path(os.environ['GENESIS_CUSTODY_TEST_FIXTURE']).read_text()))
+    assert (config['pins']['certification'],config['pins']['port']) in {('checkpoint71',16582),('checkpoint72',16586),('checkpoint73',16587),('checkpoint74',16589)}
     pin=PinnedRedisScope(**config['pins'])
     def scope():return json.loads(subprocess.check_output(['docker','inspect',config['pins']['container_id']],text=True))
     pin(scope());port=config['pins']['port'];root=Path(config['artifact_root']);stream_key=config.get('stream_key','proof')
-    assert isinstance(stream_key,str) and stream_key in ('proof','proof-trial-1','proof-trial-2','proof-trial-3','proof-trial-4','proof-trial-5')
+    assert isinstance(stream_key,str) and stream_key in ('proof','proof-trial-1','proof-trial-2','proof-trial-3','proof-trial-4','proof-trial-5','proof-trial-6','proof-trial-7','proof-trial-8','proof-trial-9')
     observer=redis.Redis(host='127.0.0.1',port=port,username='observer',password=config['observer_password'],socket_timeout=10)
     epoch=observer.info('server')['run_id'];context=multiprocessing.get_context('spawn')
     roles=['redis-streams']*3+['collector-consumer','entity-consumer','api-manual-queue']
@@ -183,29 +188,47 @@ def test_real_concurrent_custody_and_recovery(monkeypatch):
                          configuration=observer.config_get('maxmemory-policy'),expiring_keys=0,
                          entry_probe=FixedReadonlyEntryProbe(observer) if config.get('fixed_readonly_probe',False) else None)
     ledger.custody=custody
-    broker=WriterBroker(ledger,authority,manifest,verify,custody,server_epoch=epoch,endpoint='isolated71')
+    broker=WriterBroker(ledger,authority,manifest,verify,custody,server_epoch=epoch,endpoint='isolated'+str(port))
     custody.initialize()
     timings={};timing_lock=threading.Lock()
+    def observe_timing(label,elapsed):
+        with timing_lock:
+            row=timings.setdefault(label,{'calls':0,'seconds':0.0,'maximum_seconds':0.0,'samples':[]})
+            row['calls']+=1;row['seconds']+=elapsed;row['maximum_seconds']=max(row['maximum_seconds'],elapsed)
+            if len(row['samples'])<65536:row['samples'].append(elapsed)
     def timed(call,label):
         def wrapper(*args,**kwargs):
             start=time.perf_counter()
             try:return call(*args,**kwargs)
             finally:
                 elapsed=time.perf_counter()-start
-                with timing_lock:
-                    row=timings.setdefault(label,{'calls':0,'seconds':0.0,'maximum_seconds':0.0})
-                    row['calls']+=1;row['seconds']+=elapsed;row['maximum_seconds']=max(row['maximum_seconds'],elapsed)
+                observe_timing(label,elapsed)
         return wrapper
-    monkeypatch.setattr(os,'fsync',timed(os.fsync,'fsync'))
+    from custody_profile import ProfiledRLock
+    broker.lock=ProfiledRLock(observe_timing);broker.admission_changed=threading.Condition(broker.lock)
+    real_fsync=os.fsync
+    def profiled_fsync(fd):
+        start=time.perf_counter()
+        try:return real_fsync(fd)
+        finally:observe_timing('metadata_fsync' if fd==journal.stream.fileno() else 'custody_fsync',time.perf_counter()-start)
+    monkeypatch.setattr(os,'fsync',profiled_fsync)
     monkeypatch.setattr(journal,'persist',timed(journal.persist,'journal_persist'))
     monkeypatch.setattr(journal,'persist_many',timed(journal.persist_many,'journal_batch_persist'))
     monkeypatch.setattr(store,'prepare',timed(store.prepare,'custody_prepare'))
     monkeypatch.setattr(custody,'observe',timed(custody.observe,'entry_observation'))
     monkeypatch.setattr(broker,'owner',timed(broker.owner,'native_owner_check'))
     monkeypatch.setattr(broker,'dispatch',timed(broker.dispatch,'serialized_broker_dispatch'))
+    monkeypatch.setattr(broker,'dispatch_group',timed(broker.dispatch_group,'durable_group_dispatch'))
+    monkeypatch.setattr(ledger,'begin_command',timed(ledger.begin_command,'ledger_admission'))
+    monkeypatch.setattr(ledger,'complete_command',timed(ledger.complete_command,'ledger_settlement'))
+    import scripts.redis_writer_broker as broker_module
+    signature=broker_module.signature
+    def signed(key,kind,*args):
+        return timed(signature,'response_authentication' if kind in (b'response',b'server') else 'request_authentication')(key,kind,*args)
+    monkeypatch.setattr(broker_module,'signature',signed)
     monkeypatch.setattr(broker.admission_changed,'wait',timed(broker.admission_changed.wait,'admission_condition_wait'))
     monkeypatch.setattr(broker.admission_changed,'notify_all',timed(broker.admission_changed.notify_all,'settlement_notification'))
-    server=PipeServer(address,key,broker,max_workers=config.get('broker_workers',1),max_requests=config.get('session_requests',1))
+    server=PipeServer(address,key,broker,max_workers=config.get('broker_workers',1),max_requests=config.get('session_requests',1),group_commit=config.get('group_commit',False))
     def serve():
         while True:
             try:server.serve_one()
@@ -222,7 +245,7 @@ def test_real_concurrent_custody_and_recovery(monkeypatch):
         ask(3,{'task':'group','group':'collector'});ask(4,{'task':'group','group':'entities'})
         for phase,seconds,multiplier in [('reference',20,1),('sustained',20,2),('burst',5,4)]:
             target=reference*multiplier;start=time.perf_counter()+.5
-            with timing_lock:timing_before=copy_timings(timings)
+            with timing_lock:timings.clear();timing_before={}
             memory_before=observer.info('memory')['used_memory']
             cpu_before=time.process_time()
             # Read-only, bounded sampling of the actual pipeline, not a synthetic
@@ -266,22 +289,32 @@ def test_real_concurrent_custody_and_recovery(monkeypatch):
                 'pre_dispatch_backpressure':sum(row['failures'] for row in actor_rows),
                 'actor_timings':[row['timings'] for row in actor_rows],
                 'custody_disk_bytes':store.total,'journal_bytes':journal.bytes,'custody_segments':store.count,
+                'group_dispatch':dict(server.group_dispatcher.stats) if server.group_dispatcher is not None else None,
                 'capacity_passed':throughput>=target*config.get('acceptance_fraction',.95) and percentile(latencies,.99)<=1 and backlog==0 and not any(row['failures'] for row in actor_rows)}
             results[phase]['timings']={label:{'calls':row['calls']-timing_before.get(label,{}).get('calls',0),
                 'seconds':row['seconds']-timing_before.get(label,{}).get('seconds',0),
-                'maximum_seconds':row['maximum_seconds']} for label,row in timings.items()}
+                'maximum_seconds':row['maximum_seconds'],
+                'p50_seconds':percentile(row['samples'],.5),'p95_seconds':percentile(row['samples'],.95),
+                'p99_seconds':percentile(row['samples'],.99),'samples':len(row['samples']),
+                'sample_limit_reached':row['calls']>len(row['samples'])} for label,row in timings.items()}
             assert ledger.settled()==len(ledger.commands) and not broker.held
+            (root/('phase-'+phase+'-profile.json')).write_text(json.dumps(results[phase],indent=2))
         # All acknowledged payloads must remain independently verifiable after
         # exact retention removes almost the entire current stream.
         assert ask(0,'trim')
         assert observer.xlen(stream_key)==1
         assert custody.verify(ledger,semantic_census(observer))['observed_append_records']==len(store.records)
+        for index in range(6):ask(index,'quiesce')
         def inspect_writer_ids():
             client=admin()
             try:return [int(r['id']) for r in client.client_list() if r.get('user') in authority.tickets]
             finally:client.close()
         drained=broker.drain_registered(inspect_writer_ids,timeout=5)
         assert drained['acknowledged']==len(ledger.commands) and broker.fenced and not broker.held
+        final_boundary=None
+        if config.get('final_recovery_boundary',False):
+            from custody_final_boundary import certify
+            final_boundary=certify(config,broker,observer,admin,inspect_writer_ids)
         store.seal(journal);head=journal.previous
         reader=AppendStore(segment_dir,writable=False)
         held_journal=DurableJournal(root/'workload-recovered-held.jsonl')
@@ -301,7 +334,7 @@ def test_real_concurrent_custody_and_recovery(monkeypatch):
             read_append=reader.read,verify_append_inventory=reader.verify_inventory)
         assert recovered['held'] and recovered['ledger'].settled()==len(ledger.commands)
         held_journal.close()
-        results['integrity']={'acknowledged':len(ledger.commands),'custody_records':len(store.records),'strict_trim_verified':True,'held_recovery_verified':True,'registered_drain':drained,'head':head,'seals':store.seals}
+        results['integrity']={'acknowledged':len(ledger.commands),'custody_records':len(store.records),'strict_trim_verified':True,'held_recovery_verified':True,'registered_drain':drained,'final_boundary':final_boundary,'head':head,'seals':store.seals}
         # Capacity is a reported acceptance gate, never silently waived by the
         # success of the distinct byte-integrity test.
         results['capacity_verdict']='GREEN' if all(results[p]['capacity_passed'] for p in ('reference','sustained','burst')) else 'BLOCKED'

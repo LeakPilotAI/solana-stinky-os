@@ -34,7 +34,8 @@ def actor(channel):
         return dict(owner)
     proxy=PipeProxy(address,key,[writer_id(owner,role)],server_identity=server_identity)
     runtime=Runtime(proxy,verify,endpoint='isolated67',server_epoch=epoch,roles=[role],credentials=proxy)
-    if len(incoming)==8:runtime.generation=incoming[7]
+    if len(incoming)>=8:runtime.generation=incoming[7]
+    group_name=incoming[8] if len(incoming)>=9 else 'group'
     factory=ClientFactory();factory.configure(runtime)
     client=factory.from_url(f'redis://127.0.0.1:{port}/0',role=role)
     async def run():
@@ -48,9 +49,9 @@ def actor(channel):
                     elif cmd=='append':value=await client.xadd('proof',{'data':b'\x00\xff'})
                     elif cmd=='push':value=await client.lpush('queue','duplicate')
                     elif cmd=='group':
-                        await client.xgroup_create('proof','group','0')
-                        await client.xreadgroup('group','alpha',{'proof':'>'},count=1)
-                        value=await client.xautoclaim('proof','group','beta',0,'0-0',count=1)
+                        await client.xgroup_create('proof',group_name,'0')
+                        await client.xreadgroup(group_name,'alpha',{'proof':'>'},count=1)
+                        value=await client.xautoclaim('proof',group_name,'beta',0,'0-0',count=1)
                     elif cmd=='lost':
                         proxy.begin_command(client.writer,'LPUSH',[b'queue',b'unknown-accepted'],client.connection_id,runtime.generation)
                         value=await Redis.execute_command(client,'LPUSH','queue','unknown-accepted')
@@ -83,10 +84,13 @@ def test_real_native_multiprocess_broker_and_fail_closed_boundaries():
     pin=PinnedRedisScope(**config['pins'])
     def scope():return json.loads(subprocess.check_output(['docker','inspect',config['pins']['container_id']],text=True))
     pin(scope())  # Never accept production or a fixture with different storage.
-    assert (config['pins']['certification'],config['pins']['port']) in [('checkpoint67',16570),('checkpoint68',16574),('checkpoint69',16578),('checkpoint71',16582),('checkpoint73',16587)]
+    assert (config['pins']['certification'],config['pins']['port']) in [('checkpoint67',16570),('checkpoint68',16574),('checkpoint69',16578),('checkpoint71',16582),('checkpoint73',16587),('checkpoint74',16589)]
     port=config['pins']['port']
+    group_name=config.get('group_name','group')
     observer=redis.Redis(host='127.0.0.1',port=port,username='observer',password=config['observer_password'],socket_timeout=3)
     root=Path(config['artifact_root'])
+    assert observer.llen('queue')<=5000
+    lost_reply_baseline=observer.lrange('queue',0,4999).count(b'unknown-accepted')
     adapter=NativePause()
     results={}
     for scenario in ('normal','lost','crash','trim','pop','foreign','disconnect','bad-auth','bad-server'):
@@ -114,7 +118,8 @@ def test_real_native_multiprocess_broker_and_fail_closed_boundaries():
         admin=lambda:redis.Redis(host='127.0.0.1',port=port,username='broker',password=config['broker_password'],socket_timeout=3)
         authority=ProductionCredentials(admin,scope,lambda:dict(broker.current_owner),journal,scope_validator=pin,port=port,keys={'redis-streams':['proof'],'api-manual-queue':['queue'],'entity-consumer':['proof']},readers={'observer':config['observer_commands']})
         broker=WriterBroker(ledger,authority,manifest,verify,RetentionBoundary(observer.config_get('maxmemory-policy'),0),server_epoch=observer.info('server')['run_id'],endpoint='isolated67')
-        server=PipeServer(address,key,broker)
+        server=PipeServer(address,key,broker,max_workers=8 if config.get('group_commit',False) else 1,
+                          group_commit=config.get('group_commit',False))
         def serve():
             while True:
                 try:server.serve_one()
@@ -122,7 +127,7 @@ def test_real_native_multiprocess_broker_and_fail_closed_boundaries():
         thread=threading.Thread(target=serve,daemon=True);thread.start()
         server_identity=(os.getpid(),native_identity(adapter,os.getpid())[0])
         for p,ch,role in zip(processes,pairs,roles):
-            ch.send((manifest[p.pid],address,key,port,observer.info('server')['run_id'],role,server_identity))
+            ch.send((manifest[p.pid],address,key,port,observer.info('server')['run_id'],role,server_identity,1,group_name))
         def ask(index,cmd):
             pairs[index].send(cmd);assert pairs[index].poll(20)
             return pairs[index].recv()
@@ -178,8 +183,15 @@ def test_real_native_multiprocess_broker_and_fail_closed_boundaries():
             server.close()
             # Revoke and persist the final record before closing its journal.
             # Previous principals remain retained, disabled and nonwriting.
-            authority.revoke_all();journal.close()
-        if config['pins']['certification'] in ('checkpoint68','checkpoint69','checkpoint71','checkpoint73'):
+            revocation=authority.revoke_all()
+            assert revocation['verified'] is True
+            if journal.failed:
+                assert revocation=={'status':'HOLD','verified':True,'durable':False}
+                assert broker.held and broker.fenced
+            else:assert revocation['durable'] is True
+            results[scenario]['revocation']=revocation
+            journal.close()
+        if config['pins']['certification'] in ('checkpoint68','checkpoint69','checkpoint71','checkpoint73','checkpoint74'):
             from scripts.redis_broker_recovery import recover_held_boundary
             recovered_journal=DurableJournal(root/(scenario+'-recovered.jsonl'))
             def revoke(principal):
@@ -205,9 +217,10 @@ def test_real_native_multiprocess_broker_and_fail_closed_boundaries():
             finally:recovered_journal.close()
             if config['pins']['certification']=='checkpoint69' and scenario=='normal':
                 results['reauthorization']=exercise_reauthorization(config,recovered,observer,scope,pin)
-    assert observer.lrange('queue',0,-1).count(b'unknown-accepted')==1
+    assert observer.llen('queue')<=5000
+    assert observer.lrange('queue',0,4999).count(b'unknown-accepted')==lost_reply_baseline+1
     results['stream_entries']=observer.xlen('proof');results['queue_entries']=observer.llen('queue')
-    results['pending']=observer.xpending('proof','group')['pending']
+    results['pending']=observer.xpending('proof',group_name)['pending']
     (root/'multiprocess-results.json').write_text(json.dumps(results,indent=2))
     observer.close()
 
