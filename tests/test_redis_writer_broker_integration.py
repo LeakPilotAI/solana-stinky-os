@@ -4,6 +4,7 @@ The protected fixture manifest is created only by the explicit isolated certifie
 Without that fixture, this integration test reports a skip, not certification.
 """
 import asyncio
+from contextlib import nullcontext
 import hashlib
 import json
 import multiprocessing
@@ -38,6 +39,14 @@ def actor(channel):
     group_name=incoming[8] if len(incoming)>=9 else 'group'
     factory=ClientFactory();factory.configure(runtime)
     client=factory.from_url(f'redis://127.0.0.1:{port}/0',role=role)
+    participant=None;phase_journal=None
+    if len(incoming)>=10 and incoming[9] is not None:
+        from stinky_core.transport.cooperative_shutdown import CooperativeParticipant
+        phase_journal=DurableJournal(Path(incoming[9])/f'{os.getpid()}-cooperative.jsonl')
+        def persist_phase(row):phase_journal.persist(row);return phase_journal.previous
+        admission={'accepting':True}
+        def stop_jobs():admission['accepting']=False;return True
+        participant=CooperativeParticipant(runtime,persist=persist_phase,stop_admission=stop_jobs)
     async def run():
         try:
             while True:
@@ -45,35 +54,42 @@ def actor(channel):
                 if cmd=='finish':break
                 if cmd=='crash':os._exit(71)
                 try:
-                    if cmd=='bind':value=await client.ping()
-                    elif cmd=='append':value=await client.xadd('proof',{'data':b'\x00\xff'})
-                    elif cmd=='push':value=await client.lpush('queue','duplicate')
-                    elif cmd=='group':
-                        await client.xgroup_create('proof',group_name,'0')
-                        await client.xreadgroup(group_name,'alpha',{'proof':'>'},count=1)
-                        value=await client.xautoclaim('proof',group_name,'beta',0,'0-0',count=1)
-                    elif cmd=='lost':
-                        proxy.begin_command(client.writer,'LPUSH',[b'queue',b'unknown-accepted'],client.connection_id,runtime.generation)
-                        value=await Redis.execute_command(client,'LPUSH','queue','unknown-accepted')
-                    elif cmd=='trim':value=await client.xadd('proof',{'data':'discard'},maxlen=1)
-                    elif cmd=='trim-safe':value=await client.xadd('proof',{'data':'retained'},maxlen=1,approximate=False)
-                    elif cmd=='pop':value=await client.brpop('queue',timeout=1)
-                    elif cmd=='disconnect':
-                        await client.connection.disconnect()
-                        value=await client.xadd('proof',{'data':'unreplayed'})
-                    elif cmd=='bad-auth':
-                        proxy.authkey=b'x'*32
-                        value=await client.xadd('proof',{'data':'unauthenticated'})
-                    elif cmd=='bad-server':
-                        proxy.server_identity=(server_identity[0],server_identity[1]+1)
-                        value=await client.xadd('proof',{'data':'spoofed-server'})
-                    else:raise AssertionError('Unknown isolated command')
+                    async with (participant.job() if participant is not None and cmd not in ('cooperative','raw-after-fence') else nullcontext()):
+                        if cmd=='cooperative':
+                            if participant is None:raise RuntimeError('No cooperative fixture grant')
+                            value=await participant.quiesce({'request_id':'e'*32,'manifest_sha256':participant.manifest()},timeout=5)
+                            assert not admission['accepting']
+                        elif cmd=='raw-after-fence':value=await Redis.execute_command(client,'XADD','proof','*','data','forbidden-after-boundary')
+                        elif cmd=='bind':value=await client.ping()
+                        elif cmd=='append':value=await client.xadd('proof',{'data':b'\x00\xff'})
+                        elif cmd=='push':value=await client.lpush('queue','duplicate')
+                        elif cmd=='group':
+                            await client.xgroup_create('proof',group_name,'0')
+                            await client.xreadgroup(group_name,'alpha',{'proof':'>'},count=1)
+                            value=await client.xautoclaim('proof',group_name,'beta',0,'0-0',count=1)
+                        elif cmd=='lost':
+                            proxy.begin_command(client.writer,'LPUSH',[b'queue',b'unknown-accepted'],client.connection_id,runtime.generation)
+                            value=await Redis.execute_command(client,'LPUSH','queue','unknown-accepted')
+                        elif cmd=='trim':value=await client.xadd('proof',{'data':'discard'},maxlen=1)
+                        elif cmd=='trim-safe':value=await client.xadd('proof',{'data':'retained'},maxlen=1,approximate=False)
+                        elif cmd=='pop':value=await client.brpop('queue',timeout=1)
+                        elif cmd=='disconnect':
+                            await client.connection.disconnect()
+                            value=await client.xadd('proof',{'data':'unreplayed'})
+                        elif cmd=='bad-auth':
+                            proxy.authkey=b'x'*32
+                            value=await client.xadd('proof',{'data':'unauthenticated'})
+                        elif cmd=='bad-server':
+                            proxy.server_identity=(server_identity[0],server_identity[1]+1)
+                            value=await client.xadd('proof',{'data':'spoofed-server'})
+                        else:raise AssertionError('Unknown isolated command')
                     channel.send({'ok':True,'value':value})
                 except Exception:
                     channel.send({'ok':False})
         finally:
             try:await client.aclose()
             except Exception:pass
+            if phase_journal is not None:phase_journal.close()
             channel.close()
     asyncio.run(run())
 
@@ -127,7 +143,7 @@ def test_real_native_multiprocess_broker_and_fail_closed_boundaries():
         thread=threading.Thread(target=serve,daemon=True);thread.start()
         server_identity=(os.getpid(),native_identity(adapter,os.getpid())[0])
         for p,ch,role in zip(processes,pairs,roles):
-            ch.send((manifest[p.pid],address,key,port,observer.info('server')['run_id'],role,server_identity,1,group_name))
+            ch.send((manifest[p.pid],address,key,port,observer.info('server')['run_id'],role,server_identity,1,group_name,str(root) if config.get('cooperative',False) and scenario=='normal' else None))
         def ask(index,cmd):
             pairs[index].send(cmd);assert pairs[index].poll(20)
             return pairs[index].recv()

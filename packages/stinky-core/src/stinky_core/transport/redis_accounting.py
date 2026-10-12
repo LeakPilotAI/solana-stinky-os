@@ -121,6 +121,7 @@ class Runtime:
         self.fenced=False;self.held=False;self.generation=1;self.clients=set();self.inflight=set()
 
     def check(self,client,*,read_only=False):
+        if getattr(self,'shutdown_latched',False) and not any(client is known for known in self.clients):raise AccountingError('Shutdown forbids new client registration')
         if identity(self.verify_identity())!=self.owner:raise AccountingError('Native PID/creation/ownership changed')
         if (self.fenced and not read_only) or self.held or client.route_generation!=self.generation:
             raise AccountingError('Writer or stale connection generation fenced')
@@ -144,6 +145,7 @@ class Runtime:
         return sorted(expected)
 
     async def retire_and_reauthorize(self,*,endpoint,server_epoch):
+        if getattr(self,'shutdown_latched',False):raise AccountingError('Shutdown generation cannot change route; fresh verified Start required')
         if not self.fenced or self.held or self.inflight:raise AccountingError('No verified drained route boundary')
         self.ledger.settled()
         if not re.fullmatch('[A-Za-z0-9_-]{1,80}',endpoint) or not re.fullmatch('[0-9a-f]{40}',server_epoch):
@@ -154,6 +156,7 @@ class Runtime:
         # exit can explicitly resume mutations. Old objects remain stale.
 
     def resume_verified(self):
+        if getattr(self,'shutdown_latched',False):raise AccountingError('Shutdown generation cannot resume; fresh verified Start required')
         if not self.fenced or self.held or self.inflight:raise AccountingError('Writer boundary not verified')
         self.ledger.settled();self.fenced=False
 
@@ -283,6 +286,7 @@ class ClientFactory:
     def from_url(self,url,*,role,legacy_factory=Redis.from_url,**kwargs):
         self.issued=True
         if self.runtime is None:return legacy_factory(url,**kwargs)
+        if getattr(self.runtime,'shutdown_latched',False):raise AccountingError('Shutdown forbids new client credentials')
         if role not in self.runtime.roles:raise AccountingError('Unregistered writer role')
         ticket=None
         if self.runtime.credentials is not None:
