@@ -204,7 +204,7 @@ class AppendStore:
             sealed.add(seal['file'])
         return True
 
-    def prepare(self, token, args, *, epoch, journal):
+    def prepare(self, token, args, *, epoch, journal, persist=None):
         with self.lock:
             if self.held or not self.writable:
                 raise AccountingError('Custody held/read-only')
@@ -217,6 +217,8 @@ class AppendStore:
             if len(args) > 1024 or sum(map(len, args)) > 4 * 1024 * 1024:
                 raise AccountingError('Custody argument bound exceeded')
             if token in self.records:
+                if persist is not None:
+                    raise AccountingError('Existing custody cannot issue a new atomic intent')
                 anchor = self.records[token]
                 if self.read(anchor) != args or anchor['epoch'] != epoch:
                     self.held = True
@@ -254,7 +256,9 @@ class AppendStore:
                           'plaintext_sha256': digest(plain)}
                 if self.read(anchor) != args:
                     raise AccountingError('Custody readback differs')
-                journal.persist({'stage': 'APPEND_CUSTODY', 'anchor': anchor})
+                mark={'stage': 'APPEND_CUSTODY', 'anchor': anchor}
+                if persist is None:journal.persist(mark)
+                else:persist(mark)
                 self.records[token] = anchor
                 return dict(anchor)
             except BaseException:
@@ -271,6 +275,7 @@ class AppendStore:
 class AppendCustody:
     single_flight_backpressure = True
     atomic_receipt = True
+    atomic_intent = True
     def __init__(self, store, base_archive, client, ledger, *, scope,
                  configuration, expiring_keys, entry_probe=None):
         from scripts.redis_writer_broker import RetentionBoundary
@@ -303,7 +308,13 @@ class AppendCustody:
         # that pending read ahead of XADD would prevent the producer unblocking it.
         return name=='XADD' and row.get('command')=='XADD'
 
-    def before(self, name, args):
+    @staticmethod
+    def admission_notification_required(name):
+        # Only append settlement releases the append/append conflict. Group
+        # acknowledgements cannot release it and must not wake every producer.
+        return name=='XADD'
+
+    def before(self, name, args, *, intent=None):
         from scripts.redis_production_adapters import validate_command
         validate_command(name, args)
         if self.held:
@@ -319,8 +330,16 @@ class AppendCustody:
                     raise AccountingError('Unsupported retention cannot preserve new entry')
             if self.base_anchor is None:
                 self.initialize()
+            persist=None
+            if intent is not None:
+                token=len(self.ledger.commands)+1
+                if (intent.get('token')!=token or intent.get('command')!='XADD' or
+                    intent.get('state')!='ISSUED' or intent.get('args_sha256')!=framed_hash(args)):
+                    raise AccountingError('Custody intent identity differs')
+                persist=lambda mark:self.ledger.journal.persist_many([
+                    mark,{'stage':'COMMAND_INTENT',**intent}])
             self.store.prepare(len(self.ledger.commands)+1, args, epoch=self.scope(),
-                               journal=self.ledger.journal)
+                               journal=self.ledger.journal,persist=persist)
         except BaseException:
             self.held = True
             raise

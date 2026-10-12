@@ -104,3 +104,35 @@ registry, Redis still disables AOF/automatic RDB and uses allkeys-lru, and throu
 acceptance remains separate from byte-integrity success. Consequently full Stop
 and production activation remain blocked. No guaranteed graceful shutdown or
 loss-free recovery is claimed for abrupt Windows/power interruption.
+
+## Checkpoint 73: cooperative drain and post-shutdown saved-point proof
+
+The inactive broker now supports a bounded controller-only registered-writer drain.
+It fences credentials before waiting, accepts only already-issued receipts, checks
+native identities and fresh connection inventories throughout, and retains HOLD
+on ambiguity, timeout or lost fencing. Behavioral threads and real isolated native
+writers verified this component. It has no writer RPC entry point, process signal,
+container control or automatic production activation.
+
+The user's later manual shutdown/startup was audited independently. The newly saved
+6,604,830-byte RDB, SHA256
+`a29d5e8da9a581a802b64a34e2d9466fe1d62fb26acb887914cd995c4e086a06`, passed checksum
+validation and two loads of a read-only isolated input: one key, 20,000 stream
+entries and exact RDB semantic/group metadata match. A separate protected copy is
+retained. The recovery fixture and checker use independent read-only host storage,
+not the production volume. Production and Atlas identities/start times were preserved.
+
+This certifies only the saved artifact. No independent complete pre-shutdown census
+exists, so full acknowledged-write continuity cannot be asserted. Live stream counters
+advanced naturally; by comparison time retention had removed all saved entries from
+the live tail, making direct payload overlap unavailable. Older snapshots and this
+contradictory/unavailable evidence were retained, not backfilled or silently normalized.
+
+Seven services and fresh captures were verified after the user-managed startup.
+No Codex shortcut invocation or live full shutdown occurred. Current Stop still
+provides forceful application-only termination; the user manually stopped dependencies.
+Full cooperative application/maintenance cancellation, final native recovery-boundary
+acquisition, exact three-container stop/restart and actual shortcut lifecycle tests
+remain blocked. AOF and automatic RDB remain disabled in production, and allkeys-lru
+still violates the protected retention boundary. A saved snapshot does not certify
+continuous durability of new writes or abrupt-power-loss recovery.

@@ -216,8 +216,7 @@ class CollectorService:
                     rows = await self._read_group(consumer)
                     if rows:
                         for _stream, messages in rows:
-                            for msg_id, fields in messages:
-                                await self._handle_message(msg_id, fields)
+                            await self._handle_batch(messages)
                     now = time.monotonic()
                     if now - last_backfill >= 90.0:
                         last_backfill = now
@@ -238,6 +237,30 @@ class CollectorService:
                     await asyncio.sleep(2)
         finally:
             await self.stop()
+
+    async def _handle_batch(self, messages: list[tuple[str, dict[str, str]]]) -> None:
+        """Batch only classified no-op events, preserving relevant event ordering.
+
+        No database/research side effect is deferred into this batch. Malformed,
+        unavailable and migration events retain their existing individual handler.
+        A lost batch reply propagates; replaying ignored records has no side effect.
+        """
+        assert self._redis is not None
+        if len(messages)>20:
+            raise ValueError('Collector delivery exceeds the configured COUNT 20 boundary')
+        ignored_ids: list[str] = []
+        for msg_id,fields in messages:
+            raw=fields.get('data') or fields.get('payload')
+            event=self._parse_event(raw) if isinstance(raw,(str,bytes)) else None
+            event_type=(event.get('event_type') or event.get('type')) if event is not None else None
+            if isinstance(event_type,str) and event_type!='token.migrated':
+                ignored_ids.append(msg_id)
+            else:
+                await self._handle_message(msg_id,fields)
+        if ignored_ids:
+            # Finish relevant handlers/individual ACKs first. Failure of a no-op
+            # batch must not strand a delivered migration behind ignored records.
+            await self._redis.xack(settings.event_stream,settings.collector_consumer_group,*ignored_ids)
 
     async def _handle_message(self, msg_id: str, fields: dict[str, str]) -> None:
         assert self._redis is not None

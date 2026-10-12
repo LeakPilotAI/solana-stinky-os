@@ -2,7 +2,84 @@ import os,subprocess,sys
 import pytest
 from scripts.redis_production_adapters import DurableJournal,read_records
 from stinky_core.transport.redis_accounting import AccountingError,reply_bytes
-from test_redis_append_custody import fixture,apply,ARGS,WRITER
+from test_redis_append_custody import fixture,apply,ARGS,WRITER,EPOCH
+
+
+def test_anchor_and_exact_intent_share_metadata_flush_before_admission(fixture,monkeypatch):
+    store,custody,ledger,journal,state=fixture
+    custody.initialize();flush=os.fsync;calls=[]
+    def verify(fd):
+        assert not ledger.commands and not ledger.pending_commands
+        calls.append(fd);flush(fd)
+    monkeypatch.setattr(os,'fsync',verify)
+    token=ledger.begin_command(WRITER,'XADD',ARGS,11,1)
+    assert len(calls)==2  # Segment payload, then anchor+intent; never deferred.
+    rows=read_records(journal.path,expected_head=journal.previous)
+    assert [r['stage'] for r in rows[-2:]]==['APPEND_CUSTODY','COMMAND_INTENT']
+    assert rows[-2]['anchor']['token']==rows[-1]['token']==token
+    assert store.read(rows[-2]['anchor'])==ARGS
+    assert ledger.commands[token]['state']=='ISSUED'
+
+
+def test_failed_intent_flush_retains_segment_and_never_admits(fixture,monkeypatch):
+    store,custody,ledger,journal,state=fixture
+    custody.initialize();flush=os.fsync;calls=[];head=journal.previous
+    def fail_second(fd):
+        calls.append(fd)
+        if len(calls)==2:raise OSError('isolated intent flush failure')
+        flush(fd)
+    monkeypatch.setattr(os,'fsync',fail_second)
+    with pytest.raises(OSError):ledger.begin_command(WRITER,'XADD',ARGS,11,1)
+    assert journal.failed and store.held and custody.held
+    assert not ledger.commands and not ledger.pending_commands and journal.previous==head
+    assert store.total>0 and not store.records
+    with pytest.raises(AccountingError):read_records(journal.path,expected_head=head)
+    with pytest.raises(AccountingError):ledger.begin_command(WRITER,'XADD',ARGS,11,1)
+
+
+def test_existing_preparation_cannot_silently_skip_atomic_intent(fixture):
+    store,custody,ledger,journal,state=fixture
+    custody.initialize();anchor=store.prepare(1,ARGS,epoch=EPOCH,journal=journal)
+    with pytest.raises(AccountingError,match='Existing custody'):
+        ledger.begin_command(WRITER,'XADD',ARGS,11,1)
+    assert not ledger.commands and store.read(anchor)==ARGS and custody.held
+
+
+@pytest.mark.parametrize('point',['before_metadata','after_intent'])
+def test_process_crash_retains_encrypted_payload_and_never_invents_settlement(tmp_path,point):
+    from scripts.redis_append_custody import AppendStore
+    segments=tmp_path/'segments';segments.mkdir();path=tmp_path/'ledger';head=tmp_path/'trusted-head'
+    code="""
+import os,sys
+from pathlib import Path
+from scripts.redis_append_custody import AppendStore
+from scripts.redis_production_adapters import DurableJournal
+j=DurableJournal(sys.argv[2]);s=AppendStore(sys.argv[1])
+def save_head():
+ with Path(sys.argv[3]).open('xb') as f:
+  f.write(j.previous.encode());f.flush();os.fsync(f.fileno())
+def persist(mark):
+ if sys.argv[4]=='before_metadata':
+  save_head();os._exit(73)
+ j.persist_many([mark,{'stage':'COMMAND_INTENT','token':1,'state':'ISSUED'}])
+s.prepare(1,[b'key',b'*',b'f',b'\\x00\\xff'],epoch='c'*40,journal=j,persist=persist)
+save_head();os._exit(73)
+"""
+    result=subprocess.run([sys.executable,'-c',code,str(segments),str(path),str(head),point],timeout=10,capture_output=True)
+    assert result.returncode==73,result.stderr
+    records=read_records(path,expected_head=head.read_text());reader=AppendStore(segments,writable=False)
+    try:
+        assert reader.total>0
+        if point=='before_metadata':
+            assert records==[]
+            with pytest.raises(AccountingError):reader.verify_inventory([],[])
+        else:
+            assert [r['stage'] for r in records]==['APPEND_CUSTODY','COMMAND_INTENT']
+            assert records[-1]['state']=='ISSUED'  # Inspection, not dispatch/ACK authority.
+            anchor=records[0]['anchor']
+            assert reader.read(anchor)==[b'key',b'*',b'f',b'\x00\xff']
+            assert reader.verify_inventory([anchor],[]) is True
+    finally:reader.close()
 
 
 def test_observed_entry_and_receipt_share_one_flush_before_ack(fixture,monkeypatch):

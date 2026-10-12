@@ -555,3 +555,88 @@ See [the lifecycle design and certification matrix](GENESIS_LIFECYCLE_CERTIFICAT
 Full graceful Stop remains unimplemented and blocked; existing shortcut behavior
 is still application-only. Production controller rollout, epoch/head handoff,
 adequate throughput and native lifecycle certification remain required.
+
+## Checkpoint 73: complete settlement profiles and collection batching
+
+Status: **AMBER components; RED capacity and production activation**. Production
+adapters remain inactive. No production Redis cutover, credential change or
+application restart was performed by this checkpoint.
+
+The encrypted segment is fsynced and freshly read back before its anchor and exact
+command intent share a single ordered metadata flush. Both metadata records must
+be durable before admission returns. Flush failure retains the segment and holds
+the route. An existing preparation cannot silently substitute for a new intent.
+Receipt authentication, literal payload comparison, journal ordering, command
+limits, replay refusal and all physical identity checks remain unchanged.
+
+Append admission waiters are notified only when an append conflict can clear.
+During a cooperative drain, every completed receipt notifies the controller.
+`WriterBroker.drain_registered` fences server credentials, releases the broker
+lock while already-issued receipts settle, and repeatedly verifies native owners,
+participant completeness and actual connection inventory. Uncertainty, lost
+fencing, changed identity or timeout retain HOLD. Its inspection callbacks require
+their own bounded I/O; exceeding the deadline cannot produce a success result.
+It is not exposed through writer RPC and does not stop processes or containers.
+
+The bounded live stream sample contained 994 wallet-performance events, two
+migrations, two quality events and two tracking-start events. Entities already
+batch irrelevant acknowledgements. The collector now batches only classified
+non-migration records, within its existing COUNT 20 boundary. Migration, malformed
+and unavailable records retain their individual handler and acknowledgement.
+Relevant processing finishes in original order before the ignored-record ACK, so
+a lost no-op reply cannot strand an already-delivered migration. No SQL/research
+side effect is deferred or replayed by this batching change. The running services
+were not hot-patched or restarted to load later revisions.
+
+### Measured complete Redis workload
+
+Three native producers, two consumers and one queue writer use authenticated
+receipts and actual Redis commands. Reference/sustained phases last 20 seconds;
+burst lasts five. Representative trials offer 110% of the unchanged targets and
+require 100% measured acceptance, p99 <= 1 second, no refusals/unresolved commands
+and zero lag after bounded catch-up. Late settlements are reported separately,
+not counted as within-window throughput. No sleep was added to fill consumer batches.
+The relevant-event fixture measures Redis delivery/ACK costs, **not** external
+RPC or SQL migration processing; it cannot establish whole-production capacity.
+
+| Complete workload | Reference /s | Sustained /s | Burst /s |
+| --- | ---: | ---: | ---: |
+| Required targets | 71.7122 | 143.4245 | 286.8490 |
+| Representative, collector per-entry ACK | 66.25 | 75.95 | 78.40 |
+| Representative, collector batch ACK | 66.05 | 65.45 | 59.20 |
+| Representative, repeated batch ACK | 72.35 | 58.90 | 65.80 |
+| Migration-only Redis delivery/ACK | 62.20 | 59.35 | 67.20 |
+
+One reference trial passed; repeated qualification did not. Sustained and burst
+failed every trial. There is **no demonstrated reliable end-to-end throughput gain**.
+The earlier all-per-entry profile reached 59.75/67.25/53.40 /s and located producer
+time in authenticated serialized admission/settlement: about 18 of 20 seconds per
+producer waiting on RPC. Sustained had 5,004 admission wakes and 11,054 fsync calls.
+These are overlapping wall-time aggregates, not additive CPU measurements.
+
+The representative sustained comparison explains why fewer ACKs did not solve
+capacity: collector XACK calls fell from 1,522 to 653, but XREADGROUP calls rose
+from 85 to 652 as faster consumers received roughly two records per read. Total
+fsync calls per append remained approximately seven. Serialized delivery intents,
+receipt settlement and single-flight append custody remain limiting. Encryption-only
+or preparation-only throughput is not a substitute for this result.
+
+Representative batch p50/p95/p99 ACK latency was 0.04155/0.07905/0.12505 seconds
+in sustained traffic; the repeat was 0.04778/0.08320/0.12523 seconds. Peak sampled
+pending intents were four; consumer lag reached five in the repeated batch workload
+and 122 in migration-heavy traffic, then returned to zero. Sampled Redis memory
+remained below 5.8 MB in these bounded trials. Whole-host peak RSS and long-running
+closed-epoch/backlog stability remain unqualified.
+
+Actual native crash/lost-reply/disconnect/authentication scenarios, encrypted
+pre-intent crash retention, strict archived payload verification, registered drain
+and same-fixture full-AOF rewrite/restart recovery passed in isolation. Pending
+ownership/delivery metadata remained under the existing strict comparator. Three
+checkpoint-73 throughput fixtures are retained stopped; repeats use distinct streams
+and artifact directories in the current fixture without deleting prior evidence.
+
+Next: resolve serialized group-delivery/settlement costs without artificial benchmark
+waiting or weakening admission ordering. Complete independently anchored ledger
+epoch handoff, real compact-custody coordinator rollback, native production writer
+registration/reauthorization, expiry/eviction and quarantine-AOF gates before requesting
+separate production rollout and guarded migration approvals. BRPOP remains rejected.

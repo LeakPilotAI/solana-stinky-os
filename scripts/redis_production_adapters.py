@@ -141,14 +141,22 @@ class ProductionAcknowledgements(Acknowledgements):
                 conflict=getattr(self.custody,'conflicts',lambda row,name:True)
                 if any(conflict(row,name) for row in self.pending_commands.values()):
                     raise DispatchBusy('Physical operation unsettled; no new intent issued')
-            if self.custody is not None:self.custody.before(name,args)
             token=len(self.commands)+1
             row={'token':token,'writer':writer,'command':name,'classification':MUTATIONS[name],
                  'args_sha256':framed_hash(args),'connection_id':client_id,'generation':generation,'state':'ISSUED'}
             if name=='XADD':
                 fields=append_fields(args);row.update(key_sha256=hashlib.sha256(args[0]).hexdigest(),payload_sha256=framed_hash(fields),field_count=len(fields)//2)
             else:row['operation']=name
-            self.journal.persist({'stage':'COMMAND_INTENT',**row});self.commands[token]=row;self.pending_commands[token]=row;return token
+            if (name=='XADD' and self.custody is not None and
+                getattr(self.custody,'atomic_intent',False) and callable(getattr(self.journal,'persist_many',None))):
+                # The segment is independently fsynced/read back first. Its anchor
+                # and exact intent then share ONE durable metadata boundary;
+                # neither admission nor a physical mutation precedes that flush.
+                self.custody.before(name,args,intent=row)
+            else:
+                if self.custody is not None:self.custody.before(name,args)
+                self.journal.persist({'stage':'COMMAND_INTENT',**row})
+            self.commands[token]=row;self.pending_commands[token]=row;return token
     def complete_command(self,token,reply,serialized,endpoint):
         with self.lock:
             if token in self.uncertain:

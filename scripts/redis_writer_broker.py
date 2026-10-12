@@ -15,6 +15,7 @@ import os
 import re
 import struct
 import threading
+import time
 from multiprocessing.connection import Client, Listener
 
 from stinky_core.transport.redis_accounting import AccountingError, DispatchBusy, identity,reply_bytes
@@ -34,7 +35,8 @@ class PinnedRedisScope:
                   (name.startswith('genesis-redis-c68-') and volume.startswith('project-genesis_checkpoint68-') and port in (16574,16575,16576,16577) and certification=='checkpoint68') or
                   (name.startswith('genesis-redis-c69-') and volume.startswith('project-genesis_checkpoint69-') and port in (16578,16579,16580,16581) and certification=='checkpoint69') or
                   (name.startswith('genesis-redis-c71-') and volume.startswith('project-genesis_checkpoint71-') and port in (16582,16583,16584,16585) and certification=='checkpoint71') or
-                  (name.startswith('genesis-redis-c72-') and volume.startswith('project-genesis_checkpoint72-') and port == 16586 and certification=='checkpoint72')):
+                  (name.startswith('genesis-redis-c72-') and volume.startswith('project-genesis_checkpoint72-') and port == 16586 and certification=='checkpoint72') or
+                  (name.startswith('genesis-redis-c73-') and volume.startswith('project-genesis_checkpoint73-') and port == 16587 and certification=='checkpoint73')):
             raise AccountingError('Unrecognized Redis authority scope')
 
     def __call__(self, records):
@@ -229,7 +231,7 @@ class WriterBroker:
         self.manifest={pid:identity(owner) for pid,owner in manifest.items()}
         if any(pid != owner['pid'] for pid,owner in self.manifest.items()):raise AccountingError('Manifest PID differs')
         self.ledger=ledger;self.credentials=credentials;self.verify_native=verify_native
-        self.retention=retention;self.fenced=False;self.held=False;self.lock=threading.RLock()
+        self.retention=retention;self.fenced=False;self.held=False;self.draining=False;self.lock=threading.RLock()
         self.admission_changed=threading.Condition(self.lock)
         self.sequences={};self.current_owner=None
         if not isinstance(server_epoch,str) or not re.fullmatch('[0-9a-f]{40}',server_epoch) or not re.fullmatch('[A-Za-z0-9_-]{1,80}',endpoint):
@@ -248,6 +250,12 @@ class WriterBroker:
         if owner is None or identity(self.verify_native(pid)) != owner:
             raise AccountingError('Unregistered or stale native writer')
         return owner
+
+    def notify_settlement(self, token):
+        custody=getattr(self.ledger,'custody',None)
+        required=getattr(custody,'admission_notification_required',lambda name:True)
+        if self.draining or required(self.ledger.commands[token]['command']):
+            self.admission_changed.notify_all()
 
     def hold(self):
         # Publish the deny state before waiting for an in-progress journal/ACL
@@ -315,7 +323,7 @@ class WriterBroker:
                     # Identical canonical receipt bytes, without transporting a
                     # second full representation of a500-entry group response.
                     result=self.ledger.complete_command(args[0],args[1],reply_bytes(args[1]),args[2])
-                    self.admission_changed.notify_all()
+                    self.notify_settlement(args[0])
                     return result
                 if method=='mark_uncertain':
                     self.ledger.mark_uncertain(*args);self.hold();return {'held':True}
@@ -335,8 +343,9 @@ class WriterBroker:
                                 not self.credentials.is_bound(owner,role,args[4],self.server_epoch,args[3])):
                                 raise AccountingError('Admission changed while awaiting settlement')
                 else:result=getattr(self.ledger,method)(*args)
-                if method in ('complete_command','reject_group_exists','retire_connection'):
-                    self.admission_changed.notify_all()
+                if method in ('complete_command','reject_group_exists'):
+                    self.notify_settlement(args[0])
+                if method=='retire_connection':self.admission_changed.notify_all()
                 if self.held and method in ('register_connection','begin_command'):
                     raise AccountingError('Hold arrived during admission; no permission returned')
                 return result
@@ -363,6 +372,55 @@ class WriterBroker:
                 return self.ledger.settled()
             except BaseException:
                 self.hold();raise
+
+    def drain_registered(self, inspect_writer_ids, *, timeout=10):
+        """Inactive trusted-controller seam; no process/container lifecycle controls.
+
+        The controller must already stop admission in every native application.
+        Server fencing closes write authority before waiting. Only already issued
+        receipts may settle; timeout/unknown replies retain HOLD and all evidence.
+        This method is intentionally absent from the writer RPC allowlist.
+        """
+        if type(timeout) not in (int,float) or not 0<timeout<=60:
+            raise AccountingError('Bounded writer drain deadline required')
+        deadline=time.monotonic()+timeout
+        with self.lock:
+            try:
+                if self.held or self.draining:raise AccountingError('Writer route not drainable')
+                self.draining=True;self.fenced=True
+                self.credentials.set_fenced(True)
+                self.admission_changed.notify_all()
+                def verify():
+                    if time.monotonic()>=deadline:
+                        raise AccountingError('Writer drain verification exceeded deadline')
+                    if self.held or not self.fenced or not self.credentials.fenced:
+                        raise AccountingError('Writer drain fencing lost')
+                    if set(self.sequences)!=set(self.manifest):
+                        raise AccountingError('Writer drain participant missing')
+                    for pid in self.manifest:self.owner(pid)
+                    if self.credentials.verify_principals() is not True:
+                        raise AccountingError('Writer drain exclusion unverified')
+                    observed=inspect_writer_ids()
+                    expected={r['client_id'] for r in self.ledger.bindings.values() if r['active']}
+                    if (not isinstance(observed,list) or not expected or
+                        any(type(cid) is not int or cid<=0 for cid in observed) or
+                        len(observed)!=len(set(observed)) or set(observed)!=expected):
+                        raise AccountingError('Writer drain connection inventory differs')
+                    if time.monotonic()>=deadline:
+                        raise AccountingError('Writer drain verification exceeded deadline')
+                verify()
+                while self.ledger.pending_commands:
+                    if self.ledger.uncertain:raise AccountingError('Ambiguous writer receipt; preserve current route')
+                    remaining=deadline-time.monotonic()
+                    if remaining<=0:raise AccountingError('Writer drain timed out; preserve current route')
+                    self.admission_changed.wait(min(remaining,.025))
+                    verify()
+                verify()
+                return {'status':'FENCED_DRAINED','acknowledged':self.ledger.settled(),
+                        'scope':'INACTIVE_CONTROLLER_COMPONENT'}
+            except BaseException:
+                self.hold();raise
+            finally:self.draining=False
 
 
 def session_limit(value):

@@ -83,7 +83,7 @@ def test_real_native_multiprocess_broker_and_fail_closed_boundaries():
     pin=PinnedRedisScope(**config['pins'])
     def scope():return json.loads(subprocess.check_output(['docker','inspect',config['pins']['container_id']],text=True))
     pin(scope())  # Never accept production or a fixture with different storage.
-    assert (config['pins']['certification'],config['pins']['port']) in [('checkpoint67',16570),('checkpoint68',16574),('checkpoint69',16578),('checkpoint71',16582)]
+    assert (config['pins']['certification'],config['pins']['port']) in [('checkpoint67',16570),('checkpoint68',16574),('checkpoint69',16578),('checkpoint71',16582),('checkpoint73',16587)]
     port=config['pins']['port']
     observer=redis.Redis(host='127.0.0.1',port=port,username='observer',password=config['observer_password'],socket_timeout=3)
     root=Path(config['artifact_root'])
@@ -179,7 +179,7 @@ def test_real_native_multiprocess_broker_and_fail_closed_boundaries():
             # Revoke and persist the final record before closing its journal.
             # Previous principals remain retained, disabled and nonwriting.
             authority.revoke_all();journal.close()
-        if config['pins']['certification'] in ('checkpoint68','checkpoint69','checkpoint71'):
+        if config['pins']['certification'] in ('checkpoint68','checkpoint69','checkpoint71','checkpoint73'):
             from scripts.redis_broker_recovery import recover_held_boundary
             recovered_journal=DurableJournal(root/(scenario+'-recovered.jsonl'))
             def revoke(principal):
