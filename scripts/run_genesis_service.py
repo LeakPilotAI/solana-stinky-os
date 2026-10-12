@@ -148,6 +148,7 @@ def find_npm() -> str | None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--name", required=True, choices=NAMES)
+    parser.add_argument("--protected-redis-grant", default=None)
     args = parser.parse_args()
     name = args.name
 
@@ -179,6 +180,12 @@ def main() -> int:
     env["BROWSER"] = "none"
     env["STINKY_ROOT"] = str(root)
     env["PYTHONUNBUFFERED"] = "1"
+    if args.protected_redis_grant is not None:
+        if not args.protected_redis_grant:
+            raise RuntimeError('Explicit protected Redis grant cannot be empty')
+        if name not in ('event-log','api','sentinel','collector','entities'):
+            raise RuntimeError('Protected Redis workload not certified for this service')
+        env['GENESIS_PROTECTED_REDIS_GRANT']=args.protected_redis_grant
 
     def utc_stamp() -> str:
         return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

@@ -10,7 +10,7 @@ import hashlib,json,os,re,threading
 from pathlib import Path
 from scripts.redis_migration_coordinator import Acknowledgements
 from scripts.redis_stream_integrity import framed_hash
-from stinky_core.transport.redis_accounting import MUTATIONS,AccountingError,identity
+from stinky_core.transport.redis_accounting import MUTATIONS,AccountingError,DispatchBusy,identity
 
 
 class DurableJournal:
@@ -91,7 +91,7 @@ def validate_command(name,args):
 class ProductionAcknowledgements(Acknowledgements):
     """Registered physical-attempt receipts, including list and claim operations."""
     def __init__(self,journal,writers):
-        super().__init__(journal,writers);self.bindings={};self.custody=None
+        super().__init__(journal,writers);self.bindings={};self.custody=None;self.uncertain=set();self.ack_entries=set()
     def register_connection(self,writer,owner,client_id,server_epoch,generation):
         with self.lock:
             if writer not in self.writers or type(client_id) is not int or client_id<=0 or type(generation) is not int or generation<=0:
@@ -113,6 +113,11 @@ class ProductionAcknowledgements(Acknowledgements):
             if len(self.commands)>=50000:raise AccountingError('Acknowledgement ledger capacity exceeded')
             if not self.bindings.get((writer,client_id,generation),{}).get('active'):
                 raise AccountingError('Mutation connection unregistered or retired')
+            if self.uncertain:raise AccountingError('Uncertain acknowledged outcome; all dispatch held')
+            if self.custody is not None and getattr(self.custody, 'single_flight_backpressure', False):
+                conflict=getattr(self.custody,'conflicts',lambda row,name:True)
+                if any(row['state']!='ACKNOWLEDGED' and conflict(row,name) for row in self.commands.values()):
+                    raise DispatchBusy('Physical operation unsettled; no new intent issued')
             if self.custody is not None:self.custody.before(name,args)
             token=len(self.commands)+1
             row={'token':token,'writer':writer,'command':name,'classification':MUTATIONS[name],
@@ -123,6 +128,8 @@ class ProductionAcknowledgements(Acknowledgements):
             self.journal.persist({'stage':'COMMAND_INTENT',**row});self.commands[token]=row;return token
     def complete_command(self,token,reply,serialized,endpoint):
         with self.lock:
+            if token in self.uncertain:
+                raise AccountingError('Uncertain outcome cannot be automatically settled')
             row=self.commands[token]
             if row['state']!='ISSUED' or not isinstance(serialized,bytes) or not re.fullmatch('[A-Za-z0-9_-]{1,80}',endpoint):raise AccountingError('Unsettled or invalid command reply')
             validate_reply(row['command'],reply)
@@ -131,12 +138,29 @@ class ProductionAcknowledgements(Acknowledgements):
                 value=reply.decode('ascii') if isinstance(reply,bytes) else reply
                 if not isinstance(value,str) or not re.fullmatch('[0-9]+-[0-9]+',value):raise AccountingError('Stream acknowledgement malformed')
                 changed['entry_id']=value
+                if (row['key_sha256'],value) in self.ack_entries:
+                    raise AccountingError('Duplicate stream acknowledgement identity')
+            if self.custody is not None and hasattr(self.custody, 'observe'):
+                self.custody.observe(changed)
             self.journal.persist({'stage':'COMMAND_REPLY',**changed});self.commands[token]=changed
+            if row['command']=='XADD':self.ack_entries.add((row['key_sha256'],changed['entry_id']))
+
+    def mark_uncertain(self,token,endpoint):
+        with self.lock:
+            if token not in self.commands or self.commands[token]['state']!='ISSUED' or not re.fullmatch('[A-Za-z0-9_-]{1,80}',endpoint):
+                raise AccountingError('Unknown uncertain-command owner')
+            self.uncertain.add(token)
+            self.journal.persist({'stage':'COMMAND_UNCERTAIN','token':token,'endpoint_id':endpoint})
 
     def verify(self,proof):
         with self.lock:
             if self.custody is not None:return self.custody.verify(self,proof)
             return super().verify(proof)
+
+    def settled(self):
+        with self.lock:
+            if self.uncertain:raise AccountingError('Unresolved uncertain command; routing prohibited')
+            return super().settled()
     def reject_group_exists(self,token,endpoint):
         with self.lock:
             row=self.commands[token]

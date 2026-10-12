@@ -16,7 +16,7 @@ import re
 import threading
 from multiprocessing.connection import Client, Listener
 
-from stinky_core.transport.redis_accounting import AccountingError, identity,reply_bytes
+from stinky_core.transport.redis_accounting import AccountingError, DispatchBusy, identity,reply_bytes
 from scripts.redis_production_adapters import SealedCredentials, validate_command,verify_default_write_fence
 
 
@@ -31,7 +31,8 @@ class PinnedRedisScope:
                 raise AccountingError('Production ownership scope unavailable')
         elif not ((name.startswith('genesis-redis-c67-') and volume.startswith('project-genesis_checkpoint67-') and port in (16570,16571,16572,16573) and certification=='checkpoint67') or
                   (name.startswith('genesis-redis-c68-') and volume.startswith('project-genesis_checkpoint68-') and port in (16574,16575,16576,16577) and certification=='checkpoint68') or
-                  (name.startswith('genesis-redis-c69-') and volume.startswith('project-genesis_checkpoint69-') and port in (16578,16579,16580,16581) and certification=='checkpoint69')):
+                  (name.startswith('genesis-redis-c69-') and volume.startswith('project-genesis_checkpoint69-') and port in (16578,16579,16580,16581) and certification=='checkpoint69') or
+                  (name.startswith('genesis-redis-c71-') and volume.startswith('project-genesis_checkpoint71-') and port in (16582,16583,16584,16585) and certification=='checkpoint71')):
             raise AccountingError('Unrecognized Redis authority scope')
 
     def __call__(self, records):
@@ -246,8 +247,12 @@ class WriterBroker:
         return owner
 
     def hold(self):
+        # Publish the deny state before waiting for an in-progress journal/ACL
+        # decision. Queued legitimate requests cannot race ahead of a known
+        # authentication/identity failure to obtain a fresh intent or credential.
         self.held=True;self.fenced=True
-        self.credentials.revoke_all()
+        with self.lock:
+            self.credentials.revoke_all()
 
     def dispatch(self, pid, request):
         with self.lock:
@@ -273,7 +278,9 @@ class WriterBroker:
                     if owner['service']!='fixture' and role not in roles.get(owner['service'],set()):
                         raise AccountingError('Credential role contradicts native service')
                     if method=='seal':args=[args[1],args[0],*args[2:]]
-                    return getattr(self.credentials,method)(*args)
+                    result=getattr(self.credentials,method)(*args)
+                    if self.held:raise AccountingError('Hold arrived during credential admission')
+                    return result
                 if method == 'register_connection':
                     if self.fenced or args[1] != owner:raise AccountingError('Connection registration fenced')
                     if args[3]!=self.server_epoch or type(args[4]) is not int or args[4]!=self.generation:
@@ -286,12 +293,12 @@ class WriterBroker:
                     if not self.credentials.is_bound(owner,role,args[4],self.server_epoch,args[3]):
                         raise AccountingError('Mutation lacks sealed native credential binding')
                     if getattr(self.ledger,'custody',None) is not self.retention:self.retention.before(args[1],args[2])
-                allowed={'register_connection','retire_connection','begin_command','complete_command','reject_group_exists','settled'}
+                allowed={'register_connection','retire_connection','begin_command','complete_command','complete_reply','reject_group_exists','mark_uncertain','settled'}
                 if method not in allowed:raise AccountingError('Broker method not allowlisted')
                 if method in ('register_connection','retire_connection','begin_command'):
                     if not str(args[0]).startswith(f"{pid}-{owner['creation_ticks']}-"):
                         raise AccountingError('Writer identity spoofed')
-                if method in ('complete_command','reject_group_exists'):
+                if method in ('complete_command','complete_reply','reject_group_exists','mark_uncertain'):
                     writer=self.ledger.commands[args[0]]['writer']
                     if not writer.startswith(f"{pid}-{owner['creation_ticks']}-"):
                         raise AccountingError('Acknowledgement owner differs')
@@ -299,7 +306,23 @@ class WriterBroker:
                         raise AccountingError('Acknowledgement route differs')
                     if method=='complete_command' and args[2]!=reply_bytes(args[1]):
                         raise AccountingError('Acknowledgement serialization differs')
-                return getattr(self.ledger,method)(*args)
+                if method=='complete_reply':
+                    if len(args)!=3:raise AccountingError('Compact completion shape differs')
+                    # Identical canonical receipt bytes, without transporting a
+                    # second full representation of a500-entry group response.
+                    return self.ledger.complete_command(args[0],args[1],reply_bytes(args[1]),args[2])
+                if method=='mark_uncertain':
+                    self.ledger.mark_uncertain(*args);self.hold();return {'held':True}
+                result=getattr(self.ledger,method)(*args)
+                if self.held and method in ('register_connection','begin_command'):
+                    raise AccountingError('Hold arrived during admission; no permission returned')
+                return result
+            except DispatchBusy:
+                # Only the ledger's verified pre-intent admission refusal can
+                # reach this branch. Authentication/ownership errors still HOLD.
+                if method != 'begin_command':
+                    self.hold();raise
+                return {'pre_dispatch_busy': True}
             except BaseException:
                 self.hold();raise
 
@@ -320,13 +343,37 @@ class WriterBroker:
 
 class PipeServer:
     """One serialized bounded RPC; use recv_bytes, never unpickle client objects."""
-    def __init__(self,address,authkey,broker):
+    def __init__(self,address,authkey,broker,*,max_workers=1):
         if os.name!='nt' or not address.startswith('\\\\.\\pipe\\genesis-') or len(authkey)!=32:
             raise AccountingError('Authenticated Genesis named pipe required')
+        if type(max_workers) is not int or not 1<=max_workers<=8:
+            raise AccountingError('Broker connection worker bound unavailable')
         self.listener=Listener(address,family='AF_PIPE',authkey=None);self.broker=broker;self.authkey=authkey
+        self.max_workers=max_workers;self.slots=threading.BoundedSemaphore(max_workers)
+        self.workers=set();self.worker_lock=threading.Lock()
 
     def serve_one(self):
-        connection=self.listener.accept()
+        if self.max_workers==1:
+            return self._serve_connection(self.listener.accept())
+        # Accept/authenticate a bounded number of independent native peers. The
+        # broker lock still serializes every identity/generation/ledger decision.
+        self.slots.acquire()
+        try:connection=self.listener.accept()
+        except BaseException:
+            self.slots.release();raise
+        def work():
+            try:self._serve_connection(connection)
+            finally:
+                with self.worker_lock:self.workers.discard(threading.current_thread())
+                self.slots.release()
+        worker=threading.Thread(target=work,daemon=True)
+        with self.worker_lock:self.workers.add(worker)
+        try:worker.start()
+        except BaseException:
+            with self.worker_lock:self.workers.discard(worker)
+            connection.close();self.slots.release();self.broker.hold();raise
+
+    def _serve_connection(self,connection):
         try:
             pid=native_pipe_pid(connection)
             self.broker.owner(pid)
@@ -346,7 +393,13 @@ class PipeServer:
             except (OSError,EOFError):pass
         finally:connection.close()
 
-    def close(self):self.listener.close()
+    def close(self):
+        self.listener.close()
+        with self.worker_lock:workers=tuple(self.workers)
+        for worker in workers:worker.join(6)
+        if any(worker.is_alive() for worker in workers):
+            self.broker.hold()
+            raise AccountingError('Broker connection drain not verified')
 
 
 class PipeProxy:
@@ -384,6 +437,21 @@ class PipeProxy:
         return lambda *args:self.call(name,*args)
 
     def issue(self,owner,role,generation,epoch):return self.call('issue',owner,role,generation,epoch)
+
+    def begin_command(self,*args):
+        result=self.call('begin_command',*args)
+        if result=={'pre_dispatch_busy':True}:
+            raise DispatchBusy('Authenticated pre-intent backpressure')
+        if type(result) is not int or result<=0:
+            self.failed=True
+            raise AccountingError('Broker command admission reply uncertain')
+        return result
+
+    def complete_command(self,token,reply,serialized,endpoint):
+        if serialized!=reply_bytes(reply):
+            self.failed=True
+            raise AccountingError('Local receipt serialization differs')
+        return self.call('complete_reply',token,reply,endpoint)
 
     def seal(self,ticket,owner,role,generation,epoch,cid):
         # Broker verifies the claimed native owner before invoking credentials.

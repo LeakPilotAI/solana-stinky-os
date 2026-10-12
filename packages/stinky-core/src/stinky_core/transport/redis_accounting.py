@@ -1,4 +1,4 @@
-"""Default-off Redis accounting seam. No environment flag or startup activation.
+"""Default-off Redis accounting seam. Protected startup requires a reviewed grant.
 
 Managed clients pin one physical connection and never implicitly replay mutations.
 A native identity verifier, coordinator ledger and expected server epoch are supplied
@@ -9,6 +9,8 @@ import asyncio
 import hashlib
 import json
 import math
+import os
+import inspect
 import re
 import uuid
 from contextlib import contextmanager
@@ -24,6 +26,11 @@ class AccountingError(RuntimeError):
 
 
 class AmbiguousMutation(AccountingError):
+    pass
+
+
+class DispatchBusy(AccountingError):
+    """Known refusal before any intent or physical dispatch; not a lost reply."""
     pass
 
 
@@ -168,9 +175,23 @@ class ManagedRedis(Redis):
         if self.writer not in runtime.ledger.writers:raise AccountingError('Writer absent from durable ledger scope')
         runtime.check(self,read_only=True);runtime.clients.add(self);return self
 
+    async def _binding_observation(self):
+        # Two fixed read-only probes in one socket write. This does not expose a
+        # pipeline API or batch mutations, skip either identity, or permit retry.
+        await Redis.initialize(self)
+        connection=self.connection
+        await connection.send_packed_command(connection.pack_commands(
+            [('CLIENT','ID'),('INFO','server')]),check_health=False)
+        client_id=await connection.read_response()
+        server=self.response_callbacks['INFO'](await connection.read_response())
+        if inspect.isawaitable(server):server=await server
+        return client_id,server
+
     async def _physical_binding(self):
-        client_id=await Redis.execute_command(self,'CLIENT ID')
-        server=await Redis.execute_command(self,'INFO','server')
+        try:client_id,server=await self._binding_observation()
+        except BaseException:
+            self.runtime.held=True
+            raise
         epoch=server.get('run_id',server.get(b'run_id'))
         if isinstance(epoch,bytes):epoch=epoch.decode('ascii')
         if epoch!=self.runtime.server_epoch or type(client_id) is not int or client_id<=0:
@@ -199,7 +220,18 @@ class ManagedRedis(Redis):
             await self._physical_binding()
             self.runtime.check(self,read_only=name in READS)  # Fence could arrive during registration IO.
             if name in READS:return await Redis.execute_command(self,*args,**options)
-            token=self.runtime.ledger.begin_command(self.writer,name,values,self.connection_id,self.route_generation)
+            # Only a typed, authenticated pre-intent refusal may be retried. A
+            # lost RPC reply or issued intent still has the existing HOLD rule.
+            deadline=asyncio.get_running_loop().time()+2
+            for attempt in range(128):
+                self.runtime.check(self)
+                try:
+                    token=self.runtime.ledger.begin_command(self.writer,name,values,self.connection_id,self.route_generation)
+                    break
+                except DispatchBusy:
+                    if attempt==127 or asyncio.get_running_loop().time()>=deadline:
+                        raise DispatchBusy('Known pre-dispatch backlog exceeded bound')
+                    await asyncio.sleep(.01)
             self.runtime.inflight.add(token)
             try:
                 reply=await Redis.execute_command(self,*args,**options)
@@ -214,12 +246,23 @@ class ManagedRedis(Redis):
                         raise AmbiguousMutation('Durable rejection receipt uncertain') from None
                     raise
                 self.runtime.held=True
+                self._report_uncertain(token)
                 raise AmbiguousMutation('Mutation reply uncertified; no automatic replay') from None
             except BaseException as exc:
                 self.runtime.held=True
+                self._report_uncertain(token)
                 if isinstance(exc,asyncio.CancelledError):raise
                 raise AmbiguousMutation('Mutation outcome or durable acknowledgement uncertain') from None
             finally:self.runtime.inflight.discard(token)
+
+    def _report_uncertain(self,token):
+        report=getattr(self.runtime.ledger,'mark_uncertain',None)
+        if callable(report):
+            try:report(token,self.runtime.endpoint)
+            except BaseException:
+                # The actor already remains HOLD. Broker/IPC failure does not
+                # permit replay, route changes or cancellation of the intent.
+                self.runtime.held=True
 
     async def aclose(self,*args,**kwargs):
         async with self.accounting_lock:
@@ -262,4 +305,10 @@ class ClientFactory:
 FACTORY=ClientFactory()  # No production code configures it in this checkpoint.
 
 def redis_client(url,*,role,legacy_factory=Redis.from_url,**kwargs):
+    grant=os.environ.get('GENESIS_PROTECTED_REDIS_GRANT')
+    if grant is not None and not grant:
+        raise AccountingError('Explicit protected startup grant empty; no legacy fallback')
+    if grant and FACTORY.runtime is None:
+        from scripts.redis_protected_startup import install_from_path
+        install_from_path(FACTORY,grant)
     return FACTORY.from_url(url,role=role,legacy_factory=legacy_factory,**kwargs)

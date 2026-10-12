@@ -45,6 +45,8 @@ def verify_isolated_scope(records):
             certification='checkpoint66';volume_prefix='project-genesis_checkpoint66-';ports=('16566','16567','16568','16569')
         elif name.startswith('/genesis-redis-c69-'):
             certification='checkpoint69';volume_prefix='project-genesis_checkpoint69-';ports=('16578','16579','16580','16581')
+        elif name.startswith('/genesis-redis-c71-'):
+            certification='checkpoint71';volume_prefix='project-genesis_checkpoint71-';ports=('16582','16583','16584','16585')
         else:raise RuntimeError('Production or unverified container forbidden')
         if r.get('Image')!=IMAGE:raise RuntimeError('Fixture image unverified')
         labels=r.get('Config',{}).get('Labels',{})

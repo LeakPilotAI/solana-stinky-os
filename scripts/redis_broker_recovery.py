@@ -21,6 +21,7 @@ class HeldRecoveryLedger(ProductionAcknowledgements):
     begin_command = forbidden
     complete_command = forbidden
     reject_group_exists = forbidden
+    mark_uncertain = forbidden
     begin = forbidden
     begin_metadata = forbidden
     acknowledged = forbidden
@@ -36,7 +37,9 @@ def fingerprint(value):
     require(isinstance(value, str) and re.fullmatch('[0-9a-f]{64}', value))
 
 
-def recover_held_boundary(path, *, expected_head, next_journal, revoke, verify_revoked, verify_archive=None, parent_loader=None):
+def recover_held_boundary(path, *, expected_head, next_journal, revoke, verify_revoked,
+                          verify_archive=None, parent_loader=None,
+                          read_append=None, verify_append_inventory=None):
     """Rebuild settled/unknown intents and revoke old principals before returning.
 
     revoke and verify_revoked must use an independently pinned credential authority.
@@ -55,6 +58,7 @@ def recover_held_boundary(path, *, expected_head, next_journal, revoke, verify_r
     owners = {o['pid']: identity(o) for o in route['manifest']}
     require(len(owners) == len(route['manifest']))
     bindings = {}; commands = {}; principals = {}; writers = set(); archives = []; custody = {}
+    append_anchors = {}; observed_appends = {}; handoff_seals = []; uncertain = set()
     if 'writers' in route:
         require(isinstance(route['writers'],list) and 0<len(route['writers'])<=1024 and len(set(route['writers']))==len(route['writers']))
         require(all(isinstance(w,str) and any(w.startswith(f"{o['pid']}-{o['creation_ticks']}-") for o in owners.values()) for w in route['writers']))
@@ -70,6 +74,10 @@ def recover_held_boundary(path, *, expected_head, next_journal, revoke, verify_r
         archives = list(parent.get('archive_anchors', ()))
         for anchor in archives:
             require(callable(verify_archive) and verify_archive(anchor) is True)
+        append_anchors = dict(parent.get('append_anchors', {}))
+        observed_appends = dict(parent.get('observed_appends', {}))
+        handoff_seals = list(parent.get('handoff_seals', ()))
+    seen_entries={(r['key_sha256'],r['entry_id']) for r in commands.values() if r.get('command')=='XADD' and r['state']=='ACKNOWLEDGED'}
     for record in rows[1:]:
         require(isinstance(record, dict))
         if 'generation' in record:
@@ -99,6 +107,16 @@ def recover_held_boundary(path, *, expected_head, next_journal, revoke, verify_r
             require(record.get('classification') == MUTATIONS[record['command']])
             fingerprint(record.get('args_sha256'))
             if token in custody:require(record['command']=='XADD' and record['args_sha256']==custody[token])
+            if token in append_anchors:
+                from scripts.redis_production_adapters import append_fields
+                require(callable(read_append))
+                args = read_append(append_anchors[token])
+                from scripts.redis_stream_integrity import framed_hash
+                import hashlib
+                require(record['command']=='XADD' and record['args_sha256']==framed_hash(args)
+                        and record.get('key_sha256')==hashlib.sha256(args[0]).hexdigest()
+                        and record.get('payload_sha256')==framed_hash(append_fields(args))
+                        and record.get('field_count')==len(append_fields(args))//2)
             key = (record.get('writer'), record.get('connection_id'), record.get('generation'))
             require(key in bindings and bindings[key]['active'])
             required = {'stage', 'token', 'writer', 'command', 'classification', 'args_sha256', 'connection_id', 'generation', 'state'}
@@ -112,6 +130,7 @@ def recover_held_boundary(path, *, expected_head, next_journal, revoke, verify_r
             commands[token] = {k: v for k, v in record.items() if k != 'stage'}
         elif stage == 'COMMAND_REPLY':
             token = record.get('token'); original = commands.get(token)
+            require(token not in uncertain)
             require(original is not None and original['state'] == 'ISSUED')
             require(record.get('state') == 'ACKNOWLEDGED' and record.get('endpoint_id') == route['endpoint'])
             fingerprint(record.get('reply_sha256'))
@@ -120,11 +139,20 @@ def recover_held_boundary(path, *, expected_head, next_journal, revoke, verify_r
             if original['command'] == 'XADD':
                 extra.add('entry_id')
                 require(isinstance(record.get('entry_id'), str) and re.fullmatch('[0-9]+-[0-9]+', record['entry_id']))
+                address=(original['key_sha256'],record['entry_id'])
+                require(address not in seen_entries);seen_entries.add(address)
+                if token in append_anchors:
+                    require(token in observed_appends and observed_appends[token]['entry_id']==record['entry_id'])
             if record.get('outcome') is not None:
                 extra |= {'outcome', 'error_code'}
                 require(original['command'] == 'XGROUP CREATE' and record['outcome'] == 'REJECTED_NO_EFFECT' and record.get('error_code') == 'BUSYGROUP')
             require(set(record) == set(original) | extra)
             commands[token] = {k: v for k, v in record.items() if k != 'stage'}
+        elif stage == 'COMMAND_UNCERTAIN':
+            require(set(record)=={'stage','token','endpoint_id'})
+            require(record['token'] in commands and commands[record['token']]['state']=='ISSUED'
+                    and record['endpoint_id']==route['endpoint'])
+            require(record['token'] not in uncertain);uncertain.add(record['token'])
         elif stage == 'CONNECTION_CREDENTIAL_ISSUED':
             require(set(record) == {'stage', 'principal', 'owner', 'role', 'generation', 'server_epoch'})
             principal = record['principal']; owner = identity(record['owner'])
@@ -146,9 +174,34 @@ def recover_held_boundary(path, *, expected_head, next_journal, revoke, verify_r
             fingerprint(record['args_sha256'])
             require(callable(verify_archive) and verify_archive(record['anchor']) is True)
             custody[token]=record['args_sha256'];archives.append(record['anchor'])
+        elif stage == 'BASE_CUSTODY':
+            require(set(record)=={'stage','anchor'})
+            require(callable(verify_archive) and verify_archive(record['anchor']) is True)
+            archives.append(record['anchor'])
+        elif stage == 'APPEND_CUSTODY':
+            require(set(record)=={'stage','anchor'} and isinstance(record['anchor'],dict))
+            anchor=record['anchor'];token=anchor.get('token')
+            require(type(token) is int and token==len(commands)+1 and token not in append_anchors)
+            require(callable(read_append));read_append(anchor)
+            require(anchor['epoch']==route['server_epoch'])
+            append_anchors[token]=dict(anchor)
+        elif stage == 'CUSTODY_OBSERVED':
+            require(set(record)=={'stage','token','entry_id','anchor','payload_sha256','field_count'})
+            token=record['token'];original=commands.get(token)
+            require(original is not None and original['state']=='ISSUED' and original['command']=='XADD'
+                    and token not in observed_appends and record['anchor']==append_anchors.get(token))
+            require(isinstance(record['entry_id'],str) and re.fullmatch('[0-9]+-[0-9]+',record['entry_id']))
+            require(record['payload_sha256']==original['payload_sha256'] and record['field_count']==original['field_count'])
+            observed_appends[token]={k:v for k,v in record.items() if k!='stage'}
+        elif stage == 'CUSTODY_SEGMENT_SEALED':
+            require(set(record)=={'stage','file','bytes','sha256'})
+            handoff_seals.append({k:v for k,v in record.items() if k!='stage'})
         else:
             raise AccountingError('Unknown broker recovery stage; route held')
     require(bool(writers))
+    if append_anchors or handoff_seals:
+        require(callable(verify_append_inventory) and
+                verify_append_inventory(list(append_anchors.values()),handoff_seals) is True)
     # No stale binding survives restart, even if Redis retained its native CID.
     for principal in sorted(principals):
         revoke(principal)
@@ -158,13 +211,16 @@ def recover_held_boundary(path, *, expected_head, next_journal, revoke, verify_r
     ledger = HeldRecoveryLedger(next_journal, sorted(writers))
     ledger.commands = MappingProxyType({k: MappingProxyType(v) for k, v in commands.items()})
     ledger.bindings = MappingProxyType({k: MappingProxyType(v) for k, v in bindings.items()})
+    ledger.uncertain = frozenset(uncertain)
+    ledger.ack_entries = frozenset(seen_entries)
     next_journal.persist({'stage': 'RECOVERED_HELD_BOUNDARY', 'source_head': expected_head,
                           'next_generation': route['generation'] + 1,
                           'unresolved': sum(r['state'] != 'ACKNOWLEDGED' for r in commands.values()),
                           'revoked_principals': len(principals)})
     return {'ledger': ledger, 'route': dict(route), 'held': True, 'fenced': True,
             'next_generation': route['generation'] + 1, 'source_head': expected_head,
-            'archive_anchors': tuple(archives)}
+            'archive_anchors': tuple(archives), 'append_anchors': append_anchors,
+            'observed_appends': observed_appends, 'handoff_seals': tuple(handoff_seals)}
 
 
 def reauthorize_held_route(recovered, *, journal, credentials, manifest, verify_native,
@@ -180,6 +236,7 @@ def reauthorize_held_route(recovered, *, journal, credentials, manifest, verify_
     from scripts.redis_writer_broker import WriterBroker
     require(recovered.get('held') is True and isinstance(recovered.get('ledger'),HeldRecoveryLedger))
     recovered['ledger'].settled()
+    require(set(recovered.get('append_anchors',{}))==set(recovered.get('observed_appends',{})))
     fingerprint(recovered.get('source_head'))
     fresh={pid:identity(verify_native(pid)) for pid in manifest}
     require(fresh==manifest and bool(fresh) and len(fresh)<=128 and all(pid==owner['pid'] for pid,owner in fresh.items()))
@@ -208,6 +265,7 @@ def reauthorize_held_route(recovered, *, journal, credentials, manifest, verify_
         stream.write(json.dumps(request,sort_keys=True).encode());stream.flush();os.fsync(stream.fileno())
     ledger=ProductionAcknowledgements(journal,sorted(writers))
     ledger.commands={token:dict(row) for token,row in recovered['ledger'].commands.items()}
+    ledger.ack_entries=set(recovered['ledger'].ack_entries)
     broker=WriterBroker(ledger,credentials,fresh,verify_native,retention,server_epoch=server_epoch,
                        endpoint=endpoint,generation=request['generation'],parent_head=request['source_head'])
     # Empty ticket state and fresh explicit issuance/seal/registration are required.

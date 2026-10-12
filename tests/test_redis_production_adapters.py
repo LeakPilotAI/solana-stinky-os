@@ -32,7 +32,10 @@ def harness(tmp_path,monkeypatch):
         if behavior['exception']:raise behavior['exception']
         return behavior['reply']
     async def close(self,*a,**k):pass
+    async def probe(self):
+        return await execute(self,'CLIENT ID'),await execute(self,'INFO','server')
     monkeypatch.setattr(Redis,'execute_command',execute);monkeypatch.setattr(Redis,'aclose',close)
+    monkeypatch.setattr(adapter.ManagedRedis,'_binding_observation',probe)
     yield client,runtime,ledger,journal,calls,behavior,owner
     client.connection=None
     journal.close()

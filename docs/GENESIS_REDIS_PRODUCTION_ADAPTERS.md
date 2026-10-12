@@ -382,3 +382,100 @@ complete live writer registration, protected broker/anchor lifecycle, real memor
 pressure and concurrent throughput/recovery testing remain unfinished. The new
 gate has deterministic behavioral coverage, not a complete end-to-end capacity
 certificate. No new fixtures, production operations or activation were performed.
+
+## Checkpoint71 — compact custody and dormant startup; activation BLOCKED
+
+`AppendStore` replaces one full snapshot per append with encrypted, individually
+anchored records in bounded8MiB segments. The existing128-segment/1GiB ceiling is
+not increased. Each payload frame is fsynced and read back before a command intent;
+the exact Redis entry, including ordered duplicate fields, is independently read
+before the acknowledgement settles. One initial full snapshot covers the starting
+dataset. Current source/candidate metadata still requires the original strict
+recovery comparator. Missing payloads, contradictory IDs, partial writes, exhausted
+storage, failed anchors or unanchored tails deny continuation. Recovered stores are
+read-only; opening an existing directory as a writer is forbidden. There is no
+automatic replay or deletion. Closed segments have independent fsynced hash seals.
+
+Single-flight append admission uses authenticated pre-intent backpressure. Blocking
+group reads remain concurrent so a5000ms consumer read cannot prevent its producer
+from providing data. Explicit ambiguous replies mark the ledger uncertain and
+revoke broker authority. Duplicate stream acknowledgement IDs cannot settle twice.
+The broker may accept up to8 authenticated connections, while all ledger/identity/
+credential decisions remain serialized. HOLD is published before waiting for that
+lock; queued admissions and credentials cannot cross a known failure. Default
+connection concurrency remains1. Compact completion sends the full original reply
+once and reconstructs the identical canonical receipt bytes in the broker, retaining
+the1MiB IPC limit. Fixed read-only CID/server probes retain both identity checks.
+
+Readback reuses a single unbuffered descriptor while checking native file identity;
+it does not cache plaintext or accept stale buffered contents. Local256-record
+preparation measured124.72/s before this change and517.59/s afterwards. These local
+figures are not end-to-end ingestion capacity. Encryption/fsync were not skipped,
+and no new cryptographic dependency was installed.
+
+The supported service runner now has an explicit `--protected-redis-grant` option.
+Normal desktop startup does not supply it. A bounded user-protected grant must match
+the current native process, broker PID/creation time, generation, reviewed Redis pins,
+allowed roles, fresh expiry and independently reviewed GREEN admission decisions.
+The first client installs the runtime before legacy client issuance; an empty,
+missing, stale, unsupported or invalid protected grant cannot fall back to anonymous
+Redis. Physical CID registration still precedes sealing any write permission.
+Grants are trusted controller capabilities, not self-proving human approval: their
+embedded HMAC key/signature is not an independent attestation against the same OS
+user. Admission evidence and parent heads must be protected independently. No grant
+was created for production, no credentials rotated, and no running service restarted.
+The production controller/complete rollout remains uncertified.
+
+### Explicit capacity acceptance and actual failures
+
+Observed reference71.7122 appends/s is a short production observation, not a maximum.
+The declared isolated targets are1x for20s,2x for20s and4x for5s,95% minimum accepted
+throughput, p99 append acknowledgement<=1s, zero refusal and zero lag after bounded
+consumer catch-up. Workloads use3 native producers,2 native group consumers and1
+manual-queue writer,1100-byte payloads. A32-entry production sample measured839–970
+bytes. Final consumers retain real collectorCOUNT20/entityCOUNT500 andBLOCK5000.
+The earlier COUNT1/immediate-stop profiles are retained as conservative diagnostics;
+they are not represented as the corrected production-shaped workload.
+
+Final accepted throughput was48.1/s reference,47.75/s sustained and55.6/s burst;
+p99 acknowledgements0.4574/0.4358/0.2916s, lag0 after catch-up, zero unresolved commands
+and zero known refusals. All three throughput gates FAILED.2196 actual append records
+and6865 settled operations survived exact trim, held reconstruction and strict AOF
+restart. Custody occupied4271944 bytes in one segment; journal about10.07MB. Redis
+memory, disk and stage timings are recorded in the protected workload artifacts;
+full native-process peak RSS and long-duration stability remain unmeasured. No
+activation certificate may be issued from the passing integrity test alone.
+
+Eight new71 containers/volumes, all stopped and retained; peak<=2 active. Do not
+create additional71 fixtures, relabel them, or delete evidence to evade this budget.
+First benchmark failed on pre-dispatch backlog; later results retain capacity failure.
+One wrapper failed when AOF rewrite was already active; later wrappers wait for its
+completion and then request a fresh full rewrite before strict restart proof. That
+failed invocation is not reported as successful. Native nine-scenario fencing/crash/
+lost-reply/foreign-client/BRPOP regression passed in its separate owned fixture.
+New custody was not certified through a real coordinator cutover/rollback; existing
+deterministic coordinator regressions remain distinct. Parent history adoption,
+independent durable-head lifecycle and closed ledger epoch handoff remain gates;
+the ledger still has50000-command/64MiB limits. No indefinite-capacity claim.
+
+### Controlled shutdown recovery audit and lifecycle position
+
+The user's original dump.rdb SHA256 is
+`d52413d13679c691fc69221ddc78e01a433cf9c755a4c91a9fd23b107b49635b`,6642152bytes.
+Protected copies and two isolated restores matched1key/20002stream entries with
+strict RDB comparison and no clock normalization. A reporting-only key_count error
+occurred after those comparisons; independent retained-proof verification passed.
+This certifies only that saved point. Production Redis loaded1key and is now accepting
+new observations, but still disables AOF/automatic RDB and uses allkeys-lru. A named
+volume or the old protected snapshot does not make current acknowledged writes durable.
+
+Actual Start and Stop shortcuts still target the existing command wrappers. Seven
+core services were already healthy after user startup; no recovery/restart was needed.
+An earlier launch logged dependency inspection exit1 before container start timestamps;
+engine readiness is a hypothesis, not an established error cause from redacted logs.
+Stop remains application-only, with dependency stops performed manually by the user;
+full graceful apps+three-dependencies lifecycle is not certified. Future activation
+requires sufficient measured concurrent capacity, complete broker/head/epoch bootstrap,
+noeviction/expiry and memory-pressure proof, actual custody coordinator rollback,
+separate app/credential activation approval, then separately approved durable Redis
+cutover and actual lifecycle certification. Keep healthy Genesis running.
