@@ -110,17 +110,22 @@ def test_invalid_identity_type_is_unavailable_metadata_not_reader_crash(tmp_path
     assert out["events"] == [] and out["invalid_lines"] == 1
 
 
-def test_service_wrapper_executes_real_loop_with_same_attempts_and_cadence(tmp_path):
+def test_service_wrapper_executes_real_loop_with_same_attempts_and_cadence(tmp_path,monkeypatch):
     import ast
+    from scripts import run_genesis_service as runner
     source = (Path(__file__).parents[1]/"scripts/run_genesis_service.py").read_text()
     tree = ast.parse(source)
     loop = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "intelligence_execution_v2_loop")
     calls, sleeps = [], []
     class Sleep:
         def sleep(self, seconds): sleeps.append(seconds); raise SystemExit()
+    monkeypatch.setattr(runner,'COOPERATIVE_SUPERVISOR',None)
+    monkeypatch.setattr(runner,'time',Sleep())
     context = {"observe_pass": p.observe_pass, "pass_recorder": p.Recorder(tmp_path/"passes.jsonl"),
                "run_job_with_retry": lambda argv, **kw: calls.append((argv, kw)) or 0,
-               "py": "python", "root": Path("repo"), "time": Sleep()}
+               "py": "python", "root": Path("repo"), "time": Sleep(),
+               "supervisor_loop":runner.supervisor_loop,"supervisor_running":runner.supervisor_running,
+               "supervisor_wait":runner.supervisor_wait}
     exec(compile(ast.Module(body=[loop], type_ignores=[]), "service-loop", "exec"), context)
     with pytest.raises(SystemExit): context["intelligence_execution_v2_loop"]()
     assert calls == [(["python", str(Path("repo/scripts/run_intelligence_execution_v2.py"))], {"attempts": 1})]

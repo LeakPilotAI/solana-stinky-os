@@ -11,6 +11,7 @@ Redis/HTTP failure must not drop chain events.
 from __future__ import annotations
 
 from stinky_core.transport.service_admission import cooperative_job, create_task as registered_task, guard_legacy_cleanup
+from stinky_core.transport.worker_closure import worker_loop, stop_event, active
 
 import asyncio
 from datetime import datetime, timezone
@@ -185,11 +186,19 @@ class LaunchPublisher:
         mint = str(event.payload.get("mint") or "")
         return await self._publish_event(event, kind=kind, mint=mint)
 
+    @worker_loop('sentinel-relay', stop_event)
     async def _relay_loop(self) -> None:
         """Retry unpublished outbox rows every 15s."""
         while not self._stop.is_set():
             try:
-                await asyncio.sleep(15.0)
+                if active():
+                    try:
+                        await asyncio.wait_for(self._stop.wait(), timeout=15.0)
+                        break
+                    except asyncio.TimeoutError:
+                        pass
+                else:
+                    await asyncio.sleep(15.0)
                 if not self._connected:
                     try:
                         await self._transport.connect()

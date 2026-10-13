@@ -192,3 +192,106 @@ child/process exit. Missing evidence retains HOLD. No production activation,
 restart/pause, snapshot mutation, Redis configuration change or live shortcut test
 is authorized by this component certification. Full Start/Stop and continuous Redis
 durability remain unverified. Frozen V2 components and authority controls are unchanged.
+
+## Checkpoint 77 closure: authenticated processing and actual worker completion
+
+These additions remain default-off. They do not authorize a production rollout,
+shutdown, Redis migration, credential change, or dependency operation. A trusted
+bootstrap must install the participant, complete worker manifest, native child
+inspector, and private per-process control capability. No environment toggle,
+public listener or desktop shortcut activation was added.
+
+### Delivery boundary
+
+`shutdown_delivery` authenticates bounded requests/replies with a fresh 32-byte
+per-recipient control capability, independently verified native controller identity,
+exact participant/supervisor manifest and lifecycle generation. A random receiver
+boot nonce prevents old requests from becoming valid after receiver reconstruction.
+Requests have an exact one-use identity and bounded expiry. Wrong MAC, wrong target,
+stale generation/controller, expiry, replay and duplicate delivery are rejected.
+
+`service_admission.deliver_shutdown` and the actual service runner's
+`deliver_shutdown` process these envelopes. The receiver durably records its intent,
+awaits the real participant or supervisor drain, verifies the resulting native
+identity/generation, then durably records the processed acknowledgment digest before
+returning an authenticated reply. Transport acceptance is not an ACK. Lost reply,
+failed audit, replaced identity, incomplete processing or timeout cannot produce a
+valid completed reply. A used receiver cannot be reopened. The existing strict
+participant phase-journal schema remains unchanged.
+
+The capability is a private trusted-bootstrap control channel, not a credential
+issued to arbitrary applications or a Byzantine-process attestation system. Peers
+must have distinct capabilities; production IPC permission/capability provisioning
+requires separate review. The isolated native fixture carries these envelopes over
+its privately bootstrapped parent/child pipes into the actual delivery functions.
+
+### Actual worker and supervisor loops
+
+`WorkerClosure` binds an explicit bounded worker manifest to its participant before
+production clients/jobs can be issued. Actual collector intake, entity intake,
+optional Discord dispatcher, sentinel outbox relay and manual consumer register
+their own loop lifetime and producer stop hook. A loop is a completion obligation,
+not a blanket Redis admission lease. Collector/entity/Discord poll-and-handle
+iterations acquire bounded admission; existing admitted work may finish after the
+fence. New background work is refused. Nested errors latch HOLD so a caught track
+refusal cannot be mistaken for processing success or lead to a protected Redis ACK.
+
+Producer hooks set the actual running flag/stop Event. No fixed sleep or forceful
+cancellation is used to claim drain. The relay's protected stop-aware wait wakes on
+the Event; default-off execution retains its existing sleep. Participant drain
+requires every declared worker's real loop return and all registered jobs/Redis
+acknowledgments. Missing/replaced workers, crash, unknown registrations, unresolved
+commands or deadline expiration HOLD. Resources/processes are not claimed exited
+merely because a loop returned; legacy cancellation/close still refuses protection.
+
+The manual consumer explicitly rejects protected BRPOP before creating a Redis
+client. Its destructive delivery remains unsupported; this path cannot activate.
+Sentinel source subscriptions, all volume/depth work, ASGI/Node lifespans and optional
+enabled applications still need a complete bootstrap manifest and exit closure.
+
+The real runner's supervised child loop and all three maintenance loops now register
+their lifetime. Its protected stop Event fences retries/respawns and wakes idle
+maintenance waits. Quiescence requires exactly the expected loop registrations,
+loop returns, and finite child job completion. Disabled behavior retains V2 10s,
+research 60s and slow-maintenance 21600s cadences and frozen boundaries. The frozen
+V2 worker/policy itself is unchanged. An idle daemon thread is not called exited.
+
+### Redis and native child ownership
+
+Processed service replies include native owner, connection generation, server epoch
+and actual managed physical client IDs. These reports alone are not complete
+ownership proof: the trusted controller must independently join them to Redis-side
+IDs, audited per-writer credential bindings and native identities. The native fixture
+proves that join without equating socket counts or relying on Docker NAT ports.
+Unknown/missing/unregistered connections retain the strict broker HOLD gate.
+Current legacy production clients are not registered by this work.
+
+`ChildRegistry` is installed explicitly before the actual runner may spawn a protected
+child. It requires independently captured parent PID, creation time, repository and
+exact command digest. A trusted native inspector must retain identity/handle evidence
+and independently verify every descendant exited. Actual process wait/poll and clean
+exit code must agree; missing inventory, PID reuse, crash, live/orphaned descendant,
+ownership mismatch or audit failure HOLD. Nothing is killed. Supervisor ACKs keep
+their ticket-only scope unless the separately installed registry verifies exit;
+even verified child exit does not certify the supervisor's own termination or Redis
+snapshot recovery. Production descendant sensing remains an activation prerequisite.
+
+### Certification and remaining production HOLD
+
+Behavioral tests execute actual service loops with controlled I/O, authenticated
+delivery, generation/replay failures, real runner helpers and failure injection.
+The native Redis fixture executes an actual collector loop on managed Redis with
+its existing 10s socket timeout/5s blocking-read configuration, independently
+observed native identities, actual API enqueue and three authenticated delivery
+joins. Native child fixtures retain Windows handles and verify clean exit, crash,
+orphaned descendant and identity replacement; only fixture processes exit naturally.
+Encrypted archive and strict AOF payload/group/pending recovery remain required.
+
+No complete seven-service production shutdown is certified by these results. Missing
+real bootstrap/capability provisioning, legacy client attribution, unsupported BRPOP,
+complete source/ASGI/Node manifests or descendant evidence HOLD. Next remains within
+Checkpoint 77: certify a complete inactive seven-service bootstrap/controller and
+source/child closure before requesting any live rollout. Checkpoint 78 has not begun.
+Final snapshot/restore, exact three dependency Stop/Start and live desktop lifecycle
+certification remain separate blocked gates. Continuous production Redis durability
+is unchanged: AOF/automatic RDB off and allkeys-lru do not satisfy that contract.

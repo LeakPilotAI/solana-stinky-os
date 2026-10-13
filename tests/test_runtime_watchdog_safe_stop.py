@@ -34,7 +34,8 @@ def test_core_http_supervisors_recycle_sustained_dead_listener():
 
 def test_api_child_kill_is_scoped_and_never_targets_docker():
     t = read("scripts/run_genesis_service.py")
-    chunk = t[t.index("def terminate_owned_child") : t.index("def run(")]
+    start = t.index("def terminate_owned_child")
+    chunk = t[start : t.index("def run(", start)]
     assert '["taskkill", "/PID", str(proc.pid), "/T"]' in chunk
     assert '["taskkill", "/PID", str(proc.pid), "/T", "/F"]' in chunk
     assert "docker.exe" not in chunk.lower()

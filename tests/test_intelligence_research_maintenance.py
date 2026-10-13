@@ -28,7 +28,7 @@ def test_slow_maintenance_isolated_from_capture_loop():
     assert slow < thread < capture
     assert 'name="genesis-slow-maintenance"' in maintain
     assert "daemon=True" in maintain
-    assert "time.sleep(21600)" in maintain
+    assert "supervisor_wait(21600)" in maintain
     assert "next_job" not in maintain
 
 def test_capture_contract_stays_paper_only_and_one_minute():
@@ -36,7 +36,7 @@ def test_capture_contract_stays_paper_only_and_one_minute():
     maintain=s[s.index('elif name == "maintain":'):]
     assert "PAPER/evidence-only" in maintain
     assert 'attempts=1' in maintain
-    assert "time.sleep(60)" in maintain
+    assert "supervisor_wait(60)" in maintain
     assert "run_intelligence_shadow_scorer.py" in maintain
     assert "run_intelligence_paper_decisions.py" in maintain
 

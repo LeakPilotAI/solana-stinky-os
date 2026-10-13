@@ -6,7 +6,8 @@ Never every migration. Never creates.
 
 from __future__ import annotations
 
-from stinky_core.transport.service_admission import cooperative_job, create_task as registered_task, guard_legacy_cleanup
+from stinky_core.transport.service_admission import cooperative_job, admission, create_task as registered_task, guard_legacy_cleanup
+from stinky_core.transport.worker_closure import worker_loop, running_flag
 
 from stinky_core.transport.redis_accounting import redis_client
 
@@ -67,23 +68,25 @@ class AlertDispatcher:
         if self._redis:
             await self._redis.aclose()
 
+    @worker_loop('discord-dispatch', running_flag)
     async def _loop(self) -> None:
         assert self._redis is not None
         consumer = f"discord-{id(self)}"
         while self._running:
             try:
-                rows = await self._redis.xreadgroup(
-                    groupname=settings.discord_consumer_group,
-                    consumername=consumer,
-                    streams={settings.event_stream: ">"},
-                    count=10,
-                    block=5000,
-                )
-                if not rows:
-                    continue
-                for _stream, messages in rows:
-                    for msg_id, fields in messages:
-                        await self._handle(msg_id, fields)
+                async with admission('discord'):
+                    rows = await self._redis.xreadgroup(
+                        groupname=settings.discord_consumer_group,
+                        consumername=consumer,
+                        streams={settings.event_stream: ">"},
+                        count=10,
+                        block=5000,
+                    )
+                    if not rows:
+                        continue
+                    for _stream, messages in rows:
+                        for msg_id, fields in messages:
+                            await self._handle(msg_id, fields)
             except Exception as exc:
                 logger.warning("alerter.loop_error", error=str(exc))
                 await asyncio.sleep(2)

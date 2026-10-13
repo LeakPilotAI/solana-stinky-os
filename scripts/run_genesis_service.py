@@ -13,6 +13,7 @@ import threading
 import time
 import urllib.request
 from contextlib import nullcontext
+from functools import wraps
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -55,6 +56,8 @@ WATCH_CONTAINERS = (
 
 COOPERATIVE_SUPERVISOR = None  # Explicit trusted startup only; no environment activation.
 COOPERATIVE_INSTALL_LOCK = threading.RLock()
+COOPERATIVE_DELIVERY = None
+COOPERATIVE_CHILDREN = None
 
 
 def install_cooperative_supervisor(gate):
@@ -76,6 +79,28 @@ def run_admitted_job(command, operation):
     with supervisor_job(command):return operation()
 
 
+def supervisor_running():
+    return COOPERATIVE_SUPERVISOR is None or not COOPERATIVE_SUPERVISOR.stop_event.is_set()
+
+
+def supervisor_wait(seconds):
+    if COOPERATIVE_SUPERVISOR is None:
+        time.sleep(seconds)
+    else:
+        COOPERATIVE_SUPERVISOR.stop_event.wait(seconds)
+
+
+def supervisor_loop(name):
+    def decorate(function):
+        @wraps(function)
+        def run(*args, **kwargs):
+            gate=COOPERATIVE_SUPERVISOR
+            with gate.loop(name) if gate is not None else nullcontext():
+                return function(*args, **kwargs)
+        return run
+    return decorate
+
+
 def cooperative_status():
     gate=COOPERATIVE_SUPERVISOR
     if gate is None:return {'phase':'DISABLED','jobs':None,'identity_verified':None,'scope':'NO_INSTALLED_COOPERATIVE_SUPERVISOR'}
@@ -84,6 +109,49 @@ def cooperative_status():
         except Exception:gate.phase='HOLD';verified=False
         return {'phase':gate.phase,'jobs':len(gate.jobs) if verified else None,
                 'identity_verified':verified,'scope':'JOB_TICKETS_ONLY_NOT_PROCESS_EXIT'}
+
+
+def install_shutdown_delivery(authority, *, verify_controller, persist):
+    global COOPERATIVE_DELIVERY
+    from stinky_core.transport.shutdown_delivery import ShutdownReceiver
+    gate = COOPERATIVE_SUPERVISOR
+    with COOPERATIVE_INSTALL_LOCK:
+        if gate is None or COOPERATIVE_DELIVERY is not None or gate.phase != 'RUNNING':
+            raise RuntimeError('Authenticated clean supervisor delivery installation required')
+        gate.verify()
+        async def process(request, timeout):
+            import asyncio
+            ack = await asyncio.to_thread(gate.quiesce, request, timeout=timeout)
+            if COOPERATIVE_CHILDREN is None:
+                # Ticket processing is deliberately not a process-exit certificate.
+                return ack
+            children = COOPERATIVE_CHILDREN.verify_exited()
+            ack['verified_child_exit'] = True
+            ack['child_exit_evidence'] = {'owners':children, 'journal_heads':dict(COOPERATIVE_CHILDREN.exit_heads)}
+            return ack
+        def hold():
+            with gate.changed:
+                gate.phase = 'HOLD'; gate.changed.notify_all()
+        COOPERATIVE_DELIVERY = ShutdownReceiver(authority, manifest=gate.manifest,
+            generation=lambda: gate.generation, verify_controller=verify_controller,
+            process=process, persist=persist, hold=hold)
+
+
+async def deliver_shutdown(envelope):
+    if COOPERATIVE_DELIVERY is None:
+        raise RuntimeError('Supervisor shutdown delivery disabled')
+    return await COOPERATIVE_DELIVERY.receive(envelope)
+
+
+def install_child_registry(registry):
+    global COOPERATIVE_CHILDREN
+    from scripts.genesis_child_exit import ChildRegistry
+    with COOPERATIVE_INSTALL_LOCK:
+        if (COOPERATIVE_SUPERVISOR is None or COOPERATIVE_CHILDREN is not None or
+            not isinstance(registry, ChildRegistry) or registry.gate is not COOPERATIVE_SUPERVISOR or
+            COOPERATIVE_SUPERVISOR.jobs):
+            raise RuntimeError('Clean authenticated child registry required before dispatch')
+        COOPERATIVE_CHILDREN = registry
 
 
 def stopped_watch_containers(raw: str) -> list[str]:
@@ -368,6 +436,9 @@ def main() -> int:
         cwd: Path | None = None,
         health_url: str | None = None,
     ) -> int:
+        if COOPERATIVE_SUPERVISOR is not None and COOPERATIVE_CHILDREN is None:
+            COOPERATIVE_SUPERVISOR.phase = 'HOLD'
+            raise RuntimeError('Native child ownership must be installed before spawning')
         flags = 0
         startupinfo = None
         if os.name == "nt":
@@ -386,6 +457,10 @@ def main() -> int:
             creationflags=flags,
             startupinfo=startupinfo,
         )
+        if COOPERATIVE_SUPERVISOR is not None:
+            if COOPERATIVE_CHILDREN is None:
+                raise RuntimeError('Cooperative supervisor child ownership unavailable; HOLD')
+            COOPERATIVE_CHILDREN.register(proc, cmd)
         assert proc.stdout is not None
 
         def pump_output() -> None:
@@ -414,6 +489,8 @@ def main() -> int:
                     last_heartbeat = now
                 time.sleep(API_HEALTH_POLL_SECONDS)
             code = int(proc.wait())
+            if COOPERATIVE_CHILDREN is not None:
+                COOPERATIVE_CHILDREN.verify_exited(proc)
             reader.join(timeout=3)
             return code
 
@@ -450,6 +527,8 @@ def main() -> int:
             time.sleep(API_HEALTH_POLL_SECONDS)
 
         code = int(proc.wait())
+        if COOPERATIVE_CHILDREN is not None:
+            COOPERATIVE_CHILDREN.verify_exited(proc)
         reader.join(timeout=3)
         return code
 
@@ -462,6 +541,7 @@ def main() -> int:
                 return url
         return None
 
+    @supervisor_loop('supervised-child-loop')
     def run_supervised(cmd: list[str], cwd: Path | None = None) -> int:
         """Restart on crash or sustained API health loss with a cap. Never storm."""
         delay = 5
@@ -471,8 +551,10 @@ def main() -> int:
         # All core HTTP services must recycle a child that remains alive while its
         # listener is unavailable. Process-exists is not service health.
         watched_url = healthy_url
-        while True:
+        while supervisor_running():
             last = run(cmd, cwd, health_url=watched_url)
+            if not supervisor_running():
+                return last
             if healthy_url and http_ok(healthy_url):
                 msg = "[%s] %s exited %s but port is healthy, not spawning another\n" % (
                     utc_stamp(),
@@ -507,13 +589,16 @@ def main() -> int:
             sys.stdout.flush()
             append_log(msg)
             dump_runtime(phase)
-            time.sleep(delay)
+            supervisor_wait(delay)
             delay = min(delay * 2, 60)
+        return last
 
     def run_job_with_retry(cmd: list[str], attempts: int = 3) -> int:
         delay = 15
         last = 1
         for i in range(1, attempts + 1):
+            if not supervisor_running():
+                return last
             last = run(cmd)
             if last == 0:
                 return 0
@@ -528,7 +613,7 @@ def main() -> int:
             sys.stdout.flush()
             append_log(msg)
             if i < attempts:
-                time.sleep(delay)
+                supervisor_wait(delay)
                 delay = min(delay * 2, 60)
         return last
 
@@ -662,8 +747,9 @@ def main() -> int:
             # Slow six-hour maintenance must never starve the one-minute prospective
             # capture cadence. Keep it isolated in a daemon thread; research capture
             # remains PAPER/evidence-only in this supervisor's main loop.
+            @supervisor_loop('slow-maintenance')
             def slow_maintenance_loop() -> None:
-                while True:
+                while supervisor_running():
                     try:
                         run_job_with_retry([py, "-m", "post_migration.cli", "learn-success"])
                         run_job_with_retry([py, "-m", "post_migration.cli", "recompute-performance"])
@@ -672,7 +758,7 @@ def main() -> int:
                         sys.stdout.write(msg)
                         sys.stdout.flush()
                         append_log(msg)
-                    time.sleep(21600)
+                    supervisor_wait(21600)
 
             slow_thread = threading.Thread(
                 target=slow_maintenance_loop,
@@ -688,8 +774,9 @@ def main() -> int:
             from genesis_pass_provenance import Recorder, observe_pass
             pass_recorder = Recorder(log_dir / "v2-pass-provenance.jsonl")
 
+            @supervisor_loop('v2-maintenance')
             def intelligence_execution_v2_loop() -> None:
-                while True:
+                while supervisor_running():
                     try:
                         observe_pass(
                             lambda: run_job_with_retry(
@@ -706,7 +793,7 @@ def main() -> int:
                         sys.stdout.write(msg)
                         sys.stdout.flush()
                         append_log(msg)
-                    time.sleep(10)
+                    supervisor_wait(10)
 
             v2_thread = threading.Thread(
                 target=intelligence_execution_v2_loop,
@@ -715,37 +802,40 @@ def main() -> int:
             )
             v2_thread.start()
 
-            while True:
-                try:
-                    watchdog_tick()
-                    dump_runtime()
-                except Exception as exc:
-                    msg = "[%s] watchdog error %s\n" % (utc_stamp(), str(exc)[:200])
-                    sys.stdout.write(msg)
-                    sys.stdout.flush()
-                    append_log(msg)
-                # Prospective intelligence research capture. PAPER/evidence only:
-                # score eligible T+60 tracks, then classify only tracks that are
-                # still incomplete. The fixed boundary prevents historical backfill.
-                research_boundary = "2026-10-05T12:46:27.418241+00:00"
-                run_job_with_retry(
-                    [py, str(root / "scripts" / "run_intelligence_shadow_scorer.py"),
-                     "--boundary", research_boundary, "--limit", "500"], attempts=1
-                )
-                run_job_with_retry(
-                    [py, str(root / "scripts" / "run_intelligence_paper_decisions.py"),
-                     "--boundary", research_boundary, "--limit", "500"], attempts=1
-                )
-                # Prospective paper execution starts at a later, frozen boundary so
-                # the already-observed V3 evaluation cohort cannot tune its policy.
-                execution_boundary = "2026-10-07T07:09:02.404079+00:00"
-                run_job_with_retry(
-                    [py, str(root / "scripts" / "run_intelligence_paper_execution_plans.py"),
-                     "--boundary", execution_boundary, "--limit", "500"], attempts=1
-                )
-                # V2 prospective capture runs independently at a faster cadence above.
-                # Keep this research/V1 loop at its existing one-minute cadence.
-                time.sleep(60)
+            @supervisor_loop('research-maintenance')
+            def research_maintenance_loop():
+                while supervisor_running():
+                    try:
+                        watchdog_tick()
+                        dump_runtime()
+                    except Exception as exc:
+                        msg = "[%s] watchdog error %s\n" % (utc_stamp(), str(exc)[:200])
+                        sys.stdout.write(msg)
+                        sys.stdout.flush()
+                        append_log(msg)
+                    # Prospective intelligence research capture. PAPER/evidence only:
+                    # score eligible T+60 tracks, then classify only tracks that are
+                    # still incomplete. The fixed boundary prevents historical backfill.
+                    research_boundary = "2026-10-05T12:46:27.418241+00:00"
+                    run_job_with_retry(
+                        [py, str(root / "scripts" / "run_intelligence_shadow_scorer.py"),
+                         "--boundary", research_boundary, "--limit", "500"], attempts=1
+                    )
+                    run_job_with_retry(
+                        [py, str(root / "scripts" / "run_intelligence_paper_decisions.py"),
+                         "--boundary", research_boundary, "--limit", "500"], attempts=1
+                    )
+                    # Prospective paper execution starts at a later, frozen boundary so
+                    # the already-observed V3 evaluation cohort cannot tune its policy.
+                    execution_boundary = "2026-10-07T07:09:02.404079+00:00"
+                    run_job_with_retry(
+                        [py, str(root / "scripts" / "run_intelligence_paper_execution_plans.py"),
+                         "--boundary", execution_boundary, "--limit", "500"], attempts=1
+                    )
+                    # V2 prospective capture runs independently at a faster cadence above.
+                    # Keep this research/V1 loop at its existing one-minute cadence.
+                    supervisor_wait(60)
+            research_maintenance_loop()
     finally:
         append_log("[%s] exit LASTEXITCODE=%s" % (utc_stamp(), code))
     return code

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from stinky_core.transport.service_admission import cooperative_job, create_task as registered_task, guard_legacy_cleanup
+from stinky_core.transport.service_admission import cooperative_job, admission, create_task as registered_task, guard_legacy_cleanup
+from stinky_core.transport.worker_closure import worker_loop, running_flag
 
 from stinky_core.transport.redis_accounting import redis_client
 
@@ -131,6 +132,7 @@ class EntityService:
         await self._resolver.close()
         await self._relationships.close()
 
+    @worker_loop('entity-intake', running_flag)
     async def run_forever(self) -> None:
         await self.start()
         assert self._redis is not None
@@ -140,40 +142,41 @@ class EntityService:
         backoff = 1.0
         while self._running:
             try:
-                rows = await self._redis.xreadgroup(
-                    groupname=settings.entity_consumer_group,
-                    consumername=consumer,
-                    streams={settings.event_stream: ">"},
-                    count=ENTITY_STREAM_READ_COUNT,
-                    block=5000,
-                )
-                backoff = 1.0
-                if rows:
-                    for _stream, messages in rows:
-                        ignored_ids: list[str] = []
-                        relevant_messages: list[tuple[str, dict[str, str]]] = []
-                        for msg_id, fields in messages:
-                            event_type = self._stream_event_type(fields)
-                            if event_type is not None and event_type not in ENTITY_RELEVANT_EVENT_TYPES:
-                                ignored_ids.append(msg_id)
-                            else:
-                                relevant_messages.append((msg_id, fields))
-                        if ignored_ids:
-                            await self._redis.xack(
-                                settings.event_stream,
-                                settings.entity_consumer_group,
-                                *ignored_ids,
-                            )
-                        for msg_id, fields in relevant_messages:
-                            await self._handle_bounded(msg_id, fields)
+                async with admission('entities'):
+                    rows = await self._redis.xreadgroup(
+                        groupname=settings.entity_consumer_group,
+                        consumername=consumer,
+                        streams={settings.event_stream: ">"},
+                        count=ENTITY_STREAM_READ_COUNT,
+                        block=5000,
+                    )
+                    backoff = 1.0
+                    if rows:
+                        for _stream, messages in rows:
+                            ignored_ids: list[str] = []
+                            relevant_messages: list[tuple[str, dict[str, str]]] = []
+                            for msg_id, fields in messages:
+                                event_type = self._stream_event_type(fields)
+                                if event_type is not None and event_type not in ENTITY_RELEVANT_EVENT_TYPES:
+                                    ignored_ids.append(msg_id)
+                                else:
+                                    relevant_messages.append((msg_id, fields))
+                            if ignored_ids:
+                                await self._redis.xack(
+                                    settings.event_stream,
+                                    settings.entity_consumer_group,
+                                    *ignored_ids,
+                                )
+                            for msg_id, fields in relevant_messages:
+                                await self._handle_bounded(msg_id, fields)
 
-                now = asyncio.get_event_loop().time()
-                if now - last_pending_recovery >= 5.0:
-                    await self._recover_pending(consumer, max_batches=1)
-                    last_pending_recovery = now
-                if now - last_batch >= settings.batch_interval_sec:
-                    self._schedule_batch()
-                    last_batch = now
+                    now = asyncio.get_event_loop().time()
+                    if now - last_pending_recovery >= 5.0:
+                        await self._recover_pending(consumer, max_batches=1)
+                        last_pending_recovery = now
+                    if now - last_batch >= settings.batch_interval_sec:
+                        self._schedule_batch()
+                        last_batch = now
             except Exception as exc:
                 logger.warning("entity_service.loop_error", error=str(exc)[:240], backoff=backoff)
                 await asyncio.sleep(backoff)

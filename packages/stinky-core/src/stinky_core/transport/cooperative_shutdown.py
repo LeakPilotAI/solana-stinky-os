@@ -105,6 +105,9 @@ class CooperativeParticipant:
                 raise AccountingError('Shutdown fencing exceeded deadline')
             self.phase = 'DRAINING'
             self.record(self.phase)
+            workers = getattr(self, 'worker_closure', None)
+            if workers is not None:
+                await workers.completed(deadline)
             tasks = set(self.jobs)
             if asyncio.current_task() in tasks:
                 raise AccountingError('Shutdown cannot drain its own active job')

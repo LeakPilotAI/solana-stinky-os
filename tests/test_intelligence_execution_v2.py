@@ -177,8 +177,8 @@ def test_service_gives_v2_independent_sub_deadline_cadence():
     loop_end = service.index("v2_thread = threading.Thread", loop_start)
     v2_loop = service[loop_start:loop_end]
 
-    assert "time.sleep(10)" in v2_loop
-    assert "time.sleep(60)" not in v2_loop
+    assert "supervisor_wait(10)" in v2_loop
+    assert "supervisor_wait(60)" not in v2_loop
 
     research_marker = (
         "# V2 prospective capture runs independently at a faster cadence above."

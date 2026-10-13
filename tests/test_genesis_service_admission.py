@@ -230,7 +230,16 @@ def test_actual_supervisor_job_path_drains_all_core_roles_and_cannot_respawn(tmp
     runner.install_cooperative_supervisor(gate)
     entered=threading.Event();release=threading.Event();results=[]
     def work():entered.set();assert release.wait(2);return 0
-    child=threading.Thread(target=lambda:runner.run_admitted_job(['owned-fixture'],work));child.start()
+    loop_names=sorted(gate.expected_loops)
+    @runner.supervisor_loop(loop_names[0])
+    def child_loop():
+        runner.run_admitted_job(['owned-fixture'],work)
+        gate.stop_event.wait(2)
+    def idle_loop(name):
+        with gate.loop(name):gate.stop_event.wait(2)
+    idle=[threading.Thread(target=idle_loop,args=(name,)) for name in loop_names[1:]]
+    for thread in idle:thread.start()
+    child=threading.Thread(target=child_loop);child.start()
     request={'request_id':'e'*32,'manifest_sha256':gate.manifest()}
     control=threading.Thread(target=lambda:results.append(gate.quiesce(request,timeout=1)))
     try:
@@ -243,7 +252,10 @@ def test_actual_supervisor_job_path_drains_all_core_roles_and_cannot_respawn(tmp
         assert [row['phase'] for row in read_records(journal.path,expected_head=results[0]['journal_head'])]==['FENCING','DRAINING','QUIESCED']
         with pytest.raises(RuntimeError):runner.run_admitted_job(['no-respawn'],lambda:pytest.fail('spawned'))
         with pytest.raises(RuntimeError):gate.quiesce(request)
-    finally:release.set();child.join(2);control.join(2);journal.close()
+    finally:
+        release.set();gate.stop_event.set();child.join(2);control.join(2)
+        for thread in idle:thread.join(2)
+        journal.close()
 
 
 @pytest.mark.parametrize('failure',['identity','timeout','audit','stale','crash'])

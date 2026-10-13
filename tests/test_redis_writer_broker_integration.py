@@ -18,7 +18,7 @@ import pytest
 import redis
 import start_genesis as launcher
 from redis.asyncio import Redis
-from stinky_core.transport.redis_accounting import Runtime,ClientFactory
+from stinky_core.transport.redis_accounting import Runtime,ClientFactory,AccountingError
 from scripts.redis_writer_broker import WriterBroker,PipeServer,PipeProxy,ProductionCredentials,PinnedRedisScope,RetentionBoundary
 from scripts.redis_production_adapters import DurableJournal,ProductionAcknowledgements,writer_id
 from scripts.guarded_redis_migration import NativePause
@@ -59,17 +59,71 @@ def actor(channel):
     else:factory=ClientFactory()
     factory.configure(runtime)
     if service_mode:service_admission.install(participant,factory=factory)
-    client=factory.from_url(f'redis://127.0.0.1:{port}/0',role=role)
+    closure_mode=service_mode and len(incoming)>=13 and incoming[12] is True
+    # Real CollectorService.start uses socket_timeout=10 for its5000ms read.
+    # redis-py's default5s socket timeout races a5s blocking server command.
+    client=factory.from_url(f'redis://127.0.0.1:{port}/0',role=role,
+        **({'socket_timeout':10} if closure_mode else {}))
+    worker_task=None;delivery_journal=None
+    if closure_mode:
+        from stinky_core.transport.shutdown_delivery import ShutdownAuthority
+        control_identity=hashlib.sha256(json.dumps(server_identity).encode()).hexdigest()
+        control=ShutdownAuthority(incoming[11],control_identity)
+        def verify_controller():
+            assert native_identity(adapter,server_identity[0])[0]==server_identity[1]
+            return control_identity
+        delivery_journal=DurableJournal(Path(incoming[9])/f'{os.getpid()}-delivery.jsonl')
+        def persist_delivery(row):delivery_journal.persist(row);return delivery_journal.previous
+        service_admission.install_delivery(control,verify_controller=verify_controller,persist=persist_delivery)
+        service_runner.install_shutdown_delivery(control,verify_controller=verify_controller,persist=persist_delivery)
     async def run():
+        nonlocal worker_task
         try:
             while True:
                 cmd=channel.recv()
+                payload=None
+                if isinstance(cmd,tuple):cmd,payload=cmd
                 if cmd=='finish':break
                 if cmd=='crash':os._exit(71)
                 try:
-                    with (service_runner.supervisor_job([cmd]) if service_mode and cmd not in ('cooperative','raw-after-fence','supervisor-stop') else nullcontext()):
-                        async with (participant.job() if participant is not None and cmd not in ('cooperative','raw-after-fence','supervisor-stop','service-push','service-lost') else nullcontext()):
-                            if cmd=='cooperative':
+                    control_commands=('cooperative','raw-after-fence','supervisor-stop','closure-metadata','auth-service','auth-supervisor','start-worker')
+                    with (service_runner.supervisor_job([cmd]) if service_mode and cmd not in control_commands else nullcontext()):
+                        async with (participant.job() if participant is not None and cmd not in control_commands+('service-push','service-lost') else nullcontext()):
+                            if cmd=='closure-metadata':
+                                value={'service_target':service_admission.DELIVERY.target(),
+                                       'supervisor_target':service_runner.COOPERATIVE_DELIVERY.target()}
+                            elif cmd=='auth-service':
+                                value=await service_admission.deliver_shutdown(payload)
+                                if worker_task is not None:await worker_task
+                            elif cmd=='auth-supervisor':value=await service_runner.deliver_shutdown(payload)
+                            elif cmd=='start-worker':
+                                from stinky_core.transport.worker_closure import WorkerClosure
+                                from post_migration.service import CollectorService
+                                from post_migration.config import settings as collector_settings
+                                from types import SimpleNamespace
+                                WorkerClosure(participant,['collector-intake'])
+                                collector_settings.event_stream='proof';collector_settings.collector_consumer_group=group_name+'-collector'
+                                service=object.__new__(CollectorService);service._redis=client;service._running=False
+                                entered=asyncio.Event()
+                                async def startup():
+                                    await client.xgroup_create('proof',collector_settings.collector_consumer_group,'$')
+                                    service._running=True
+                                async def backfill(**kwargs):return 0
+                                service.start=startup;service._bounded_backfill=backfill
+                                original_read=service._read_group
+                                async def read(consumer):
+                                    entered.set()
+                                    try:return await original_read(consumer)
+                                    except Exception as exc:
+                                        cause=exc.__context__
+                                        print('Isolated collector failure type:',type(cause).__module__,type(cause).__name__,
+                                            'socket_timeout:',client.connection_pool.connection_kwargs.get('socket_timeout'),flush=True)
+                                        raise
+                                service._read_group=read
+                                worker_task=asyncio.create_task(service.run_forever())
+                                await entered.wait()
+                                value={'worker':'collector-intake','entered':True}
+                            elif cmd=='cooperative':
                                 if participant is None:raise RuntimeError('No cooperative fixture grant')
                                 value=await participant.quiesce({'request_id':'e'*32,'manifest_sha256':participant.manifest()},timeout=5)
                                 assert not admission['accepting']
@@ -114,13 +168,17 @@ def actor(channel):
                                 value=await client.xadd('proof',{'data':'spoofed-server'})
                             else:raise AssertionError('Unknown isolated command')
                     channel.send({'ok':True,'value':value})
-                except Exception:
+                except Exception as exc:
+                    if cmd in ('auth-service','auth-supervisor'):
+                        print('Isolated shutdown refusal:',type(exc).__name__,
+                              str(exc) if isinstance(exc,AccountingError) else 'HOLD',flush=True)
                     channel.send({'ok':False})
         finally:
             try:await client.aclose()
             except Exception:pass
             if phase_journal is not None:phase_journal.close()
             if service_mode:supervisor_journal.close()
+            if delivery_journal is not None:delivery_journal.close()
             channel.close()
     asyncio.run(run())
 
@@ -175,8 +233,9 @@ def test_real_native_multiprocess_broker_and_fail_closed_boundaries():
                 except (OSError,EOFError,ValueError):return
         thread=threading.Thread(target=serve,daemon=True);thread.start()
         server_identity=(os.getpid(),native_identity(adapter,os.getpid())[0])
-        for p,ch,role in zip(processes,pairs,roles):
-            ch.send((manifest[p.pid],address,key,port,observer.info('server')['run_id'],role,server_identity,1,group_name,str(root) if config.get('cooperative',False) and scenario in ('normal','service-lost') else None,config.get('service_integration',False)))
+        control_keys=[os.urandom(32) for _ in processes]
+        for p,ch,role,control_key in zip(processes,pairs,roles,control_keys):
+            ch.send((manifest[p.pid],address,key,port,observer.info('server')['run_id'],role,server_identity,1,group_name,str(root) if config.get('cooperative',False) and scenario in ('normal','service-lost') else None,config.get('service_integration',False),control_key,config.get('closure_integration',False)))
         def ask(index,cmd):
             pairs[index].send(cmd);assert pairs[index].poll(20)
             return pairs[index].recv()
@@ -195,12 +254,39 @@ def test_real_native_multiprocess_broker_and_fail_closed_boundaries():
                     assert pairs[0].recv()['ok'] and pairs[1].recv()['ok']
                     if config.get('service_integration',False):
                         assert ask(1,'service-push')['ok']
-                        supervisor_acks=[ask(i,'supervisor-stop') for i in range(3)]
+                        if config.get('closure_integration',False):
+                            from stinky_core.transport.shutdown_delivery import ShutdownAuthority
+                            controls=[ShutdownAuthority(key,hashlib.sha256(json.dumps(server_identity).encode()).hexdigest()) for key in control_keys]
+                            assert ask(0,'start-worker')['ok']
+                            metadata=[ask(i,'closure-metadata')['value'] for i in range(3)]
+                            def authenticated(index,kind,target,request_id):
+                                control=controls[index]
+                                request=control.request(metadata[index][target],1,timeout=15)
+                                request['body']['request_id']=request_id;request=control.seal(request['body'])
+                                reply=ask(index,(kind,request));assert reply['ok']
+                                ack=control.verify_reply(request,reply['value'])
+                                assert not ask(index,(kind,request))['ok']
+                                return {'ok':True,'value':ack}
+                            supervisor_acks=[authenticated(i,'auth-supervisor','supervisor_target','f'*32) for i in range(3)]
+                        else:supervisor_acks=[ask(i,'supervisor-stop') for i in range(3)]
                         assert all(row['ok'] and row['value']['phase']=='QUIESCED' for row in supervisor_acks)
                         for row in supervisor_acks:
                             ack=row['value'];records=read_records(root/f"{ack['owner']['pid']}-supervisor.jsonl",expected_head=ack['journal_head'])
                             assert [r['phase'] for r in records]==['FENCING','DRAINING','QUIESCED']
-                    acks=[ask(i,'cooperative') for i in range(3)]
+                    if config.get('closure_integration',False):
+                        acks=[authenticated(i,'auth-service','service_target','e'*32) for i in range(3)]
+                        assert acks[0]['value']['completed_workers']==['collector-intake']
+                        reported=[]
+                        for p,row in zip(processes,acks):
+                            ownership=row['value'].pop('connection_ownership')
+                            assert ownership['owner']==manifest[p.pid] and ownership['generation']==1
+                            assert ownership['server_epoch']==broker.server_epoch
+                            reported.extend(ownership['connection_ids'])
+                            row['value'].pop('completed_workers')
+                        assert set(reported)==set(active()) and len(reported)==len(set(reported))
+                        results['authenticated_closure_executed']={'actual_collector_loop':True,
+                            'delivery_processed':True,'replay_denied':True,'native_server_client_join':True}
+                    else:acks=[ask(i,'cooperative') for i in range(3)]
                     assert all(row['ok'] and row['value']['phase']=='QUIESCED' for row in acks)
                     before=semantic_census(observer);boundary_journal=DurableJournal(root/'cooperative-boundary.jsonl')
                     try:
@@ -209,7 +295,13 @@ def test_real_native_multiprocess_broker_and_fail_closed_boundaries():
                             journals={p.pid:root/f'{p.pid}-cooperative.jsonl' for p in processes},
                             inspect_connections=active,census=lambda:semantic_census(observer),audit=boundary_journal,timeout=5)
                         assert boundary['phase']=='WRITERS_FENCED_DRAINED'
-                        assert boundary['acknowledged']==(10 if config.get('service_integration',False) else 9)
+                        if config.get('closure_integration',False):
+                            # Quiet actual intake may poll again while the three
+                            # authenticated controllers are joined. Every real
+                            # delivery intent is still strictly accounted for.
+                            assert 12 <= boundary['acknowledged'] <= 20
+                        else:
+                            assert boundary['acknowledged']==(10 if config.get('service_integration',False) else 9)
                     finally:boundary_journal.close()
                     assert not ask(0,'raw-after-fence')['ok']
                     assert not ask(0,'append')['ok']

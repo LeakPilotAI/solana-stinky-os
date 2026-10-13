@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from stinky_core.transport.service_admission import cooperative_job, create_task as registered_task, guard_legacy_cleanup
+from stinky_core.transport.service_admission import cooperative_job, admission, create_task as registered_task, guard_legacy_cleanup
+from stinky_core.transport.worker_closure import worker_loop, running_flag, active
 
 from stinky_core.transport.redis_accounting import redis_client
 
@@ -206,6 +207,7 @@ class CollectorService:
             await self._store.reset_pool()
             return 0
 
+    @worker_loop('collector-intake', running_flag)
     async def run_forever(self) -> None:
         await self.start()
         assert self._redis is not None
@@ -219,22 +221,23 @@ class CollectorService:
         try:
             while self._running:
                 try:
-                    rows = await self._read_group(consumer)
-                    if rows:
-                        for _stream, messages in rows:
-                            await self._handle_batch(messages)
-                    now = time.monotonic()
-                    if now - last_backfill >= 90.0:
-                        last_backfill = now
-                        try:
-                            n = await self._bounded_backfill(limit=12, phase="periodic")
-                            if n:
-                                logger.info("collector.periodic_backfill", tracks=n)
-                        except Exception as bexc:
-                            logger.warning(
-                                "collector.periodic_backfill_failed",
-                                error=str(bexc)[:200],
-                            )
+                    async with admission('collector'):
+                        rows = await self._read_group(consumer)
+                        if rows:
+                            for _stream, messages in rows:
+                                await self._handle_batch(messages)
+                        now = time.monotonic()
+                        if now - last_backfill >= 90.0:
+                            last_backfill = now
+                            try:
+                                n = await self._bounded_backfill(limit=12, phase="periodic")
+                                if n:
+                                    logger.info("collector.periodic_backfill", tracks=n)
+                            except Exception as bexc:
+                                logger.warning(
+                                    "collector.periodic_backfill_failed",
+                                    error=str(bexc)[:200],
+                                )
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
@@ -242,7 +245,8 @@ class CollectorService:
                     metrics.inc("errors")
                     await asyncio.sleep(2)
         finally:
-            await self.stop()
+            if not active():
+                await self.stop()
 
     @cooperative_job('collector')
     async def _handle_batch(self, messages: list[tuple[str, dict[str, str]]]) -> None:

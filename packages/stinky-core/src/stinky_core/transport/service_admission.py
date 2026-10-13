@@ -13,6 +13,7 @@ from stinky_core.transport.redis_accounting import AccountingError, FACTORY
 
 PARTICIPANT = None
 _INSTALL_LOCK = threading.RLock()
+DELIVERY = None
 ROLES = {'event-log':{'redis-streams'}, 'api':{'api-manual-queue'},
          'collector':{'redis-streams','collector-consumer'}, 'entities':{'entity-consumer'},
          'sentinel':{'redis-streams','sentinel-manual-consumer'}, 'discord':{'discord-alerts'},
@@ -49,7 +50,11 @@ async def admission(service):
         # cannot create a new lease or remove the outer task's registration.
         if participant.runtime.held or participant.phase not in ('RUNNING','FENCING','DRAINING'):
             raise AccountingError('Existing application job held')
-        yield
+        try:
+            yield
+        except BaseException:
+            participant.phase='HOLD';participant.runtime.held=participant.runtime.fenced=True
+            raise
     else:
         async with participant.job():
             yield
@@ -70,6 +75,54 @@ def guard_legacy_cleanup():
         PARTICIPANT.phase='HOLD'
         PARTICIPANT.runtime.held=PARTICIPANT.runtime.fenced=True
         raise AccountingError('Legacy task cancellation/client close is not cooperative shutdown')
+
+
+def install_delivery(authority, *, verify_controller, persist):
+    global DELIVERY
+    from stinky_core.transport.shutdown_delivery import ShutdownReceiver
+    p = PARTICIPANT
+    with _INSTALL_LOCK:
+        if p is None or DELIVERY is not None or p.phase != 'RUNNING':
+            raise AccountingError('Authenticated participant startup required for delivery')
+        p.verify()
+        async def process(request, timeout):
+            ack = await p.quiesce({'request_id':request['request_id'], 'manifest_sha256':p.manifest()}, timeout=timeout)
+            p.verify()
+            workers = getattr(p, 'worker_closure', None)
+            ack['completed_workers'] = (await workers.completed(asyncio.get_running_loop().time()+.001)
+                                        if workers is not None else None)
+            ids = [c.connection_id for c in p.runtime.clients
+                   if c.connection_id is not None and not c.retired]
+            ack['connection_ownership'] = {'owner': dict(p.owner),
+                'generation': p.runtime.generation, 'server_epoch': p.runtime.server_epoch,
+                'connection_ids': p.runtime.verify_connections(ids),
+                'scope': 'AUTHENTICATED_NATIVE_REPORT_REQUIRES_INDEPENDENT_SERVER_JOIN'}
+            return ack
+        def hold():
+            p.phase = 'HOLD'; p.runtime.held = p.runtime.fenced = True
+        DELIVERY = ShutdownReceiver(authority, manifest=delivery_manifest,
+            generation=lambda: p.runtime.generation, verify_controller=verify_controller,
+            process=process, persist=persist, hold=hold)
+
+
+def delivery_manifest():
+    import hashlib
+    import json
+    p = PARTICIPANT
+    if p is None:
+        raise AccountingError('Delivery manifest unavailable')
+    p.verify()
+    workers = getattr(p, 'worker_closure', None)
+    if workers is None:
+        return p.manifest()
+    return hashlib.sha256(json.dumps({'participant':p.manifest(), 'workers':sorted(workers.expected)},
+        sort_keys=True,separators=(',', ':')).encode()).hexdigest()
+
+
+async def deliver_shutdown(envelope):
+    if DELIVERY is None:
+        raise AccountingError('Shutdown delivery disabled')
+    return await DELIVERY.receive(envelope)
 
 
 def status():

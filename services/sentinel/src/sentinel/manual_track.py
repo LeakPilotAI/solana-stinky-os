@@ -11,6 +11,8 @@ On each item:
 from __future__ import annotations
 
 from stinky_core.transport.service_admission import cooperative_job
+from stinky_core.transport.worker_closure import worker_loop, stop_event, active
+from stinky_core.transport.redis_accounting import AccountingError
 
 from stinky_core.transport.redis_accounting import redis_client
 
@@ -68,7 +70,10 @@ class ManualTrackConsumer:
     def stop(self) -> None:
         self._stop.set()
 
+    @worker_loop('sentinel-manual', stop_event)
     async def run(self) -> None:
+        if active():
+            raise AccountingError('Protected BRPOP delivery remains unsupported; HOLD')
         url = settings.redis_url
         self._redis = redis_client(url, role="sentinel-manual-consumer", legacy_factory=aioredis.from_url, decode_responses=False)
         logger.info("manual_track.starting", queue=self._queue, redis=url)
