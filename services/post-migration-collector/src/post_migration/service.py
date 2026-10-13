@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from stinky_core.transport.service_admission import cooperative_job, create_task as registered_task, guard_legacy_cleanup
+
 from stinky_core.transport.redis_accounting import redis_client
 
 import asyncio
@@ -49,7 +51,7 @@ class CollectorService:
     ) -> None:
         try:
             healthy = await asyncio.wait_for(
-                self._store.health(),
+                registered_task(self._store.health(), suboperation=True),
                 timeout=timeout_sec,
             )
         except TimeoutError:
@@ -62,10 +64,11 @@ class CollectorService:
             logger.error("collector.startup_database_unavailable")
             raise ConnectionError("collector startup database health probe failed")
 
+    @cooperative_job('collector')
     async def start(self) -> None:
         try:
             await asyncio.wait_for(
-                self._start_bounded(),
+                registered_task(self._start_bounded(), suboperation=True),
                 timeout=COLLECTOR_STARTUP_TOTAL_TIMEOUT_SEC,
             )
         except TimeoutError:
@@ -89,14 +92,14 @@ class CollectorService:
         try:
             logger.info("collector.startup_phase", phase="ensure_schema")
             await asyncio.wait_for(
-                self._store.ensure_schema(),
+                registered_task(self._store.ensure_schema(), suboperation=True),
                 timeout=settings.runtime_database_timeout_sec,
             )
             logger.info("collector.startup_phase", phase="stale_track_recovery")
             stale = await asyncio.wait_for(
-                self._store.fail_stale_active_tracks(
+                registered_task(self._store.fail_stale_active_tracks(
                     max_duration_sec=settings.track_max_duration_sec
-                ),
+                ), suboperation=True),
                 timeout=settings.runtime_database_timeout_sec,
             )
         except TimeoutError:
@@ -117,7 +120,7 @@ class CollectorService:
             socket_timeout=10,
         )
         logger.info("collector.startup_phase", phase="consumer_group")
-        await asyncio.wait_for(self._ensure_consumer_group(), timeout=COLLECTOR_STARTUP_REDIS_TIMEOUT_SEC)
+        await asyncio.wait_for(registered_task(self._ensure_consumer_group(), suboperation=True), timeout=COLLECTOR_STARTUP_REDIS_TIMEOUT_SEC)
         self._running = True
         logger.info(
             "collector.started",
@@ -128,6 +131,7 @@ class CollectorService:
             trade_source="pump.v2",
         )
 
+    @cooperative_job('collector')
     async def _ensure_consumer_group(self) -> bool:
         """Ensure the collector group exists without hiding real Redis failures."""
         assert self._redis is not None
@@ -149,6 +153,7 @@ class CollectorService:
         )
         return True
 
+    @cooperative_job('collector')
     async def _read_group(self, consumer: str) -> list[Any]:
         """Read once, recreating a consumer group that disappeared at runtime."""
         assert self._redis is not None
@@ -173,6 +178,7 @@ class CollectorService:
             return []
 
     async def stop(self) -> None:
+        guard_legacy_cleanup()
         self._running = False
         for t in list(self._tasks):
             t.cancel()
@@ -187,7 +193,7 @@ class CollectorService:
         """Keep database recovery work from blocking live Redis intake."""
         try:
             return await asyncio.wait_for(
-                self.backfill_from_events(limit=limit),
+                registered_task(self.backfill_from_events(limit=limit), suboperation=True),
                 timeout=settings.runtime_database_timeout_sec,
             )
         except TimeoutError:
@@ -238,6 +244,7 @@ class CollectorService:
         finally:
             await self.stop()
 
+    @cooperative_job('collector')
     async def _handle_batch(self, messages: list[tuple[str, dict[str, str]]]) -> None:
         """Batch only classified no-op events, preserving relevant event ordering.
 
@@ -262,6 +269,7 @@ class CollectorService:
             # batch must not strand a delivered migration behind ignored records.
             await self._redis.xack(settings.event_stream,settings.collector_consumer_group,*ignored_ids)
 
+    @cooperative_job('collector')
     async def _handle_message(self, msg_id: str, fields: dict[str, str]) -> None:
         assert self._redis is not None
         try:
@@ -329,6 +337,7 @@ class CollectorService:
             return data
         return None
 
+    @cooperative_job('collector')
     async def track_mint(
         self,
         mint: str,
@@ -387,7 +396,7 @@ class CollectorService:
         # Reserve before yielding: a batch can enqueue many tracks in one turn.
         self._active_tracks.add(mint)
         try:
-            task = asyncio.create_task(pending, name=f"track-{mint[:8]}")
+            task = registered_task(pending, name=f"track-{mint[:8]}")
         except BaseException:
             pending.close()
             self._active_tracks.discard(mint)
@@ -403,6 +412,7 @@ class CollectorService:
         logger.info("collector.track_spawned", mint=mint, pool=pool)
         return True
 
+    @cooperative_job('collector')
     async def _on_migration(
         self, event: dict[str, Any], payload: dict[str, Any]
     ) -> None:
@@ -430,6 +440,7 @@ class CollectorService:
             payload=payload,
         )
 
+    @cooperative_job('collector')
     async def backfill_from_events(self, *, limit: int = 20) -> int:
         """Spawn tracks for recent token.migrated rows that have zero buyers."""
         # Rows for already-running in-memory tracks consume the durable query

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from stinky_core.transport.service_admission import cooperative_job
+
 from stinky_core.transport.redis_accounting import redis_client
 
 import json
@@ -24,6 +26,7 @@ class TrackRequest(BaseModel):
     note: str | None = Field(default="manual", max_length=120)
 
 
+@cooperative_job('api')
 async def enqueue_manual_track(body: TrackRequest) -> dict[str, Any]:
     mint = body.mint.strip()
     if not mint.lower().endswith("pump"):

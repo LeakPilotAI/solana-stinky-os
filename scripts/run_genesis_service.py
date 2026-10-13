@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -11,6 +12,7 @@ import sys
 import threading
 import time
 import urllib.request
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -50,6 +52,38 @@ WATCH_CONTAINERS = (
     "stinky-redis",
     "stinky-minio",
 )
+
+COOPERATIVE_SUPERVISOR = None  # Explicit trusted startup only; no environment activation.
+COOPERATIVE_INSTALL_LOCK = threading.RLock()
+
+
+def install_cooperative_supervisor(gate):
+    global COOPERATIVE_SUPERVISOR
+    from scripts.genesis_supervisor_admission import SupervisorAdmission
+    with COOPERATIVE_INSTALL_LOCK:
+        if (COOPERATIVE_SUPERVISOR is not None or not isinstance(gate,SupervisorAdmission) or
+            gate.owner['pid']!=os.getpid() or
+            gate.owner['repository_sha256']!=hashlib.sha256(str(_SCRIPTS.parent).encode()).hexdigest()):
+            raise RuntimeError('Cooperative supervisor requires exact native startup owner')
+        gate.verify();COOPERATIVE_SUPERVISOR=gate
+
+
+def supervisor_job(command):
+    return COOPERATIVE_SUPERVISOR.job(command) if COOPERATIVE_SUPERVISOR is not None else nullcontext()
+
+
+def run_admitted_job(command, operation):
+    with supervisor_job(command):return operation()
+
+
+def cooperative_status():
+    gate=COOPERATIVE_SUPERVISOR
+    if gate is None:return {'phase':'DISABLED','jobs':None,'identity_verified':None,'scope':'NO_INSTALLED_COOPERATIVE_SUPERVISOR'}
+    with gate.changed:
+        try:gate.verify();verified=True
+        except Exception:gate.phase='HOLD';verified=False
+        return {'phase':gate.phase,'jobs':len(gate.jobs) if verified else None,
+                'identity_verified':verified,'scope':'JOB_TICKETS_ONLY_NOT_PROCESS_EXIT'}
 
 
 def stopped_watch_containers(raw: str) -> list[str]:
@@ -194,6 +228,8 @@ def main() -> int:
     parser.add_argument("--protected-redis-grant", default=None)
     args = parser.parse_args()
     name = args.name
+    if COOPERATIVE_SUPERVISOR is not None and COOPERATIVE_SUPERVISOR.owner['service']!=name:
+        raise RuntimeError('Selected service contradicts cooperative supervisor owner')
 
     restore_search_path()
     root = Path(__file__).resolve().parent.parent
@@ -283,6 +319,8 @@ def main() -> int:
         """Terminate only the child process tree launched by this Genesis supervisor."""
         if proc.poll() is not None:
             return
+        if COOPERATIVE_SUPERVISOR is not None and COOPERATIVE_SUPERVISOR.phase!='RUNNING':
+            raise RuntimeError('Cooperative child state unresolved; no watchdog termination')
         append_log("[%s] %s recycling child pid=%s reason=%s" % (utc_stamp(), name, proc.pid, reason))
         if os.name == "nt":
             # First try a non-forceful tree termination. If Windows leaves the wedged
@@ -325,7 +363,7 @@ def main() -> int:
         except subprocess.TimeoutExpired:
             append_log("[%s] %s child pid=%s resisted termination" % (utc_stamp(), name, proc.pid))
 
-    def run(
+    def run_unfenced(
         cmd: list[str],
         cwd: Path | None = None,
         health_url: str | None = None,
@@ -414,6 +452,9 @@ def main() -> int:
         code = int(proc.wait())
         reader.join(timeout=3)
         return code
+
+    def run(cmd, cwd=None, health_url=None):
+        return run_admitted_job(cmd,lambda:run_unfenced(cmd,cwd,health_url))
 
     def core_url(svc_name: str) -> str | None:
         for n, _port, url in CORE_HEALTH:
@@ -557,7 +598,7 @@ def main() -> int:
         except (subprocess.TimeoutExpired, OSError):
             return None
 
-    def watchdog_tick() -> None:
+    def watchdog_unfenced() -> None:
         """Exact-owned recovery only, serialized with Start/Stop. Never ATLAS."""
         docker = find_docker_bin()
         if not docker:
@@ -566,6 +607,9 @@ def main() -> int:
             recover_watch_dependencies(root,docker,hidden_run)
         except (RuntimeError,OSError,ValueError,TypeError,KeyError):
             append_log('[%s] dependency watchdog blocked: ownership, lock or engine unverified; no destructive fallback' % utc_stamp())
+
+    def watchdog_tick():
+        return run_admitted_job(['dependency-watchdog'],watchdog_unfenced)
 
     # Ownership must be provable immediately, before any unrelated core HTTP
     # probes can consume the paper starter's bounded proof window.

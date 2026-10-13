@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from stinky_core.transport.service_admission import cooperative_job, create_task as registered_task, guard_legacy_cleanup
+
 from stinky_core.transport.redis_accounting import redis_client
 
 import asyncio
@@ -52,6 +54,7 @@ class EntityService:
         self._phase10_captured_entities: set[tuple[str, str, str]] = set()
         self._batch_task: asyncio.Task[None] | None = None
 
+    @cooperative_job('entities')
     async def start(self) -> None:
         startup_steps = (
             ("entity_store_schema", self._store.ensure_schema),
@@ -63,7 +66,7 @@ class EntityService:
         )
         for step_name, step in startup_steps:
             try:
-                await asyncio.wait_for(step(), timeout=ENTITY_STARTUP_STEP_TIMEOUT_SEC)
+                await asyncio.wait_for(registered_task(step(), suboperation=True), timeout=ENTITY_STARTUP_STEP_TIMEOUT_SEC)
             except asyncio.TimeoutError:
                 logger.error("entity.startup_step_timeout", step=step_name, timeout_sec=ENTITY_STARTUP_STEP_TIMEOUT_SEC)
                 raise
@@ -93,6 +96,7 @@ class EntityService:
         )
         self._schedule_batch()
 
+    @cooperative_job('entities')
     async def _run_batch_guarded(self) -> None:
         try:
             await self._resolver.run_batch()
@@ -101,9 +105,10 @@ class EntityService:
 
     def _schedule_batch(self) -> None:
         if self._batch_task is None or self._batch_task.done():
-            self._batch_task = asyncio.create_task(self._run_batch_guarded())
+            self._batch_task = registered_task(self._run_batch_guarded())
 
     async def stop(self) -> None:
+        guard_legacy_cleanup()
         self._running = False
         if self._batch_task is not None and not self._batch_task.done():
             self._batch_task.cancel()
@@ -174,6 +179,7 @@ class EntityService:
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
 
+    @cooperative_job('entities')
     async def _recover_pending(self, consumer: str, *, max_batches: int = 1) -> None:
         """Recover stale PEL entries without starving fresh stream intake."""
         assert self._redis is not None
@@ -213,9 +219,10 @@ class EntityService:
                 return
             start_id = next_id
 
+    @cooperative_job('entities')
     async def _handle_bounded(self, msg_id: str, fields: dict[str, str]) -> None:
         try:
-            await asyncio.wait_for(self._handle(msg_id, fields), timeout=ENTITY_EVENT_HANDLE_TIMEOUT_SEC)
+            await asyncio.wait_for(registered_task(self._handle(msg_id, fields), suboperation=True), timeout=ENTITY_EVENT_HANDLE_TIMEOUT_SEC)
         except asyncio.TimeoutError:
             logger.warning(
                 "entity.event_handle_timeout",
@@ -345,10 +352,11 @@ class EntityService:
         """Enrich buyer funding without blocking Redis stream intake."""
         if not wallet or wallet in self._funding_scanned_wallets or wallet in self._funding_scan_tasks:
             return
-        task = asyncio.create_task(self._observe_wallet_funding_bounded(wallet))
+        task = registered_task(self._observe_wallet_funding_bounded(wallet))
         self._funding_scan_tasks[wallet] = task
         task.add_done_callback(lambda _task, key=wallet: self._funding_scan_tasks.pop(key, None))
 
+    @cooperative_job('entities')
     async def _observe_wallet_funding_bounded(self, wallet: str) -> None:
         async with self._funding_scan_semaphore:
             await self._observe_wallet_funding(wallet)
@@ -396,6 +404,7 @@ class EntityService:
         except Exception as exc:
             logger.warning("entity.wallet_funding_scan_failed", wallet=wallet, error=str(exc)[:200])
 
+    @cooperative_job('entities')
     async def _handle(self, msg_id: str, fields: dict[str, str]) -> None:
         assert self._redis is not None
         raw = fields.get("data") or fields.get("payload") or ""

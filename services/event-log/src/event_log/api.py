@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from stinky_core.transport.service_admission import create_task as registered_task
+
 import asyncio
 from contextlib import asynccontextmanager
 from typing import Annotated
@@ -75,7 +77,7 @@ async def lifespan(app: FastAPI):
         if last_err is not None:
             logger.error("event_log.redis_connect_gave_up", error=str(last_err)[:200])
 
-    asyncio.create_task(_connect())
+    registered_task(_connect())
     yield
     await transport.close()
     logger.info("event_log.stopped")

@@ -123,7 +123,13 @@ class Runtime:
     def check(self,client,*,read_only=False):
         if getattr(self,'shutdown_latched',False) and not any(client is known for known in self.clients):raise AccountingError('Shutdown forbids new client registration')
         if identity(self.verify_identity())!=self.owner:raise AccountingError('Native PID/creation/ownership changed')
-        if (self.fenced and not read_only) or self.held or client.route_generation!=self.generation:
+        finishing=False
+        participant=getattr(self,'shutdown_participant',None)
+        if getattr(self,'shutdown_latched',False) and participant is not None:
+            try:finishing=(asyncio.current_task() in participant.jobs and
+                           participant.phase in ('FENCING','DRAINING'))
+            except RuntimeError:pass
+        if (self.fenced and not read_only and not finishing) or self.held or client.route_generation!=self.generation:
             raise AccountingError('Writer or stale connection generation fenced')
         if client.role not in self.roles:raise AccountingError('Unregistered writer role')
 

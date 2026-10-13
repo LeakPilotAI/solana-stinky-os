@@ -10,6 +10,8 @@ Redis/HTTP failure must not drop chain events.
 
 from __future__ import annotations
 
+from stinky_core.transport.service_admission import cooperative_job, create_task as registered_task, guard_legacy_cleanup
+
 import asyncio
 from datetime import datetime, timezone
 
@@ -64,9 +66,10 @@ class LaunchPublisher:
             self._connected = False
 
         self._stop.clear()
-        self._relay_task = asyncio.create_task(self._relay_loop())
+        self._relay_task = registered_task(self._relay_loop())
 
     async def close(self) -> None:
+        guard_legacy_cleanup()
         self._stop.set()
         if self._relay_task:
             self._relay_task.cancel()
@@ -79,6 +82,7 @@ class LaunchPublisher:
         await self._durable.close()
         await self._http.aclose()
 
+    @cooperative_job('sentinel')
     async def _publish_event(self, event: Event, *, kind: str, mint: str) -> bool:
         # 1) Durable first
         try:
@@ -150,6 +154,7 @@ class LaunchPublisher:
 
         return True
 
+    @cooperative_job('sentinel')
     async def publish(self, launch: DetectedLaunch) -> bool:
         event = Event(
             event_type=EventType.TOKEN_LAUNCH,
@@ -161,6 +166,7 @@ class LaunchPublisher:
         )
         return await self._publish_event(event, kind="launch", mint=launch.mint)
 
+    @cooperative_job('sentinel')
     async def publish_migration(self, migration: DetectedMigration) -> bool:
         event = Event(
             event_type=EventType.TOKEN_MIGRATED,
@@ -174,6 +180,7 @@ class LaunchPublisher:
             event, kind="migration", mint=migration.mint
         )
 
+    @cooperative_job('sentinel')
     async def publish_raw_event(self, event: Event, *, kind: str) -> bool:
         mint = str(event.payload.get("mint") or "")
         return await self._publish_event(event, kind=kind, mint=mint)

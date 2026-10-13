@@ -10,6 +10,8 @@ On each item:
 
 from __future__ import annotations
 
+from stinky_core.transport.service_admission import cooperative_job
+
 from stinky_core.transport.redis_accounting import redis_client
 
 import asyncio
@@ -100,6 +102,7 @@ class ManualTrackConsumer:
                 await self._redis.aclose()
             logger.info("manual_track.stopped")
 
+    @cooperative_job('sentinel')
     async def _handle(self, mint: str, data: dict[str, Any]) -> None:
         mint_l = mint.lower()
         if not mint_l.endswith("pump"):

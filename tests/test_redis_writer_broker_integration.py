@@ -37,8 +37,6 @@ def actor(channel):
     runtime=Runtime(proxy,verify,endpoint='isolated67',server_epoch=epoch,roles=[role],credentials=proxy)
     if len(incoming)>=8:runtime.generation=incoming[7]
     group_name=incoming[8] if len(incoming)>=9 else 'group'
-    factory=ClientFactory();factory.configure(runtime)
-    client=factory.from_url(f'redis://127.0.0.1:{port}/0',role=role)
     participant=None;phase_journal=None
     if len(incoming)>=10 and incoming[9] is not None:
         from stinky_core.transport.cooperative_shutdown import CooperativeParticipant
@@ -47,6 +45,21 @@ def actor(channel):
         admission={'accepting':True}
         def stop_jobs():admission['accepting']=False;return True
         participant=CooperativeParticipant(runtime,persist=persist_phase,stop_admission=stop_jobs)
+    service_mode=len(incoming)>=11 and incoming[10] is True and participant is not None
+    if service_mode:
+        import stinky_core.transport.redis_accounting as accounting
+        from stinky_core.transport import service_admission
+        from scripts.genesis_supervisor_admission import SupervisorAdmission
+        from scripts import run_genesis_service as service_runner
+        supervisor_journal=DurableJournal(Path(incoming[9])/f'{os.getpid()}-supervisor.jsonl')
+        def persist_supervisor(row):supervisor_journal.persist(row);return supervisor_journal.previous
+        supervisor=SupervisorAdmission(owner,generation=runtime.generation,verify_native=verify,persist=persist_supervisor)
+        service_runner.install_cooperative_supervisor(supervisor)
+        factory=accounting.FACTORY
+    else:factory=ClientFactory()
+    factory.configure(runtime)
+    if service_mode:service_admission.install(participant,factory=factory)
+    client=factory.from_url(f'redis://127.0.0.1:{port}/0',role=role)
     async def run():
         try:
             while True:
@@ -54,35 +67,52 @@ def actor(channel):
                 if cmd=='finish':break
                 if cmd=='crash':os._exit(71)
                 try:
-                    async with (participant.job() if participant is not None and cmd not in ('cooperative','raw-after-fence') else nullcontext()):
-                        if cmd=='cooperative':
-                            if participant is None:raise RuntimeError('No cooperative fixture grant')
-                            value=await participant.quiesce({'request_id':'e'*32,'manifest_sha256':participant.manifest()},timeout=5)
-                            assert not admission['accepting']
-                        elif cmd=='raw-after-fence':value=await Redis.execute_command(client,'XADD','proof','*','data','forbidden-after-boundary')
-                        elif cmd=='bind':value=await client.ping()
-                        elif cmd=='append':value=await client.xadd('proof',{'data':b'\x00\xff'})
-                        elif cmd=='push':value=await client.lpush('queue','duplicate')
-                        elif cmd=='group':
-                            await client.xgroup_create('proof',group_name,'0')
-                            await client.xreadgroup(group_name,'alpha',{'proof':'>'},count=1)
-                            value=await client.xautoclaim('proof',group_name,'beta',0,'0-0',count=1)
-                        elif cmd=='lost':
-                            proxy.begin_command(client.writer,'LPUSH',[b'queue',b'unknown-accepted'],client.connection_id,runtime.generation)
-                            value=await Redis.execute_command(client,'LPUSH','queue','unknown-accepted')
-                        elif cmd=='trim':value=await client.xadd('proof',{'data':'discard'},maxlen=1)
-                        elif cmd=='trim-safe':value=await client.xadd('proof',{'data':'retained'},maxlen=1,approximate=False)
-                        elif cmd=='pop':value=await client.brpop('queue',timeout=1)
-                        elif cmd=='disconnect':
-                            await client.connection.disconnect()
-                            value=await client.xadd('proof',{'data':'unreplayed'})
-                        elif cmd=='bad-auth':
-                            proxy.authkey=b'x'*32
-                            value=await client.xadd('proof',{'data':'unauthenticated'})
-                        elif cmd=='bad-server':
-                            proxy.server_identity=(server_identity[0],server_identity[1]+1)
-                            value=await client.xadd('proof',{'data':'spoofed-server'})
-                        else:raise AssertionError('Unknown isolated command')
+                    with (service_runner.supervisor_job([cmd]) if service_mode and cmd not in ('cooperative','raw-after-fence','supervisor-stop') else nullcontext()):
+                        async with (participant.job() if participant is not None and cmd not in ('cooperative','raw-after-fence','supervisor-stop','service-push','service-lost') else nullcontext()):
+                            if cmd=='cooperative':
+                                if participant is None:raise RuntimeError('No cooperative fixture grant')
+                                value=await participant.quiesce({'request_id':'e'*32,'manifest_sha256':participant.manifest()},timeout=5)
+                                assert not admission['accepting']
+                            elif cmd=='supervisor-stop':
+                                if not service_mode:raise RuntimeError('No supervisor fixture installation')
+                                value=supervisor.quiesce({'request_id':'f'*32,'manifest_sha256':supervisor.manifest()},timeout=5)
+                            elif cmd in ('service-push','service-lost'):
+                                from stinky_api import track
+                                track.MANUAL_QUEUE='queue';track.settings.redis_url=f'redis://127.0.0.1:{port}/0'
+                                body=track.TrackRequest(mint='a'*28+'pump',note='fixture-lost' if cmd=='service-lost' else 'fixture-service')
+                                original=Redis.execute_command
+                                async def lose_reply(self,*args,**kwargs):
+                                    reply=await original(self,*args,**kwargs)
+                                    if str(args[0]).upper()=='LPUSH':raise redis.ConnectionError('Isolated lost reply')
+                                    return reply
+                                try:
+                                    if cmd=='service-lost':Redis.execute_command=lose_reply
+                                    value=await track.enqueue_manual_track(body)
+                                finally:Redis.execute_command=original
+                            elif cmd=='raw-after-fence':value=await Redis.execute_command(client,'XADD','proof','*','data','forbidden-after-boundary')
+                            elif cmd=='bind':value=await client.ping()
+                            elif cmd=='append':value=await client.xadd('proof',{'data':b'\x00\xff'})
+                            elif cmd=='push':value=await client.lpush('queue','duplicate')
+                            elif cmd=='group':
+                                await client.xgroup_create('proof',group_name,'0')
+                                await client.xreadgroup(group_name,'alpha',{'proof':'>'},count=1)
+                                value=await client.xautoclaim('proof',group_name,'beta',0,'0-0',count=1)
+                            elif cmd=='lost':
+                                proxy.begin_command(client.writer,'LPUSH',[b'queue',b'unknown-accepted'],client.connection_id,runtime.generation)
+                                value=await Redis.execute_command(client,'LPUSH','queue','unknown-accepted')
+                            elif cmd=='trim':value=await client.xadd('proof',{'data':'discard'},maxlen=1)
+                            elif cmd=='trim-safe':value=await client.xadd('proof',{'data':'retained'},maxlen=1,approximate=False)
+                            elif cmd=='pop':value=await client.brpop('queue',timeout=1)
+                            elif cmd=='disconnect':
+                                await client.connection.disconnect()
+                                value=await client.xadd('proof',{'data':'unreplayed'})
+                            elif cmd=='bad-auth':
+                                proxy.authkey=b'x'*32
+                                value=await client.xadd('proof',{'data':'unauthenticated'})
+                            elif cmd=='bad-server':
+                                proxy.server_identity=(server_identity[0],server_identity[1]+1)
+                                value=await client.xadd('proof',{'data':'spoofed-server'})
+                            else:raise AssertionError('Unknown isolated command')
                     channel.send({'ok':True,'value':value})
                 except Exception:
                     channel.send({'ok':False})
@@ -90,6 +120,7 @@ def actor(channel):
             try:await client.aclose()
             except Exception:pass
             if phase_journal is not None:phase_journal.close()
+            if service_mode:supervisor_journal.close()
             channel.close()
     asyncio.run(run())
 
@@ -109,7 +140,9 @@ def test_real_native_multiprocess_broker_and_fail_closed_boundaries():
     lost_reply_baseline=observer.lrange('queue',0,4999).count(b'unknown-accepted')
     adapter=NativePause()
     results={}
-    for scenario in ('normal','lost','crash','trim','pop','foreign','disconnect','bad-auth','bad-server'):
+    scenarios=('normal','lost','crash','trim','pop','foreign','disconnect','bad-auth','bad-server')
+    if config.get('service_integration',False):scenarios+=('service-lost',)
+    for scenario in scenarios:
         context=multiprocessing.get_context('spawn');pairs=[];processes=[]
         address='\\\\.\\pipe\\genesis-c67-'+uuid.uuid4().hex;key=os.urandom(32)
         roles=['redis-streams','api-manual-queue','entity-consumer']
@@ -143,7 +176,7 @@ def test_real_native_multiprocess_broker_and_fail_closed_boundaries():
         thread=threading.Thread(target=serve,daemon=True);thread.start()
         server_identity=(os.getpid(),native_identity(adapter,os.getpid())[0])
         for p,ch,role in zip(processes,pairs,roles):
-            ch.send((manifest[p.pid],address,key,port,observer.info('server')['run_id'],role,server_identity,1,group_name,str(root) if config.get('cooperative',False) and scenario=='normal' else None))
+            ch.send((manifest[p.pid],address,key,port,observer.info('server')['run_id'],role,server_identity,1,group_name,str(root) if config.get('cooperative',False) and scenario in ('normal','service-lost') else None,config.get('service_integration',False)))
         def ask(index,cmd):
             pairs[index].send(cmd);assert pairs[index].poll(20)
             return pairs[index].recv()
@@ -154,9 +187,49 @@ def test_real_native_multiprocess_broker_and_fail_closed_boundaries():
             if scenario=='normal':assert ask(2,'group')['ok']
             active=lambda:[int(r['id']) for r in observer.client_list() if r.get('user') in authority.tickets]
             if scenario=='normal':
-                assert broker.quiesce(active())==7
-                broker.retention.verify(ledger,semantic_census(observer))
-                assert not ask(0,'append')['ok'] and broker.held
+                if config.get('cooperative',False):
+                    from scripts.genesis_cooperative_boundary import certify_participants
+                    from scripts.redis_production_adapters import read_records
+                    pairs[0].send('append');pairs[1].send('push')
+                    assert pairs[0].poll(20) and pairs[1].poll(20)
+                    assert pairs[0].recv()['ok'] and pairs[1].recv()['ok']
+                    if config.get('service_integration',False):
+                        assert ask(1,'service-push')['ok']
+                        supervisor_acks=[ask(i,'supervisor-stop') for i in range(3)]
+                        assert all(row['ok'] and row['value']['phase']=='QUIESCED' for row in supervisor_acks)
+                        for row in supervisor_acks:
+                            ack=row['value'];records=read_records(root/f"{ack['owner']['pid']}-supervisor.jsonl",expected_head=ack['journal_head'])
+                            assert [r['phase'] for r in records]==['FENCING','DRAINING','QUIESCED']
+                    acks=[ask(i,'cooperative') for i in range(3)]
+                    assert all(row['ok'] and row['value']['phase']=='QUIESCED' for row in acks)
+                    before=semantic_census(observer);boundary_journal=DurableJournal(root/'cooperative-boundary.jsonl')
+                    try:
+                        boundary=certify_participants(broker,request_id='e'*32,
+                            acknowledgements=[row['value'] for row in acks],
+                            journals={p.pid:root/f'{p.pid}-cooperative.jsonl' for p in processes},
+                            inspect_connections=active,census=lambda:semantic_census(observer),audit=boundary_journal,timeout=5)
+                        assert boundary['phase']=='WRITERS_FENCED_DRAINED'
+                        assert boundary['acknowledged']==(10 if config.get('service_integration',False) else 9)
+                    finally:boundary_journal.close()
+                    assert not ask(0,'raw-after-fence')['ok']
+                    assert not ask(0,'append')['ok']
+                    assert before['keys']==semantic_census(observer)['keys']
+                    assert broker.fenced and not broker.held
+                    results['cooperative_executed']={'participant_count':3,'verified_phase_heads':True,
+                        'post_boundary_raw_denied':True,'actual_api_path':config.get('service_integration',False),
+                        'supervisor_path':config.get('service_integration',False)}
+                else:
+                    assert broker.quiesce(active())==7
+                    broker.retention.verify(ledger,semantic_census(observer))
+                    assert not ask(0,'append')['ok'] and broker.held
+            elif scenario=='service-lost':
+                before=observer.llen('queue')
+                assert not ask(1,'service-lost')['ok']
+                assert observer.llen('queue')==before+1
+                assert json.loads(observer.lrange('queue',0,0)[0])['note']=='fixture-lost'
+                assert not ask(1,'cooperative')['ok']
+                with pytest.raises(RuntimeError):broker.quiesce(active())
+                assert broker.held and any(row['state']=='ISSUED' for row in ledger.commands.values())
             elif scenario=='lost':
                 assert ask(1,'lost')['ok']
                 with pytest.raises(RuntimeError,match='Unresolved'):broker.quiesce(active())
@@ -205,7 +278,8 @@ def test_real_native_multiprocess_broker_and_fail_closed_boundaries():
                 assert revocation=={'status':'HOLD','verified':True,'durable':False}
                 assert broker.held and broker.fenced
             else:assert revocation['durable'] is True
-            results[scenario]['revocation']=revocation
+            if scenario in results:results[scenario]['revocation']=revocation
+            else:(root/(scenario+'-cleanup.json')).write_text(json.dumps({'revocation':revocation,'status':'FAILED_SCENARIO_NO_SUCCESS_CLAIM'}))
             journal.close()
         if config['pins']['certification'] in ('checkpoint68','checkpoint69','checkpoint71','checkpoint73','checkpoint74'):
             from scripts.redis_broker_recovery import recover_held_boundary
@@ -226,7 +300,7 @@ def test_real_native_multiprocess_broker_and_fail_closed_boundaries():
                 assert recovered['held'] and recovered['fenced'] and recovered['next_generation']==2
                 assert recovered['ledger'].commands==ledger.commands
                 assert all(not row['active'] for row in recovered['ledger'].bindings.values())
-                if scenario=='lost':
+                if scenario in ('lost','service-lost'):
                     with pytest.raises(RuntimeError,match='Unresolved'):recovered['ledger'].settled()
                 else:assert recovered['ledger'].settled()==len(ledger.commands)
                 results[scenario]['held_restart_recovery']=True

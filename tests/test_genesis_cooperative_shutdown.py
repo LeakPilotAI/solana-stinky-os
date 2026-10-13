@@ -78,11 +78,14 @@ async def test_timeout_does_not_cancel_or_kill_inflight_job(tmp_path):
     task=asyncio.create_task(job())
     try:
         await entered.wait()
-        with pytest.raises(AccountingError,match='timed out'):await p.quiesce(request,timeout=.01)
+        # Leave enough time for real Windows audit fsyncs so this specifically
+        # exercises a stalled job, rather than timing out in the fencing phase.
+        with pytest.raises(AccountingError,match='timed out'):await p.quiesce(request,timeout=.25)
         assert not task.done() and not task.cancelled() and r.held
-        release.set();await task
+        release.set()
+        with pytest.raises(AccountingError,match='unresolved writer outcome'):await task
         assert p.phase=='HOLD'
-    finally:release.set();await task;j.close()
+    finally:release.set();await asyncio.gather(task,return_exceptions=True);j.close()
 
 
 @pytest.mark.asyncio

@@ -116,3 +116,79 @@ gates or production Redis. Full graceful application+three-dependency lifecycle 
 blocked until its separate snapshot/recovery/persistence/ownership/live-approval gates pass.
 Start/Stop shortcuts unchanged. Atlas, frozen V2 and five zero-authority controls preserved.
 No live trading, historical backfill, Redis cutover, AOF activation or eviction-policy change.
+
+## Checkpoint 77: inactive real admission integration
+
+This section supplements the historical Checkpoint 76 record. Overall integration
+remains AMBER; finite admission components and their isolated certification pass.
+Production shutdown orchestration and complete long-lived worker closure remain HOLD.
+
+### Correction to Checkpoint 76 native certification
+
+The committed native harness constructed participants but its normal scenario did
+not invoke their cooperative branch. Its successful run proved the legacy broker
+scenarios, not the claimed participant/controller closure. Component tests remain
+valid. Checkpoint 77 corrects the branch and requires explicit execution receipts,
+phase-journal readback, controller join, credential revocation, and raw post-boundary
+write denial. Historical continuity is preserved with this correction appended.
+
+### Integration and acknowledgment scope
+
+`service_admission` is disabled by default. Trusted clean startup may install an
+authenticated participant before any client is issued. No environment toggle,
+public shutdown endpoint, or hot patch of existing pools is provided. Participant
+identity, repository, role, server epoch and connection generation remain required.
+
+| Path | Implemented admission coverage | Remaining closure evidence |
+|---|---|---|
+| Event log | Ingest before validation/DB; shared publication and warm-up task | ASGI request delivery and process exit |
+| API | Actual manual enqueue before client creation/LPUSH | Full ASGI lifecycle and native client registration |
+| Collector | Startup, group/read, batch/message, track and recovery jobs; registered track tasks | Producer loop stop acknowledgment and complete client/socket inventory |
+| Entities | Startup/schema, batch, pending recovery, handling and funding tasks | Intake loop stop acknowledgment and complete client/socket inventory |
+| Sentinel | Publication/outbox relay, volume/depth tasks, manual handler | Source subscriptions, long-lived relay/BRPOP loop closure; BRPOP remains rejected by protected adapters |
+| Optional Discord | Handler and registered dispatcher task | Complete loop/client closure; absent in production |
+| Seven core supervisors | Actual child-run and dependency-watchdog admission; no respawn after fence | Authenticated controller delivery, child exit, and maintenance daemon termination |
+| Web / maintenance | Supervisor job tickets | Node/ASGI graceful exit and all maintenance/background children |
+
+Previously admitted finite jobs may finish. Only explicitly awaited service
+suboperations inherit the parent's lease; unrelated new root/background tasks
+are refused after fencing. Every child task is registered before scheduling.
+Drain waits for job completion events rather than requiring the hosting ASGI task
+to terminate. Only private waiters may be cancelled. An exception caught inside
+a service cannot turn a held Redis outcome into a successful job acknowledgment.
+Legacy cancellation/close paths refuse cooperative shutdown and HOLD instead of
+pretending cancellation proves settlement. Long-lived registered tasks that do
+not finish cause deadline/HOLD, never fabricated completion.
+
+Supervisor tickets have bounded admission and durable phase journals. Their scope
+is `JOB_TICKETS_ONLY_NOT_PROCESS_EXIT_OR_WRITER_BOUNDARY`. Trusted native identity
+verification is mandatory; stale identity, timeout, crash or audit failure HOLD.
+These tickets do not prove that a service process has exited or all writers stopped.
+
+### Isolated certification
+
+Behavior tests execute actual event ingest/shared publication, API enqueue,
+collector/entity handlers, sentinel publication, optional Discord and runner
+admission helpers. The corrected three-process native fixture executes actual API
+enqueue, concurrent managed writers, supervisor/participant phase acknowledgments,
+controller join and post-boundary credential denial. It verifies ten settled normal
+commands and an actual API accepted-but-lost reply: one queue item remains present
+and one unresolved intent remains held through recovery. Other native failures,
+encrypted archive readback and exact semantic AOF restart checks remain strict.
+Native XADD activity is fixture writer activity; it is not certification of the
+entire live sentinel/event-log service or seven OS service trees.
+
+### Ownership and activation blockers
+
+The earlier read-only sample verified 17 Windows TCP sockets against native Genesis
+process identities and observed 18 Redis clients including its inspection client.
+Docker translation prevents verified one-to-one server-client attribution. Counts
+must not be forced to match. Source maps and known Windows sockets do not register
+the current legacy production clients with the inactive broker.
+
+Complete service shutdown still needs authenticated request delivery, real producer
+stop hooks, worker phase acknowledgments, native Redis client ownership, and verified
+child/process exit. Missing evidence retains HOLD. No production activation,
+restart/pause, snapshot mutation, Redis configuration change or live shortcut test
+is authorized by this component certification. Full Start/Stop and continuous Redis
+durability remain unverified. Frozen V2 components and authority controls are unchanged.

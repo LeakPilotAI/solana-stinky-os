@@ -29,6 +29,10 @@ class CooperativeParticipant:
         self.generation = runtime.generation
         self.server_epoch = runtime.server_epoch
         self.jobs = set()
+        self.job_events = {}
+        if getattr(runtime,'shutdown_participant',None) is not None:
+            raise AccountingError('Runtime already has a cooperative participant')
+        runtime.shutdown_participant = self
         self.phase = 'RUNNING'
         self.request_id = None
         self.last_head = None
@@ -60,14 +64,19 @@ class CooperativeParticipant:
         if task is None or task in self.jobs:
             raise AccountingError('Duplicate or unavailable job identity')
         self.jobs.add(task)
+        self.job_events[task]=asyncio.Event()
         try:
             yield
+            self.verify()
+            if self.runtime.held:
+                raise AccountingError('Application job has an unresolved writer outcome')
         except BaseException:
             self.phase = 'HOLD'
             self.runtime.held = self.runtime.fenced = True
             raise
         finally:
             self.jobs.remove(task)
+            self.job_events.pop(task).set()
 
     async def quiesce(self, request, *, timeout=10):
         if (type(timeout) not in (int, float) or not math.isfinite(timeout) or
@@ -100,9 +109,19 @@ class CooperativeParticipant:
             if asyncio.current_task() in tasks:
                 raise AccountingError('Shutdown cannot drain its own active job')
             if tasks:
-                _, pending = await asyncio.wait(tasks, timeout=max(0, deadline - loop.time()))
-                if pending:
-                    raise AccountingError('Shutdown jobs timed out; no cancellation or force kill')
+                if not tasks <= self.job_events.keys():
+                    raise AccountingError('Unregistered job completion evidence')
+                waiters=[asyncio.create_task(self.job_events[task].wait()) for task in tasks]
+                try:
+                    _, pending = await asyncio.wait(waiters, timeout=max(0, deadline - loop.time()))
+                    if pending:
+                        raise AccountingError('Shutdown jobs timed out; no cancellation or force kill')
+                finally:
+                    # Only private completion waiters are cancelled. Application
+                    # jobs are never cancelled, killed or declared complete here.
+                    for waiter in waiters:
+                        if not waiter.done():waiter.cancel()
+                    await asyncio.gather(*waiters,return_exceptions=True)
             if self.jobs or self.phase == 'HOLD':
                 raise AccountingError('Application work unresolved')
             remaining = deadline - loop.time()

@@ -6,6 +6,8 @@ Never every migration. Never creates.
 
 from __future__ import annotations
 
+from stinky_core.transport.service_admission import cooperative_job, create_task as registered_task, guard_legacy_cleanup
+
 from stinky_core.transport.redis_accounting import redis_client
 
 import asyncio
@@ -57,9 +59,10 @@ class AlertDispatcher:
         except Exception:
             pass  # group exists
         self._running = True
-        asyncio.create_task(self._loop(), name="alert-dispatcher")
+        registered_task(self._loop(), name="alert-dispatcher")
 
     async def stop(self) -> None:
+        guard_legacy_cleanup()
         self._running = False
         if self._redis:
             await self._redis.aclose()
@@ -85,6 +88,7 @@ class AlertDispatcher:
                 logger.warning("alerter.loop_error", error=str(exc))
                 await asyncio.sleep(2)
 
+    @cooperative_job('discord')
     async def _handle(self, msg_id: str, fields: dict[str, str]) -> None:
         assert self._redis is not None
         try:

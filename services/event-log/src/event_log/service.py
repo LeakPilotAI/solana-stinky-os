@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from stinky_core.transport.service_admission import cooperative_job
+
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,6 +29,7 @@ class EventLogService:
         self._transport = transport
         self._validator = validator or EventValidator()
 
+    @cooperative_job('event-log')
     async def ingest(self, event: Event) -> tuple[bool, list[str]]:
         """
         Validate and append an event.

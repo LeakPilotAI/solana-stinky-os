@@ -5,6 +5,8 @@ Business logic must never import this module directly.
 
 from __future__ import annotations
 
+from stinky_core.transport.service_admission import cooperative_job, admission, create_task as registered_task, guard_legacy_cleanup
+
 from stinky_core.transport.redis_accounting import redis_client, AccountingError
 
 import asyncio
@@ -49,10 +51,11 @@ class RedisStreamsTransport(EventTransport):
         if self._redis is not None:
             return
         self._redis = self._new_client()
-        await asyncio.wait_for(self._redis.ping(), timeout=3)
+        await asyncio.wait_for(registered_task(self._redis.ping(), suboperation=True), timeout=3)
         logger.info("redis_streams.connected", url=self._redis_url)
 
     async def close(self) -> None:
+        guard_legacy_cleanup()
         await self._reset()
         logger.info("redis_streams.closed")
 
@@ -71,6 +74,7 @@ class RedisStreamsTransport(EventTransport):
             raise RuntimeError("Transport not connected. Call connect() first.")
         return self._redis
 
+    @cooperative_job('redis-streams')
     async def publish(self, event: Event, *, stream: str | None = None) -> str:
         envelope = EventEnvelope(event=event)
         target = stream or self._default_stream
@@ -80,12 +84,12 @@ class RedisStreamsTransport(EventTransport):
                 if self._redis is None:
                     await self.connect()
                 message_id: bytes = await asyncio.wait_for(
-                    self._client().xadd(
+                    registered_task(self._client().xadd(
                         target,
                         {"data": envelope.to_bytes()},
                         maxlen=self._maxlen,
                         approximate=True,
-                    ),
+                    ), suboperation=True),
                     timeout=4,
                 )
                 mid = message_id.decode() if isinstance(message_id, bytes) else str(message_id)
@@ -113,6 +117,7 @@ class RedisStreamsTransport(EventTransport):
         assert last_exc is not None
         raise last_exc
 
+    @cooperative_job('redis-streams')
     async def publish_batch(
         self, events: Sequence[Event], *, stream: str | None = None
     ) -> list[str]:
@@ -134,18 +139,22 @@ class RedisStreamsTransport(EventTransport):
         client = self._client()
         # Ensure group exists (idempotent)
         try:
-            await client.xgroup_create(stream, group, id="0", mkstream=True)
+            async with admission('redis-streams'):
+                await client.xgroup_create(stream, group, id="0", mkstream=True)
+        except AccountingError:
+            raise
         except Exception:  # group already exists
             pass
 
         while True:
-            results: list[Any] = await client.xreadgroup(
-                groupname=group,
-                consumername=consumer_name,
-                streams={stream: ">"},
-                count=count,
-                block=block_ms,
-            )
+            async with admission('redis-streams'):
+                results: list[Any] = await client.xreadgroup(
+                    groupname=group,
+                    consumername=consumer_name,
+                    streams={stream: ">"},
+                    count=count,
+                    block=block_ms,
+                )
             if not results:
                 continue
             for _stream_name, messages in results:
@@ -172,9 +181,11 @@ class RedisStreamsTransport(EventTransport):
                         # Dead-letter path would go here; for now we ack to avoid poison
                         await self.ack(stream, group, mid)
 
+    @cooperative_job('redis-streams')
     async def ack(self, stream: str, group: str, message_id: str) -> None:
         await self._client().xack(stream, group, message_id)
 
+    @cooperative_job('redis-streams')
     async def create_consumer_group(
         self, stream: str, group: str, *, start_id: str = "0"
     ) -> None:
@@ -199,6 +210,6 @@ class RedisStreamsTransport(EventTransport):
             return bool(pong)
 
         try:
-            return bool(await asyncio.wait_for(_ping(), timeout=0.4))
+            return bool(await asyncio.wait_for(registered_task(_ping(), suboperation=True), timeout=0.4))
         except Exception:
             return False

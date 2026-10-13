@@ -8,6 +8,8 @@ FeeResolver is optional evidence after Gate 1 â€” unknown fees do not rejec
 
 from __future__ import annotations
 
+from stinky_core.transport.service_admission import create_task as registered_task, guard_legacy_cleanup
+
 import asyncio
 import time
 from dataclasses import dataclass
@@ -215,6 +217,7 @@ class DexScreenerClient:
         self._cooldown_until = 0.0
 
     async def close(self) -> None:
+        guard_legacy_cleanup()
         await self._http.aclose()
 
     async def fetch_volume(self, mint: str) -> VolumeSnapshot | None:
@@ -738,7 +741,7 @@ class VolumeMonitor:
             )
             self._active.add(mint)
             self._track_background_task(
-                asyncio.create_task(
+                registered_task(
                     self._run_watch(mig, started=t0, investigated=True, resumed=True),
                     name=f"vol-resume-{mint[:8]}",
                 )
@@ -764,6 +767,7 @@ class VolumeMonitor:
         return task
 
     async def close(self) -> None:
+        guard_legacy_cleanup()
         tasks = list(getattr(self, "_background_tasks", set()))
         for task in tasks:
             if not task.done():
@@ -914,7 +918,7 @@ class VolumeMonitor:
             return
         self._active.add(migration.mint)
         self._track_background_task(
-            asyncio.create_task(self._run_watch(migration), name=f"vol-{migration.mint[:8]}")
+            registered_task(self._run_watch(migration), name=f"vol-{migration.mint[:8]}")
         )
 
     async def _run_watch(
@@ -1446,7 +1450,7 @@ class VolumeMonitor:
         # Read-only executable-depth evidence is research-only. Do not let its
         # provider latency delay the canonical market/fee observation path.
         depth_task = self._track_background_task(
-            asyncio.create_task(self._sample_depth_observation(mint, pair_address=snap.pair_address, dex_id=snap.dex_id))
+            registered_task(self._sample_depth_observation(mint, pair_address=snap.pair_address, dex_id=snap.dex_id))
         )
         depth_task.add_done_callback(self._depth_sample_done)
         # Preserve the already-fetched canonical market snapshot before any
