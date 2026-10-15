@@ -78,6 +78,30 @@ authority or secrets. No test can target production via that fixture guard.
 
 ## Remaining gates
 
+### Real runner and pool integration (inactive)
+
+The real runner now has a default-None `LAUNCH_OBSERVATION` seam. A trusted private
+bootstrap can install `SupervisorObservation` before `main`; otherwise behavior
+stays unchanged. The observer checks native identity before heartbeat publication
+and requires an explicit child/wrapper observation callback after spawn. Active
+observational heartbeats contain only public generation metadata, never raw launch
+tokens. No desktop wrapper installs this seam yet. It does not authorize startup
+or claim that a child was fenced before executing.
+
+The central `redis_client` helper has a default-None `CLIENT_OBSERVATIONS` seam.
+It rejects mixed accounting/observation bootstraps and hot-patching after a legacy
+client was issued. Explicit `PoolObservations` sessions authenticate each physical
+sync/async connection and re-probe identity on reuse. Fresh reconnects require a
+new authenticated session; they cannot silently reuse a prior binding. URL options
+cannot override endpoint, logical DB, retries, health probes, bounds or timeouts.
+
+Observed mode is not installed in any live service. Full concurrent startup,
+automatic reconnect reauthorization, child capability transfer, and real service
+workloads remain HOLD. Global unknown-client checks intentionally prevent accepting
+partial attribution; they are not relaxed to admit simultaneous pending clients.
+The synchronous bridge is explicit; it does not intercept arbitrary direct Redis
+constructors or replace ACL fencing/command accounting.
+
 1. Restore access to the Docker engine only with appropriate authorization; inspect
    existing dependency identities, volumes and protected recovery evidence.
 2. Complete native descendant, launch-token and Redis socket attribution, including

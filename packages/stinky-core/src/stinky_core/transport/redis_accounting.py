@@ -313,8 +313,16 @@ class ClientFactory:
 
 
 FACTORY=ClientFactory()  # No production code configures it in this checkpoint.
+CLIENT_OBSERVATIONS = None  # Trusted isolated bootstrap only; no env activation.
 
 def redis_client(url,*,role,legacy_factory=Redis.from_url,**kwargs):
+    if CLIENT_OBSERVATIONS is not None:
+        from scripts.genesis_redis_pool_observation import PoolObservations
+        if (not isinstance(CLIENT_OBSERVATIONS, PoolObservations) or not CLIENT_OBSERVATIONS.asynchronous or
+                FACTORY.runtime is not None or FACTORY.issued or
+                os.environ.get('GENESIS_PROTECTED_REDIS_GRANT') is not None):
+            raise AccountingError('Observation/accounting bootstrap conflict; HOLD')
+        return CLIENT_OBSERVATIONS.from_url(url,role=role,**kwargs)
     grant=os.environ.get('GENESIS_PROTECTED_REDIS_GRANT')
     if grant is not None and not grant:
         raise AccountingError('Explicit protected startup grant empty; no legacy fallback')

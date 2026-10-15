@@ -17,6 +17,7 @@ import threading
 import time
 
 from scripts.genesis_background_ownership import SERVICES
+OBSERVED_SERVICES = SERVICES + ('discord',)  # Optional observation, never startup selection.
 
 FIELDS = ('pid', 'parent_pid', 'created', 'executable', 'command_sha256')
 
@@ -87,7 +88,7 @@ class LaunchObservations:
 
     def prepare(self, service, expected_owner):
         with self._lock:
-            if service not in SERVICES or len(self._records) >= 7 and service not in self._records:
+            if service not in OBSERVED_SERVICES or len(self._records) >= len(OBSERVED_SERVICES) and service not in self._records:
                 raise ValueError('Service scope unavailable')
             if service in self._records and self._records[service]['phase'] != 'HOLD':
                 raise ValueError('Duplicate launch claim; explicit retirement required')

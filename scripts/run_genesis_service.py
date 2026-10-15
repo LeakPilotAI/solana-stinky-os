@@ -48,6 +48,8 @@ GENESIS_CONTAINERS = (
     "stinky-minio-init",
 )
 
+LAUNCH_OBSERVATION = None  # Trusted in-process installation only; never env activated.
+
 WATCH_CONTAINERS = (
     "stinky-postgres",
     "stinky-redis",
@@ -296,6 +298,11 @@ def main() -> int:
     parser.add_argument("--protected-redis-grant", default=None)
     args = parser.parse_args()
     name = args.name
+    if LAUNCH_OBSERVATION is not None:
+        from scripts.genesis_supervisor_observation import SupervisorObservation
+        if not isinstance(LAUNCH_OBSERVATION, SupervisorObservation) or COOPERATIVE_SUPERVISOR is not None:
+            raise RuntimeError('Explicit native supervisor observer required; HOLD')
+        LAUNCH_OBSERVATION.enter(name, os.getpid())
     if COOPERATIVE_SUPERVISOR is not None and COOPERATIVE_SUPERVISOR.owner['service']!=name:
         raise RuntimeError('Selected service contradicts cooperative supervisor owner')
 
@@ -371,6 +378,8 @@ def main() -> int:
             "supervisor_launch_token": os.environ.get("GENESIS_SUPERVISOR_LAUNCH_TOKEN"),
             "supervisor_phase": phase or "RUNNING",
         }
+        if LAUNCH_OBSERVATION is not None:
+            payload = LAUNCH_OBSERVATION.heartbeat(payload)
         try:
             write_state(log_dir / ("runtime-state-" + name + ".json"), payload)
         except OSError:
@@ -457,6 +466,8 @@ def main() -> int:
             creationflags=flags,
             startupinfo=startupinfo,
         )
+        if LAUNCH_OBSERVATION is not None:
+            LAUNCH_OBSERVATION.child_started(proc, cmd)
         if COOPERATIVE_SUPERVISOR is not None:
             if COOPERATIVE_CHILDREN is None:
                 raise RuntimeError('Cooperative supervisor child ownership unavailable; HOLD')

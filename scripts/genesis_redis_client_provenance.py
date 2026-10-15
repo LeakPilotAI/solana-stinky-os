@@ -237,3 +237,22 @@ class RedisClientObservations:
             return {'status': 'HOLD' if holds else 'ISOLATED_OBSERVATIONS_MATCH',
                     'holds': sorted(set(holds)), 'lifecycle_authorized': False,
                     'write_authorized': False, 'scope': 'OBSERVATION_NOT_WRITE_FENCING'}
+
+    def review(self, service, slot, proof):
+        """Fresh read-only review of an existing binding, never reconnect authority."""
+        with self._lock:
+            record = self._records.get((service, slot))
+            launch = self._launches.checked(service)
+            body = authenticated(launch['key'], proof)
+            if (record is None or record['phase'] != 'ATTESTED' or
+                    set(body) != {'kind','challenge','run_id','client_id','name','socket','reuse_nonce'} or
+                    not isinstance(body['reuse_nonce'], str) or not re.fullmatch('[0-9a-f]{64}', body['reuse_nonce']) or
+                    body['kind'] != 'genesis-redis-client-observation-v1' or
+                    encoded(body['challenge']) != encoded(record['challenge']) or
+                    encoded(body['challenge']['launch']) != encoded(launch['challenge']) or
+                    type(body['client_id']) is not int or body['client_id'] != record['client_id'] or
+                    body['run_id'] != self._epoch or body['name'] != record['challenge']['expected_name'] or
+                    encoded(body['socket']) != encoded(record['socket']) or
+                    self._native_socket(launch['challenge']['owner'], body['socket']) is not True):
+                raise ValueError('Reused binding unverified; HOLD')
+            return self.audit()
