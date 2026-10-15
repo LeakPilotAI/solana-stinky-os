@@ -56,10 +56,12 @@ class PrivateMaintenanceChannel(PrivatePythonChildChannel):
 
 class MaintenanceObservation:
     """Trusted exact command/source manifest, three isolated thread-local loops."""
-    def __init__(self, *, launches, native, ancestry, manifest, wrapper_factory=None):
+    def __init__(self, *, launches, native, ancestry, manifest, wrapper_factory=None, retirement=None):
         if (not callable(native) or not callable(ancestry) or set(manifest)!=LOOPS or
                 any(not entries for entries in manifest.values())):
             raise ValueError('Complete trusted maintenance manifest required')
+        if retirement is not None and not callable(retirement):raise ValueError('Explicit retirement verifier required')
+        self.retirement=retirement
         self.launches=launches;self.native=native;self.ancestry=ancestry
         self.manifest={};self.local=threading.local();self.lock=threading.RLock()
         self.active=set();self.count=0;self.wrapper_factory=wrapper_factory;self.phase='READY';self.owners={}
@@ -88,7 +90,8 @@ class MaintenanceObservation:
             if self.phase!='READY' or loop not in self.manifest or tuple(command) not in self.manifest[loop] or getattr(self.local,'channel',None) is not None or self.count>=64:
                 self.phase='HOLD'
                 raise ValueError('Unknown, overlapping or exhausted maintenance admission; HOLD')
-            self.launches.checked('maintain');source,digest=self.manifest[loop][tuple(command)]
+            admitted_launch=encoded(self.launches.checked('maintain')['challenge'])
+            source,digest=self.manifest[loop][tuple(command)]
             if source_digest(source)!=digest:self.phase='HOLD';raise ValueError('Job source changed; HOLD')
             self.count+=1
             work={'loop':loop,'job_id':secrets.token_hex(16),'command':list(command),'source':source,'sha256':digest}
@@ -104,8 +107,17 @@ class MaintenanceObservation:
             self.local.channel=channel
         try:
             yield channel
+            if encoded(self.launches.checked('maintain')['challenge'])!=admitted_launch:
+                raise ValueError('Maintenance generation replaced; HOLD')
             if channel.phase!='OBSERVED' or channel.process is None or channel.process.poll()!=0:
                 raise ValueError('Maintenance job completion unresolved; HOLD')
+            if self.retirement is not None:
+                proof=self.retirement(channel.process,work)
+                expected={'root_pid':channel.process.pid,'root_exit_code':0,'active_descendants':0,'identity_verified':True,
+                          'job_id':work['job_id'],'source_sha256':work['sha256']}
+                if encoded(proof)!=encoded(expected):raise ValueError('Native job retirement unverified; HOLD')
+                if encoded(self.launches.checked('maintain')['challenge'])!=admitted_launch:
+                    raise ValueError('Maintenance generation changed during retirement; HOLD')
             with self.lock:
                 for pid,ticket in list(self.owners.items()):
                     if ticket[1]==work['job_id']:del self.owners[pid]
