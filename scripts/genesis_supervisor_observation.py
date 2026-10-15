@@ -2,16 +2,25 @@
 import os
 import threading
 
-from scripts.genesis_launch_provenance import answer_launch, descriptor
+from scripts.genesis_launch_provenance import answer_launch, descriptor, encoded
 
 
 class SupervisorObservation:
-    def __init__(self, *, service, read_private, send_private, native, child):
+    def __init__(self, *, service, read_private, send_private, native, child, private_child=None):
         if not all(callable(f) for f in (read_private, send_private, native, child)):
             raise ValueError('Explicit private/native observation callbacks required')
         self.service = service; self._read = read_private; self._send = send_private
         self._native = native; self._child = child; self._owner = None
         self._public = None; self.phase = 'PREPARED'; self._lock = threading.RLock()
+        if private_child is not None:
+            from scripts.genesis_private_child_channel import PrivatePythonChildChannel
+            if not isinstance(private_child,PrivatePythonChildChannel) or private_child.service!=service:
+                raise ValueError('Explicit service-bound private child channel required')
+        self.private_child=private_child
+
+    def child_command(self, command):
+        self.verify()
+        return self.private_child.command_for(command) if self.private_child is not None else command
 
     def enter(self, service, pid):
         with self._lock:
@@ -21,6 +30,10 @@ class SupervisorObservation:
                     raise ValueError('Mixed, replayed or mismatched supervisor bootstrap')
                 owner = descriptor(self._native(pid))
                 proof = answer_launch(self._read(), owner)
+                if (self.private_child is not None and
+                        encoded(self.private_child.controller.launches.checked(service)['challenge']) !=
+                        encoded(proof['body'])):
+                    raise ValueError('Child channel belongs to another supervisor generation')
                 if descriptor(self._native(pid)) != owner:
                     raise ValueError('Supervisor changed during private processing')
                 self._send(proof)
@@ -56,6 +69,8 @@ class SupervisorObservation:
         with self._lock:
             try:
                 self.verify()
+                if self.private_child is not None:
+                    self.private_child.deliver(process,command,dict(self._owner))
                 if self._child(process, tuple(command), dict(self._owner)) is not True:
                     raise ValueError('Unverified child')
             except Exception:

@@ -153,3 +153,13 @@ service entry points in isolation, then coordinate multi-connection attribution
 without relaxing unknown-client rejection. Preserve all CP77/migration work and
 the full V2/provenance/runtime/provider/#439/Intelligence Engine/Command Center/
 product/alerts/SaaS/security roadmap. No live trading, signing, wallets or orders.
+
+## Resumed private-child checkpoint — October 15, 2026
+
+The next inactive increment adds a private Python child entry and signed final
+dispatch-ready processing receipt, plus bounded complete-inventory Redis cohorts.
+The earlier gaps above are historical; they are not all closed. Exact new coverage,
+failure findings, preserved CP77 scope and remaining Web/Node/maintenance/wrapper/
+child-factory HOLD conditions are recorded in
+`docs/GENESIS_PRIVATE_CHILD_REGISTRATION_REPORT.md`. Production ownership remains
+AMBER; no production startup or lifecycle authority is enabled.

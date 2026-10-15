@@ -170,6 +170,20 @@ class RedisClientObservations:
             return copy.deepcopy(challenge)
 
     def accept(self, service, slot, proof):
+        return self._bind(service, slot, proof, complete=True)
+
+    def stage(self, service, slot, proof):
+        """Collect a cohort member; this result is NEVER a successful receipt."""
+        return self._bind(service, slot, proof, complete=False)
+
+    def hold(self, members):
+        with self._lock:
+            for member in members:
+                record = self._records.get(member)
+                if record is not None:
+                    record['phase'] = 'HOLD'
+
+    def _bind(self, service, slot, proof, *, complete):
         with self._lock:
             record = self._records.get((service, slot))
             try:
@@ -207,7 +221,8 @@ class RedisClientObservations:
                     raise ValueError('Client verification exceeded observation deadline')
                 record['client_id'] = body['client_id']; record['socket'] = dict(socket)
                 record['phase'] = 'ATTESTED'
-                return self.audit()
+                return self.audit() if complete else {'status': 'COLLECTING_NOT_ATTESTED',
+                    'lifecycle_authorized': False, 'write_authorized': False}
             except Exception:
                 if record is not None:
                     record['phase'] = 'HOLD'

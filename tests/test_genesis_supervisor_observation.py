@@ -70,8 +70,8 @@ def test_uncertified_combined_supervisor_controllers_reject_before_processing(mo
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='Native actual-runner fixture required')
-@pytest.mark.parametrize('venv_wrapper', [False, True])
-def test_actual_runner_main_private_launch_child_and_redacted_heartbeat(tmp_path, venv_wrapper):
+@pytest.mark.parametrize('venv_wrapper,private_bootstrap', [(False,False),(True,False),(False,True)])
+def test_actual_runner_main_private_launch_child_and_redacted_heartbeat(tmp_path, venv_wrapper, private_bootstrap):
     root = tmp_path / 'isolated-repository'; scripts = root / 'scripts'; scripts.mkdir(parents=True)
     for name in ('run_genesis_service.py', 'genesis_runtime.py'):
         source = Path(os.environ['GENESIS_TEST_RUNNER_SOURCE']) if name == 'run_genesis_service.py' and os.environ.get('GENESIS_TEST_RUNNER_SOURCE') else ROOT / 'scripts' / name
@@ -90,11 +90,14 @@ from pathlib import Path
 from scripts.genesis_background_ownership import capture
 from scripts.genesis_launch_provenance import descriptor
 from scripts.genesis_supervisor_observation import SupervisorObservation
-root=Path(sys.argv[1]);sys.argv=[str(root/'scripts/run_genesis_service.py'),'--name','entities']
+root=Path(sys.argv[1]);private_bootstrap=sys.argv[2]=='private';sys.argv=[str(root/'scripts/run_genesis_service.py'),'--name','entities']
 spec=importlib.util.spec_from_file_location('isolated_runner',root/'scripts/run_genesis_service.py')
 runner=importlib.util.module_from_spec(spec);spec.loader.exec_module(runner)
 frame=bytes.fromhex(json.loads(sys.stdin.readline())['frame'])
 def native(pid):
+ if private_bootstrap:
+  from scripts.genesis_private_child_entry import native as private_native
+  return private_native(pid)
  data=capture();a=next(r for r in data['before'] if r['pid']==pid);b=next(r for r in data['after'] if r['pid']==pid)
  if descriptor(a)!=descriptor(b):raise ValueError('Native identity changed')
  return descriptor(b)
@@ -122,21 +125,33 @@ def child(proc,command,owner):
  threading.Thread(target=complete,daemon=True).start()
  (root/'finish').write_text('isolated fixture may finish')
  return True
+channel=None
+if private_bootstrap:
+ from scripts.genesis_child_observation import ChildObservations
+ from scripts.genesis_private_child_channel import PrivatePythonChildChannel
+ private=json.loads(frame)
+ class LaunchView:
+  def checked(self,service):
+   if service!='entities' or native(private['challenge']['owner']['pid'])!=private['challenge']['owner']:
+    raise ValueError('Fixture supervisor generation replaced')
+   return {'challenge':private['challenge'],'key':bytes.fromhex(private['key'])}
+ children=ChildObservations(LaunchView(),native=native,ancestry=lambda c,p:c['parent_pid']==p['pid'])
+ channel=PrivatePythonChildChannel(service='entities',controller=children,native=native)
 runner.LAUNCH_OBSERVATION=SupervisorObservation(service='entities',read_private=lambda:frame,
- send_private=lambda proof:print(json.dumps(proof),flush=True),native=native,child=child)
+ send_private=lambda proof:print(json.dumps(proof),flush=True),native=native,child=child,private_child=channel)
 # Bound only the fixture's repeated workload; this is not shutdown certification.
 runner.supervisor_running=lambda:not done.is_set()
 runner.API_HEALTH_POLL_SECONDS=.05
 try:result=runner.main()
 except Exception as error:
  import traceback
- (root/'failure.json').write_text(json.dumps({'type':type(error).__name__,'frames':[{'function':r.name,'line':r.lineno} for r in traceback.extract_tb(error.__traceback__)]}))
+ (root/'failure.json').write_text(json.dumps({'type':type(error).__name__,'channel':channel.phase if channel else None,'stage':channel.failure_stage if channel else None,'frames':[{'function':r.name,'line':r.lineno} for r in traceback.extract_tb(error.__traceback__)]}))
  raise
 raise SystemExit(result)
 ''')
     env = dict(os.environ, PYTHONPATH=str(ROOT))
     env.pop('GENESIS_SUPERVISOR_LAUNCH_TOKEN', None)
-    proc = subprocess.Popen([sys._base_executable, str(driver), str(root)], stdin=subprocess.PIPE,
+    proc = subprocess.Popen([sys._base_executable, str(driver), str(root), 'private' if private_bootstrap else 'legacy'], stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
     try:
         def native(pid):
@@ -148,7 +163,7 @@ raise SystemExit(result)
         frame = registry.prepare('entities', native(proc.pid))
         proc.stdin.write(json.dumps({'frame': frame.hex()}) + '\n'); proc.stdin.flush()
         assert registry.accept('entities', json.loads(proc.stdout.readline()))['phase'] == 'ATTESTED'
-        stdout, stderr = proc.communicate(timeout=35)
+        stdout, stderr = proc.communicate(timeout=60 if private_bootstrap else 35)
         assert proc.returncode == 0, 'Isolated real runner did not finish normally'
         heartbeat = json.loads((root / 'logs/runtime-state-entities.json').read_text())
         assert heartbeat['supervisor_pid'] == proc.pid

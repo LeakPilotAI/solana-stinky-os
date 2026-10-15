@@ -455,19 +455,21 @@ def main() -> int:
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             startupinfo.wShowWindow = 0
+        observed_cmd = LAUNCH_OBSERVATION.child_command(cmd) if LAUNCH_OBSERVATION is not None else cmd
+        private_child_pipe = LAUNCH_OBSERVATION is not None and LAUNCH_OBSERVATION.private_child is not None
         proc = subprocess.Popen(
-            cmd,
+            observed_cmd,
             cwd=str(cwd or root),
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.PIPE if private_child_pipe else subprocess.DEVNULL,
             text=True,
             creationflags=flags,
             startupinfo=startupinfo,
         )
         if LAUNCH_OBSERVATION is not None:
-            LAUNCH_OBSERVATION.child_started(proc, cmd)
+            LAUNCH_OBSERVATION.child_started(proc, observed_cmd)
         if COOPERATIVE_SUPERVISOR is not None:
             if COOPERATIVE_CHILDREN is None:
                 raise RuntimeError('Cooperative supervisor child ownership unavailable; HOLD')
