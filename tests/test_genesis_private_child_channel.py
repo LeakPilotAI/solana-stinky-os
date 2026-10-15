@@ -74,7 +74,7 @@ def test_bad_or_stalled_channel_holds_without_termination(fault):
     assert channel.phase=='HOLD' and children.records['api']['phase']=='HOLD'
 
 
-@pytest.mark.parametrize('fault',[None,'forged-ready','lost-ready'])
+@pytest.mark.parametrize('fault',[None,'forged-ready','lost-ready','late-continuation','supervisor-reject'])
 def test_channel_requires_final_processed_receipt(fault):
     import json
     from scripts.genesis_child_observation import PrivateChildReceiver,target
@@ -82,7 +82,7 @@ def test_channel_requires_final_processed_receipt(fault):
     rows,launches,children,_,_=setup()
     children.records.clear()  # Fresh isolated controller, no live registrations.
     messages=[json.dumps({'kind':'genesis-private-child-ready-v1','pid':os.getpid()})+'\n']
-    receiver=None;key=None;writes=[]
+    receiver=None;key=None;writes=[];native_checks=[]
     class Pipe:
         def readline(self,bound):return messages.pop(0) if messages else ''
         def write(self,raw):
@@ -96,26 +96,42 @@ def test_channel_requires_final_processed_receipt(fault):
             elif len(writes)==2:
                 receiver.complete(body,lambda:True)
                 messages.append(json.dumps(receiver.completion)+'\n')
-            else:
+            elif len(writes)==3:
                 assert authenticated(key,body)['target']==target(receiver.completion)
                 if fault!='lost-ready':
                     reply=signed(key,{'kind':'genesis-child-dispatch-ready-v1',
-                        'target':'0'*64 if fault else target(receiver.completion)})
+                            'target':'0'*64 if fault=='forged-ready' else target(receiver.completion)})
                     messages.append(json.dumps(reply)+'\n')
-        def flush(self):pass
+            else:
+                assert native_checks==[True]
+                assert authenticated(key,body)=={'kind':'genesis-child-observation-complete-v1',
+                    'target':target(receiver.completion),'lifecycle_authorized':False,'write_authorized':False}
+        def flush(self):
+            if fault=='late-continuation' and len(writes)==4:
+                import time
+                time.sleep(.1)
     pipe=Pipe()
     class Process:
         pid=os.getpid();stdin=pipe;stdout=pipe
         def poll(self):return None
-    channel=PrivatePythonChildChannel(service='api',controller=children,native=lambda pid:rows[pid])
+    channel=PrivatePythonChildChannel(service='api',controller=children,native=lambda pid:rows[pid],
+        timeout=.03 if fault=='late-continuation' else 30)
     command=channel.command_for(['python','-m','stinky_api.cli'])
+    def native_before_continue():
+        assert len(writes)==3
+        native_checks.append(True)
+        return fault!='supervisor-reject'
     if fault:
-        with pytest.raises(ValueError,match='HOLD'):channel.deliver(Process(),command,rows[123])
+        with pytest.raises(ValueError,match='HOLD'):channel.deliver(Process(),command,rows[123],before_continue=native_before_continue)
+        if fault=='late-continuation':
+            import time
+            time.sleep(.15)
         assert channel.phase=='HOLD' and children.records['api']['phase']=='HOLD'
-        assert channel.failure_stage=='DISPATCH_READY'
+        expected='ENTRY_CONTINUATION' if fault=='late-continuation' else 'SUPERVISOR_NATIVE' if fault=='supervisor-reject' else 'DISPATCH_READY'
+        assert channel.failure_stage==expected
     else:
-        assert channel.deliver(Process(),command,rows[123])
-        assert channel.phase=='OBSERVED' and len(writes)==3
+        assert channel.deliver(Process(),command,rows[123],before_continue=native_before_continue)
+        assert channel.phase=='OBSERVED' and len(writes)==4
 
 
 @pytest.mark.parametrize('fault',['pid-reuse','missing','wrong-pid','empty-command','oversize','exit'])

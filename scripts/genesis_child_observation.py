@@ -31,14 +31,17 @@ class ChildObservations:
     def _check(self, service, record):
         launch = self.launches.checked(service)
         body = record['challenge']
+        if 'lineage' in body:
+            record['wrapper'].verify()
+            if encoded(record['wrapper'].rows)!=encoded(body['lineage']):raise ValueError('Wrapper binding differs')
         if (encoded(launch['challenge']) != encoded(body['launch']) or
                 descriptor(self.native(body['owner']['pid'])) != body['owner'] or
                 datetime.fromisoformat(body['owner']['created'].replace('Z','+00:00')) <
                 datetime.fromisoformat(body['launch']['owner']['created'].replace('Z','+00:00')) or
-                self.ancestry(body['owner'], body['launch']['owner']) is not True):
+                ('lineage' not in body and self.ancestry(body['owner'], body['launch']['owner']) is not True)):
             raise ValueError('Child generation, native identity or ancestry differs')
 
-    def prepare(self, service, owner, *, deadline_ns=None):
+    def prepare(self, service, owner, *, deadline_ns=None, wrapper=None, work=None):
         with self.lock:
             if service not in SERVICES or service in self.records:
                 raise ValueError('Unknown or duplicate child; explicit retirement required')
@@ -55,6 +58,15 @@ class ChildObservations:
                     'owner': owner, 'nonce': secrets.token_hex(32),
                     'expires_ns': min(self.now() + 30_000_000_000, deadline_ns) if deadline_ns is not None else self.now()+30_000_000_000}
             record = {'challenge': json.loads(encoded(body)), 'key': secrets.token_bytes(32), 'phase': 'PENDING'}
+            if work is not None:
+                if service!='maintain' or not isinstance(work,dict):raise ValueError('Unexpected job context')
+                record['challenge']['work']=json.loads(encoded(work))
+            if wrapper is not None:
+                from scripts.genesis_wrapper_observation import WrapperObservation
+                if not isinstance(wrapper,WrapperObservation):raise ValueError('Typed wrapper proof required')
+                wrapper.verify()
+                if wrapper.rows[-1]!=owner:raise ValueError('Wrapper leaf differs')
+                record['wrapper']=wrapper;record['challenge']['lineage']=json.loads(encoded(wrapper.rows))
             self._check(service, record)
             self.records[service] = record
             return encoded({'challenge': record['challenge'], 'key': record['key'].hex()})
@@ -144,12 +156,18 @@ class PrivateChildReceiver:
         self.lock = threading.RLock()
 
     def _current(self, body):
-        owner = descriptor(self.native(os.getpid()))
-        parent = descriptor(self.native(body['launch']['owner']['pid']))
+        from scripts.genesis_wrapper_observation import fresh
+        ids=[os.getpid(),body['launch']['owner']['pid'],*[row['pid'] for row in body.get('lineage',[])]]
+        observed=fresh(self.native,ids)
+        owner = observed[os.getpid()]
+        parent = observed[body['launch']['owner']['pid']]
+        if 'lineage' in body:
+            from scripts.genesis_wrapper_observation import verify_lineage
+            verify_lineage(body['lineage'],parent,owner,observed.__getitem__)
         if (owner['pid'] != os.getpid() or owner != body['owner'] or parent != body['launch']['owner'] or
                 datetime.fromisoformat(owner['created'].replace('Z','+00:00')) <
                 datetime.fromisoformat(parent['created'].replace('Z','+00:00')) or
-                self.ancestry(owner, parent) is not True):
+                ('lineage' not in body and self.ancestry(owner, parent) is not True)):
             raise ValueError('Private child native relationship unavailable')
 
     def receive(self, frame):
@@ -161,7 +179,8 @@ class PrivateChildReceiver:
                 if set(envelope) != {'challenge', 'key'} or encoded(envelope) != frame:
                     raise ValueError('Noncanonical private frame')
                 key = bytes.fromhex(envelope['key']); body = envelope['challenge']
-                if (len(key) != 32 or set(body) != {'kind','launch','service','generation','owner','nonce','expires_ns'} or
+                fields={'kind','launch','service','generation','owner','nonce','expires_ns'}
+                if (len(key) != 32 or set(body) not in (fields,fields|{'lineage'},fields|{'work'},fields|{'lineage','work'}) or
                         body['kind'] != 'genesis-private-child-v1' or encoded(body['launch']) != encoded(self.launch) or
                         body['service'] != self.service or type(body['generation']) is not int or
                         body['generation'] != self.launch['generation'] or

@@ -161,3 +161,10 @@ and join actual native socket/server evidence to those service processes. Certif
 actual ASGI/DB/background workloads before any production activation. Preserve the
 full CP77, V2/provenance/runtime/provider/#439, Intelligence Engine/Command Center,
 product/alerts/SaaS/security roadmap and original pending migrations. No live trading.
+
+## GB-03 continuation
+
+The next default-off wrapper/Node/maintenance increment is documented in
+`docs/GENESIS_GB03_REPORT.md`. Earlier HOLD entries above remain historical;
+the new report distinguishes native isolated coverage from still-unauthenticated
+Next dev/HMR workers, active maintenance workloads and production lifecycle authority.

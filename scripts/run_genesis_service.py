@@ -97,8 +97,9 @@ def supervisor_loop(name):
         @wraps(function)
         def run(*args, **kwargs):
             gate=COOPERATIVE_SUPERVISOR
-            with gate.loop(name) if gate is not None else nullcontext():
-                return function(*args, **kwargs)
+            with LAUNCH_OBSERVATION.loop(name) if LAUNCH_OBSERVATION is not None else nullcontext():
+                with gate.loop(name) if gate is not None else nullcontext():
+                    return function(*args, **kwargs)
         return run
     return decorate
 
@@ -456,7 +457,7 @@ def main() -> int:
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             startupinfo.wShowWindow = 0
         observed_cmd = LAUNCH_OBSERVATION.child_command(cmd) if LAUNCH_OBSERVATION is not None else cmd
-        private_child_pipe = LAUNCH_OBSERVATION is not None and LAUNCH_OBSERVATION.private_child is not None
+        private_child_pipe = LAUNCH_OBSERVATION is not None and LAUNCH_OBSERVATION.private_pipe
         proc = subprocess.Popen(
             observed_cmd,
             cwd=str(cwd or root),
@@ -612,7 +613,8 @@ def main() -> int:
         for i in range(1, attempts + 1):
             if not supervisor_running():
                 return last
-            last = run(cmd)
+            with LAUNCH_OBSERVATION.job(cmd) if LAUNCH_OBSERVATION is not None else nullcontext():
+                last = run(cmd)
             if last == 0:
                 return 0
             msg = "[%s] maintain job failed exit=%s attempt=%s/%s, retry in %ss\n" % (
