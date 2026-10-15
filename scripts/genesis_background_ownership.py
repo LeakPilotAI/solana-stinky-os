@@ -69,7 +69,7 @@ function Census {
 }
 $before=@(Census)
 $sockets=@(Get-NetTCPConnection -ErrorAction Stop | Where-Object {
- $_.LocalPort -in @(__PORTS__) -or $_.RemotePort -eq 6380
+ $_.LocalPort -in @(__PORTS__) -or $_.RemotePort -in @(__PORTS__)
 } | ForEach-Object { [pscustomobject]@{pid=[int]$_.OwningProcess;state=[string]$_.State;
  address=[string]$_.LocalAddress;port=[int]$_.LocalPort;
  remote_port=[int]$_.RemotePort;remote_address=[string]$_.RemoteAddress} })

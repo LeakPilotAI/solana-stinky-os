@@ -51,6 +51,31 @@ overwrites runtime storage. Header/hash checks do not imply checksum certificati
 An isolated restore proves the contents of that artifact, not that all pre-shutdown
 acknowledged writes were saved. Original storage and retained fixtures stay intact.
 
+## Inactive authenticated observations
+
+`scripts/genesis_launch_provenance.py` binds a one-use private challenge to a
+trusted native process descriptor, service, controller session and generation.
+Keys stay in memory and the private bootstrap pipe; public status omits keys,
+nonces and MACs. Copied heartbeats cannot substitute for proof. A controller
+restart discards trust and requires fresh explicit registration. This utility is
+not installed in the real supervisor launcher and grants no lifecycle authority.
+
+`scripts/genesis_redis_client_provenance.py` verifies a signed physical-connection
+claim against native PID/socket evidence and a separately pinned server's complete
+client inventory. Names alone are insufficient. Reconnects require fresh connection
+generations; unknown/duplicate/stale clients HOLD. Probes use retained sockets with
+bounded timeouts and no implicit reconnect or retry. They issue only INFO server,
+CLIENT ID/GETNAME/LIST. The isolated fixture alone sets nonsecret test client names.
+
+These checks do not replace the existing broker, Redis ACL fencing, command-intent
+accounting or cooperative shutdown. Real pooled/async clients, native Windows
+wrapper chains and all seven actual service paths still need separate inactive
+integration certification. Legacy environment-token heartbeats remain untrusted.
+
+The opted-in native Redis test requires an independently labelled disposable
+fixture; the environment supplies its nonsecret container ID, never activation
+authority or secrets. No test can target production via that fixture guard.
+
 ## Remaining gates
 
 1. Restore access to the Docker engine only with appropriate authorization; inspect
