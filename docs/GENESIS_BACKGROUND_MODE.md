@@ -27,6 +27,30 @@ Start, Stop, Restart and Gaming mode controls remain disabled. Neither a matchin
 heartbeat nor matching Docker labels grants lifecycle authority. The current
 process inventory is not complete socket/descendant ownership certification.
 
+## Native ownership and saved-state audit
+
+`python -m scripts.genesis_background_ownership` is an additional read-only audit.
+It brackets native TCP socket acquisition with two process censuses and checks
+creation identity, executable/command tokens, ancestry, duplicate claims and
+possible orphan module processes. Unexpected descendants, foreign listeners,
+changing/missing processes and unattributed host Redis connections HOLD. It emits
+no raw command lines. Results never authorize Start/Stop/Restart/Gaming.
+
+The Windows child/listener test uses an independently spawned disposable fixture
+with an ephemeral loopback port and private stdin EOF shutdown. This verifies
+actual native socket attribution and wrapper ancestry, not a running Genesis
+service. Historical ancestry, authenticated launch-token custody, complete Redis
+server client attribution through Docker NAT and active seven-service closure
+remain separate gates. Existing heartbeat checks remain supporting evidence only.
+
+`scripts/genesis_saved_state_audit.py` can export only the explicitly pinned,
+stopped original Redis container after checking the complete container inventory
+for competing writable production-volume attachments. It streams a single bounded
+regular RDB into an exclusive new file, never extracts archive paths and never
+overwrites runtime storage. Header/hash checks do not imply checksum certification.
+An isolated restore proves the contents of that artifact, not that all pre-shutdown
+acknowledged writes were saved. Original storage and retained fixtures stay intact.
+
 ## Remaining gates
 
 1. Restore access to the Docker engine only with appropriate authorization; inspect
