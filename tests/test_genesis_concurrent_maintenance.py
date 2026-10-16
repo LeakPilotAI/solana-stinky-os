@@ -208,7 +208,10 @@ def test_real_concurrent_loops_with_test_clock_and_graceful_drain(tmp_path):
                     finally:await tx.rollback()  # Always cooperatively release fixture-only lock.
                     for f in fs:f.result(timeout=45)
                 assert maximum>=3,'Actual SQL overlap not established'
-            proof=d.request_drain();status=d.drain(proof,timeout=5)
+            proof=d.request_drain()
+            with pytest.raises(ValueError,match='fenced'):
+                with m.loop('v2-maintenance'):pytest.fail('Native direct-manager bypass')
+            status=d.drain(proof,timeout=5)
             assert status['phase']=='QUIESCED_OBSERVATION' and status['completed']==6
             counts={t:await admin.fetchval('SELECT count(*) FROM '+t) for t in ['token_outcomes','intelligence_paper_decisions','intelligence_execution_v2_plans']}
             assert counts['token_outcomes']==1 and counts['intelligence_paper_decisions']==1

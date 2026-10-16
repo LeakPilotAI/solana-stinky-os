@@ -5,12 +5,37 @@ import importlib.util
 from pathlib import Path
 import secrets
 import threading
+import weakref
 
 from scripts.genesis_child_observation import ChildObservations
 from scripts.genesis_launch_provenance import encoded
 from scripts.genesis_private_child_channel import PrivatePythonChildChannel
 
 LOOPS=frozenset({'slow-maintenance','v2-maintenance','research-maintenance'})
+_BOUNDARIES=weakref.WeakKeyDictionary()
+_BOUNDARIES_LOCK=threading.RLock()
+
+
+class _AdmissionBoundary:
+    """Process-local, shared by every manager using one trusted launch registry.
+
+    This is deliberately not a cross-process writer or database fence.
+    """
+    def __init__(self):
+        self.condition=threading.Condition(threading.RLock())
+        self.managers=weakref.WeakSet()
+        self.binding=None
+        self.phase='INACTIVE'
+
+    def admission(self, launches):
+        if self.binding is not None:
+            if encoded(launches.checked('maintain')['challenge'])!=self.binding:
+                self.phase='HOLD'
+                raise ValueError('Maintenance generation changed; HOLD')
+            if self.phase!='OPEN':raise ValueError('Maintenance admission fenced; HOLD')
+
+    def idle(self):
+        return all(m.phase=='READY' and not m.active and not m.owners for m in self.managers)
 
 
 def source_digest(path):
@@ -63,7 +88,9 @@ class MaintenanceObservation:
         if retirement is not None and not callable(retirement):raise ValueError('Explicit retirement verifier required')
         self.retirement=retirement
         self.launches=launches;self.native=native;self.ancestry=ancestry
-        self.manifest={};self.local=threading.local();self.lock=threading.RLock()
+        with _BOUNDARIES_LOCK:
+            self.boundary=_BOUNDARIES.setdefault(launches,_AdmissionBoundary())
+        self.manifest={};self.local=threading.local();self.lock=self.boundary.condition
         self.active=set();self.count=0;self.wrapper_factory=wrapper_factory;self.phase='READY';self.owners={}
         for loop,entries in manifest.items():
             self.manifest[loop]={}
@@ -72,27 +99,45 @@ class MaintenanceObservation:
                 if (not 2<=len(command)<=32 or any(not isinstance(s,str) for s in command) or
                         not Path(command[0]).is_absolute() or command in self.manifest[loop]):raise ValueError('Ambiguous maintenance command')
                 self.manifest[loop][command]=(str(source),source_digest(source))
+        with self.lock:
+            if self.boundary.binding is not None and retirement is None:
+                raise ValueError('Protected manager requires retirement witness; HOLD')
+            self.boundary.managers.add(self)
 
     @contextmanager
     def loop(self,name):
         with self.lock:
+            self.boundary.admission(self.launches)
+            if self.boundary.binding is not None and any(name in m.active for m in self.boundary.managers):
+                self.boundary.phase='HOLD'
+                raise ValueError('Shared maintenance loop already active; HOLD')
             if self.phase!='READY' or name not in LOOPS or name in self.active or getattr(self.local,'loop',None):
+                if self.boundary.binding is not None:self.boundary.phase='HOLD'
                 self.phase='HOLD';raise ValueError('Duplicate/unknown maintenance loop; HOLD')
             self.launches.checked('maintain');self.active.add(name);self.local.loop=name
         try:yield
+        except BaseException:
+            with self.lock:
+                if self.boundary.binding is not None:self.boundary.phase='HOLD'
+            raise
         finally:
-            with self.lock:self.active.remove(name);self.local.loop=None
+            with self.lock:
+                self.active.remove(name);self.local.loop=None;self.lock.notify_all()
 
     @contextmanager
     def job(self,command):
         loop=getattr(self.local,'loop',None)
         with self.lock:
+            self.boundary.admission(self.launches)
             if self.phase!='READY' or loop not in self.manifest or tuple(command) not in self.manifest[loop] or getattr(self.local,'channel',None) is not None or self.count>=64:
+                if self.boundary.binding is not None:self.boundary.phase='HOLD'
                 self.phase='HOLD'
                 raise ValueError('Unknown, overlapping or exhausted maintenance admission; HOLD')
             admitted_launch=encoded(self.launches.checked('maintain')['challenge'])
             source,digest=self.manifest[loop][tuple(command)]
-            if source_digest(source)!=digest:self.phase='HOLD';raise ValueError('Job source changed; HOLD')
+            if source_digest(source)!=digest:
+                if self.boundary.binding is not None:self.boundary.phase='HOLD'
+                self.phase='HOLD';raise ValueError('Job source changed; HOLD')
             self.count+=1
             work={'loop':loop,'job_id':secrets.token_hex(16),'command':list(command),'source':source,'sha256':digest}
             controller=ChildObservations(self.launches,native=self.native,ancestry=self.ancestry)
@@ -100,7 +145,8 @@ class MaintenanceObservation:
             channel=PrivateMaintenanceChannel(work=work,controller=controller,native=self.native,wrapper=wrapper)
             def claim(owner):
                 with self.lock:
-                    if self.phase!='READY' or owner['pid'] in self.owners:
+                    if self.phase!='READY' or any(owner['pid'] in m.owners for m in self.boundary.managers):
+                        if self.boundary.binding is not None:self.boundary.phase='HOLD'
                         self.phase='HOLD';raise ValueError('Duplicate/replaced maintenance writer claim; HOLD')
                     self.owners[owner['pid']]=(owner['created'],work['job_id'])
             channel.claim=claim
@@ -123,7 +169,9 @@ class MaintenanceObservation:
                     if ticket[1]==work['job_id']:del self.owners[pid]
             # Root exit is not proof of descendant exit or drained Redis writes.
         except BaseException:
-            with self.lock:self.phase='HOLD';channel.phase='HOLD';channel.controller.hold('maintain')
+            with self.lock:
+                self.phase='HOLD';channel.phase='HOLD';channel.controller.hold('maintain')
+                if self.boundary.binding is not None:self.boundary.phase='HOLD'
             raise
         finally:self.local.channel=None
 

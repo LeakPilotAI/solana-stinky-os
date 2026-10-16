@@ -25,22 +25,31 @@ class MaintenanceDrain:
                 type(isolated) is not bool or not callable(idle) or not callable(clock)):
             raise ValueError('Explicit manager, retirement and idle witnesses required')
         self.manager=manager;self.enabled=isolated;self.idle=idle;self.clock=clock
-        self.condition=threading.Condition(threading.RLock());self.phase='RUNNING' if isolated else 'DISABLED'
+        self.condition=manager.boundary.condition;self.phase='RUNNING' if isolated else 'DISABLED'
         self.binding=encoded(manager.launches.checked('maintain')['challenge'])
         self.active=set();self.completed=0;self.started=0;self.next_due={n:float('-inf') for n in LOOPS}
         self.request=None;self.last_time=None
         if isolated:
-            with _CLAIMS_LOCK:
+            with self.condition, _CLAIMS_LOCK:
                 claims=_CLAIMS.setdefault(manager.launches,set())
                 if self.binding in claims or len(claims)>=64:raise ValueError('Generation already claimed or trial exhausted')
+                boundary=manager.boundary
+                if boundary.binding is not None and (boundary.phase!='CLOSED' or not boundary.idle()):
+                    raise ValueError('Previous maintenance boundary unresolved; HOLD')
+                if any(m.retirement is None for m in boundary.managers):
+                    raise ValueError('Every manager requires independent retirement evidence; HOLD')
                 claims.add(self.binding)
+                boundary.binding=self.binding;boundary.phase='OPEN'
 
     def _hold(self):
+        if self.enabled and self.manager.boundary.binding==self.binding:
+            self.manager.boundary.phase='HOLD'
         self.phase='HOLD';self.condition.notify_all()
         raise ValueError('Maintenance boundary incomplete; HOLD') from None
 
     def _verify(self):
         try:
+            if self.enabled and (self.manager.boundary.binding!=self.binding or self.manager.boundary.phase=='HOLD'):self._hold()
             if self.manager.phase!='READY' or encoded(self.manager.launches.checked('maintain')['challenge'])!=self.binding:self._hold()
         except Exception:self._hold()
 
@@ -79,6 +88,7 @@ class MaintenanceDrain:
             record=self.manager.launches.checked('maintain')
             self.request={'kind':'maintenance-drain-v1','generation':record['challenge']['generation'],
                           'session':record['challenge']['session'],'nonce':secrets.token_hex(32)}
+            self.manager.boundary.phase='DRAINING'
             self.phase='DRAINING'
             return signed(record['key'],self.request)
 
@@ -89,7 +99,7 @@ class MaintenanceDrain:
                 self._verify();record=self.manager.launches.checked('maintain')
                 if self.phase!='DRAINING' or encoded(authenticated(record['key'],proof))!=encoded(self.request):self._hold()
                 deadline=time.monotonic()+timeout
-                while self.active:
+                while self.active or not self.manager.boundary.idle():
                     self._verify()
                     remaining=deadline-time.monotonic()
                     if remaining<=0:self._hold()
@@ -99,7 +109,7 @@ class MaintenanceDrain:
                 if (self.manager.owners or self.manager.active or
                         encoded(self.idle())!=encoded({'active_children':0,'unresolved_jobs':0,'admission_closed':True})):self._hold()
                 if time.monotonic()>=deadline:self._hold()
-                self._verify();self.phase='QUIESCED_OBSERVATION'
+                self._verify();self.manager.boundary.phase='CLOSED';self.phase='QUIESCED_OBSERVATION'
                 return self.status()
             except Exception:self._hold()
 
@@ -107,7 +117,7 @@ class MaintenanceDrain:
         with self.condition:
             return {'phase':self.phase,'active_loops':sorted(self.active),'started':self.started,
                     'completed':self.completed,'production_enabled':False,'lifecycle_authorized':False,
-                    'scope':'REGISTERED_CYCLES_NOT_SUPERVISOR_EXIT'}
+                    'scope':'PROCESS_LOCAL_TRUSTED_REGISTRY_MANAGERS_NOT_GLOBAL_WRITES'}
 
 
 def classify_transaction(*,operation_id,operation_sha256,marker,rollback_confirmed,writer_closed):
