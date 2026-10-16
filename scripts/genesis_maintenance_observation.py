@@ -26,8 +26,10 @@ class _AdmissionBoundary:
         self.managers=weakref.WeakSet()
         self.binding=None
         self.phase='INACTIVE'
+        self.authority=None
 
-    def admission(self, launches):
+    def admission(self, launches, manager=None, *, job=False):
+        if self.authority is not None:self.authority.admission(manager,job=job)
         if self.binding is not None:
             if encoded(launches.checked('maintain')['challenge'])!=self.binding:
                 self.phase='HOLD'
@@ -107,7 +109,7 @@ class MaintenanceObservation:
     @contextmanager
     def loop(self,name):
         with self.lock:
-            self.boundary.admission(self.launches)
+            self.boundary.admission(self.launches,self)
             if self.boundary.binding is not None and any(name in m.active for m in self.boundary.managers):
                 self.boundary.phase='HOLD'
                 raise ValueError('Shared maintenance loop already active; HOLD')
@@ -128,7 +130,7 @@ class MaintenanceObservation:
     def job(self,command):
         loop=getattr(self.local,'loop',None)
         with self.lock:
-            self.boundary.admission(self.launches)
+            self.boundary.admission(self.launches,self,job=True)
             if self.phase!='READY' or loop not in self.manifest or tuple(command) not in self.manifest[loop] or getattr(self.local,'channel',None) is not None or self.count>=64:
                 if self.boundary.binding is not None:self.boundary.phase='HOLD'
                 self.phase='HOLD'

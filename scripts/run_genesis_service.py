@@ -60,6 +60,19 @@ COOPERATIVE_SUPERVISOR = None  # Explicit trusted startup only; no environment a
 COOPERATIVE_INSTALL_LOCK = threading.RLock()
 COOPERATIVE_DELIVERY = None
 COOPERATIVE_CHILDREN = None
+MAINTENANCE_BINDING = None  # Explicit isolated installation only; never env activated.
+
+
+def install_maintenance_binding(binding):
+    global MAINTENANCE_BINDING
+    from scripts.genesis_maintenance_binding import MaintenanceBinding
+    with COOPERATIVE_INSTALL_LOCK:
+        if MAINTENANCE_BINDING is not None or not isinstance(binding,MaintenanceBinding):
+            raise RuntimeError('Explicit single maintenance binding required')
+        binding.matches(LAUNCH_OBSERVATION,COOPERATIVE_SUPERVISOR)
+        if binding.gate.jobs or binding.gate.loops or binding.manager.active or binding.manager.owners:
+            raise RuntimeError('Maintenance binding must precede admission')
+        MAINTENANCE_BINDING=binding
 
 
 def install_cooperative_supervisor(gate):
@@ -74,6 +87,9 @@ def install_cooperative_supervisor(gate):
 
 
 def supervisor_job(command):
+    if MAINTENANCE_BINDING is not None:
+        MAINTENANCE_BINDING.matches(LAUNCH_OBSERVATION,COOPERATIVE_SUPERVISOR)
+        return MAINTENANCE_BINDING.work(command)
     return COOPERATIVE_SUPERVISOR.job(command) if COOPERATIVE_SUPERVISOR is not None else nullcontext()
 
 
@@ -125,6 +141,8 @@ def install_shutdown_delivery(authority, *, verify_controller, persist):
         async def process(request, timeout):
             import asyncio
             ack = await asyncio.to_thread(gate.quiesce, request, timeout=timeout)
+            if MAINTENANCE_BINDING is not None:
+                ack['maintenance_boundary']=MAINTENANCE_BINDING.verify_drained()
             if COOPERATIVE_CHILDREN is None:
                 # Ticket processing is deliberately not a process-exit certificate.
                 return ack
@@ -301,8 +319,11 @@ def main() -> int:
     name = args.name
     if LAUNCH_OBSERVATION is not None:
         from scripts.genesis_supervisor_observation import SupervisorObservation
-        if not isinstance(LAUNCH_OBSERVATION, SupervisorObservation) or COOPERATIVE_SUPERVISOR is not None:
+        if not isinstance(LAUNCH_OBSERVATION, SupervisorObservation) or (COOPERATIVE_SUPERVISOR is not None and MAINTENANCE_BINDING is None):
             raise RuntimeError('Explicit native supervisor observer required; HOLD')
+        if MAINTENANCE_BINDING is not None:
+            if name!='maintain':raise RuntimeError('Maintenance binding cannot authorize other services')
+            MAINTENANCE_BINDING.matches(LAUNCH_OBSERVATION,COOPERATIVE_SUPERVISOR)
         LAUNCH_OBSERVATION.enter(name, os.getpid())
     if COOPERATIVE_SUPERVISOR is not None and COOPERATIVE_SUPERVISOR.owner['service']!=name:
         raise RuntimeError('Selected service contradicts cooperative supervisor owner')
@@ -346,6 +367,9 @@ def main() -> int:
         return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     def append_log(message: str) -> None:
+        return run_admitted_job(['maintenance-log'],lambda:append_log_unfenced(message)) if MAINTENANCE_BINDING is not None else append_log_unfenced(message)
+
+    def append_log_unfenced(message: str) -> None:
         with log.open("a", encoding="utf-8", errors="replace") as f:
             f.write(message)
             if not message.endswith("\n"):
@@ -382,7 +406,9 @@ def main() -> int:
         if LAUNCH_OBSERVATION is not None:
             payload = LAUNCH_OBSERVATION.heartbeat(payload)
         try:
-            write_state(log_dir / ("runtime-state-" + name + ".json"), payload)
+            if MAINTENANCE_BINDING is not None:
+                run_admitted_job(['maintenance-ownership-file'],lambda:write_state(log_dir / ("runtime-state-" + name + ".json"), payload))
+            else:write_state(log_dir / ("runtime-state-" + name + ".json"), payload)
         except OSError:
             pass
 
@@ -469,15 +495,28 @@ def main() -> int:
             creationflags=flags,
             startupinfo=startupinfo,
         )
+        if MAINTENANCE_BINDING is not None:
+            # Capture native ownership before the private handshake releases work.
+            try:COOPERATIVE_CHILDREN.register(proc, observed_cmd)
+            except BaseException:
+                # Reject the still-private bootstrap by closing our exact pipe;
+                # never signal an unverified child or release application dispatch.
+                if proc.stdin is not None:proc.stdin.close()
+                raise
         if LAUNCH_OBSERVATION is not None:
             LAUNCH_OBSERVATION.child_started(proc, observed_cmd)
         if COOPERATIVE_SUPERVISOR is not None:
             if COOPERATIVE_CHILDREN is None:
                 raise RuntimeError('Cooperative supervisor child ownership unavailable; HOLD')
-            COOPERATIVE_CHILDREN.register(proc, cmd)
+            if MAINTENANCE_BINDING is None:COOPERATIVE_CHILDREN.register(proc, cmd)
         assert proc.stdout is not None
+        writer_ticket=MAINTENANCE_BINDING.ticket() if MAINTENANCE_BINDING is not None else None
 
         def pump_output() -> None:
+            with MAINTENANCE_BINDING.writer(writer_ticket) if MAINTENANCE_BINDING is not None else nullcontext():
+                pump_output_admitted()
+
+        def pump_output_admitted() -> None:
             try:
                 with log.open("a", encoding="utf-8", errors="replace") as f:
                     for line in proc.stdout:
@@ -486,6 +525,7 @@ def main() -> int:
                         f.write(line)
                         f.flush()
             except (OSError, ValueError):
+                if MAINTENANCE_BINDING is not None:MAINTENANCE_BINDING.hold()
                 pass
 
         reader = threading.Thread(target=pump_output, name="%s-log-pump" % name, daemon=True)
@@ -506,6 +546,7 @@ def main() -> int:
             if COOPERATIVE_CHILDREN is not None:
                 COOPERATIVE_CHILDREN.verify_exited(proc)
             reader.join(timeout=3)
+            if MAINTENANCE_BINDING is not None and reader.is_alive():MAINTENANCE_BINDING.hold()
             return code
 
         started = time.monotonic()
@@ -544,6 +585,7 @@ def main() -> int:
         if COOPERATIVE_CHILDREN is not None:
             COOPERATIVE_CHILDREN.verify_exited(proc)
         reader.join(timeout=3)
+        if MAINTENANCE_BINDING is not None and reader.is_alive():MAINTENANCE_BINDING.hold()
         return code
 
     def run(cmd, cwd=None, health_url=None):
@@ -613,8 +655,14 @@ def main() -> int:
         for i in range(1, attempts + 1):
             if not supervisor_running():
                 return last
-            with LAUNCH_OBSERVATION.job(cmd) if LAUNCH_OBSERVATION is not None else nullcontext():
-                last = run(cmd)
+            try:
+                with supervisor_job(cmd) if MAINTENANCE_BINDING is not None else nullcontext():
+                    with LAUNCH_OBSERVATION.job(cmd) if LAUNCH_OBSERVATION is not None else nullcontext():
+                        last = run(cmd)
+            except Exception as exc:
+                from scripts.genesis_supervisor_admission import FencedAdmission
+                if MAINTENANCE_BINDING is not None and isinstance(exc,FencedAdmission) and not supervisor_running():return last
+                raise
             if last == 0:
                 return 0
             msg = "[%s] maintain job failed exit=%s attempt=%s/%s, retry in %ss\n" % (
@@ -655,7 +703,9 @@ def main() -> int:
         try:
             # Aggregate current-health snapshot remains convenient for the operator,
             # but it is intentionally overwriteable by the maintain loop.
-            write_state(log_dir / "runtime-state.json", payload)
+            if MAINTENANCE_BINDING is not None:
+                run_admitted_job(['maintenance-health-file'],lambda:write_state(log_dir / "runtime-state.json", payload))
+            else:write_state(log_dir / "runtime-state.json", payload)
         except OSError:
             pass
         # Preserve each supervisor's last durable ownership/phase independently.
@@ -769,6 +819,7 @@ def main() -> int:
                         run_job_with_retry([py, "-m", "post_migration.cli", "learn-success"])
                         run_job_with_retry([py, "-m", "post_migration.cli", "recompute-performance"])
                     except Exception as exc:
+                        if MAINTENANCE_BINDING is not None and not supervisor_running():break
                         msg = "[%s] slow maintenance error %s\n" % (utc_stamp(), str(exc)[:200])
                         sys.stdout.write(msg)
                         sys.stdout.flush()
@@ -793,14 +844,18 @@ def main() -> int:
             def intelligence_execution_v2_loop() -> None:
                 while supervisor_running():
                     try:
-                        observe_pass(
+                        def capture_v2_pass():return observe_pass(
                             lambda: run_job_with_retry(
                                 [py, str(root / "scripts" / "run_intelligence_execution_v2.py")],
                                 attempts=1,
                             ),
                             pass_recorder,
                         )
+                        if MAINTENANCE_BINDING is not None:
+                            run_admitted_job(['maintenance-v2-pass-record'],capture_v2_pass)
+                        else:capture_v2_pass()
                     except Exception as exc:
+                        if MAINTENANCE_BINDING is not None and not supervisor_running():break
                         msg = "[%s] intelligence V2 capture error %s\n" % (
                             utc_stamp(),
                             str(exc)[:200],
@@ -824,6 +879,7 @@ def main() -> int:
                         watchdog_tick()
                         dump_runtime()
                     except Exception as exc:
+                        if MAINTENANCE_BINDING is not None and not supervisor_running():break
                         msg = "[%s] watchdog error %s\n" % (utc_stamp(), str(exc)[:200])
                         sys.stdout.write(msg)
                         sys.stdout.flush()
@@ -852,7 +908,8 @@ def main() -> int:
                     supervisor_wait(60)
             research_maintenance_loop()
     finally:
-        append_log("[%s] exit LASTEXITCODE=%s" % (utc_stamp(), code))
+        if MAINTENANCE_BINDING is None or supervisor_running():
+            append_log("[%s] exit LASTEXITCODE=%s" % (utc_stamp(), code))
     return code
 
 
