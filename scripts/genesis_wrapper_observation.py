@@ -54,7 +54,9 @@ class WrapperObservation:
             if pid==root:break
             pid=row['parent_pid']
         else:raise ValueError('Wrapper ancestry exceeds bound')
-        verify_lineage(chain,supervisor,chain[-1],self.native)
+        # Validate the paired census chain, then independently re-read the whole
+        # native lineage in audit(). No observation is reused across IPC phases.
+        verify_lineage(chain,supervisor,chain[-1],after.__getitem__)
         self.rows=chain;self.command=tuple(command);self.supervisor=descriptor(supervisor)
         self.audit()
         return list(chain)

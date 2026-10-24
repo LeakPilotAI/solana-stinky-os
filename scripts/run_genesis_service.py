@@ -98,6 +98,8 @@ def run_admitted_job(command, operation):
 
 
 def supervisor_running():
+    if MAINTENANCE_BINDING is not None and COOPERATIVE_SUPERVISOR.phase=='HOLD':
+        return False
     return COOPERATIVE_SUPERVISOR is None or not COOPERATIVE_SUPERVISOR.stop_event.is_set()
 
 
@@ -106,6 +108,36 @@ def supervisor_wait(seconds):
         time.sleep(seconds)
     else:
         COOPERATIVE_SUPERVISOR.stop_event.wait(seconds)
+
+
+def finish_maintenance_threads(threads, *, timeout=10):
+    """Join only this main's loop threads; this grants no process-exit authority."""
+    if MAINTENANCE_BINDING is None:
+        return
+    gate=COOPERATIVE_SUPERVISOR
+    deadline=time.monotonic()+timeout
+    if gate.phase=='HOLD' or not gate.stop_event.is_set():
+        # Wake admitted loop waits without reopening admissions or signalling a child.
+        with gate.changed:
+            gate.phase='HOLD';gate.changed.notify_all()
+        gate.stop_event.set()
+    incomplete=False
+    for name,thread in threads.items():
+        thread.join(max(0,deadline-time.monotonic()))
+        row=gate.loops.get(name)
+        if thread.is_alive() or row is None or row['thread'] is not thread or not row['done']:
+            incomplete=True
+    if incomplete:
+        MAINTENANCE_BINDING.hold()
+    with gate.changed:
+        while gate.phase not in ('QUIESCED','HOLD'):
+            remaining=deadline-time.monotonic()
+            if remaining<=0:
+                MAINTENANCE_BINDING.hold()
+            gate.changed.wait(remaining)
+    if gate.phase=='HOLD':
+        raise RuntimeError('Maintenance retirement unresolved; HOLD')
+    MAINTENANCE_BINDING.verify_drained()
 
 
 def supervisor_loop(name):
@@ -906,7 +938,10 @@ def main() -> int:
                     # V2 prospective capture runs independently at a faster cadence above.
                     # Keep this research/V1 loop at its existing one-minute cadence.
                     supervisor_wait(60)
-            research_maintenance_loop()
+            try:
+                research_maintenance_loop()
+            finally:
+                finish_maintenance_threads({'slow-maintenance':slow_thread,'v2-maintenance':v2_thread})
     finally:
         if MAINTENANCE_BINDING is None or supervisor_running():
             append_log("[%s] exit LASTEXITCODE=%s" % (utc_stamp(), code))

@@ -44,6 +44,9 @@ def native_many(pids):
 
 
 def native(pid):
+    if os.name=='nt' and type(pid) is int and pid==os.getpid():
+        from scripts.genesis_self_native import current
+        return current()
     return native_many((pid,))[pid]
 
 

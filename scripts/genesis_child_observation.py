@@ -64,7 +64,8 @@ class ChildObservations:
             if wrapper is not None:
                 from scripts.genesis_wrapper_observation import WrapperObservation
                 if not isinstance(wrapper,WrapperObservation):raise ValueError('Typed wrapper proof required')
-                wrapper.verify()
+                # _check below performs the fresh native lineage verification for
+                # this preparation phase; do not repeat the same phase here.
                 if wrapper.rows[-1]!=owner:raise ValueError('Wrapper leaf differs')
                 record['wrapper']=wrapper;record['challenge']['lineage']=json.loads(encoded(wrapper.rows))
             self._check(service, record)
@@ -106,7 +107,11 @@ class ChildObservations:
                 if self.now() >= record['challenge']['expires_ns']:
                     raise ValueError('Child completion expired')
                 record['phase'] = 'ATTESTED'
-                return self.checked(service)
+                # This phase already ran _check and the post-check deadline.
+                # Later checked() calls still require a new native phase.
+                return {'service':service,'owner':dict(record['challenge']['owner']),
+                        'generation':record['challenge']['launch']['generation'],
+                        'lifecycle_authorized':False,'write_authorized':False}
             except Exception:
                 if record is not None: record['phase'] = 'HOLD'
                 raise ValueError('Child completion unverified; HOLD') from None

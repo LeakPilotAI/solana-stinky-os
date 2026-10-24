@@ -75,12 +75,12 @@ def install(monkeypatch,parts,entered=True):
     if entered:o.enter('maintain',os.getpid())
 
 
-def exercise(parts):
+def exercise(parts, *, startup_timeout=10):
     b,o,g,m,launch,cmd=parts;ready=threading.Barrier(4);errors=[];threads=[];effects=[]
     def worker(loop):
         @runner.supervisor_loop(loop)
         def body():
-            ready.wait(timeout=10)
+            ready.wait(timeout=startup_timeout)
             while runner.supervisor_running():
                 try:runner.run_admitted_job(['synthetic-watchdog-or-file'],lambda:effects.append(loop))
                 except FencedAdmission:
@@ -91,7 +91,7 @@ def exercise(parts):
     for loop in sorted(LOOPS):
         t=threading.Thread(target=worker,args=(loop,));t.start();threads.append(t)
     try:
-        ready.wait(timeout=10)
+        ready.wait(timeout=startup_timeout)
         ack=g.quiesce({'request_id':'a'*32,'manifest_sha256':g.manifest()},timeout=10)
         for t in threads:t.join(5)
         assert not errors and all(not t.is_alive() for t in threads)
@@ -248,6 +248,8 @@ if sys.stdin.readline().strip()!='ISOLATED-WITNESS-READY':raise RuntimeError('No
 parts=build(Path(sys.argv[1]),native=True);b,o,g,*_=parts
 runner.LAUNCH_OBSERVATION=o;runner.COOPERATIVE_SUPERVISOR=g
 runner.install_maintenance_binding(b);o.enter('maintain',os.getpid())
+# GB10A removes the slow self-CIM path without caching identity. Restore the
+# original 10s fixture startup deadline; the drain is independently bounded10s.
 print(json.dumps(exercise(parts)),flush=True)
 ''')
     env={**os.environ,'PYTHONPATH':os.pathsep.join([str(ROOT),str(ROOT/'tests'),str(ROOT/'.venv/Lib/site-packages')])}
