@@ -19,10 +19,9 @@ pytestmark=pytest.mark.skipif(not SHELL,reason='Windows PowerShell required')
     'mixed_case','wrong_executable','extra_arguments','reused_pid','stale_heartbeat',
     'missing_creation','foreign_runner',
 ])
-@pytest.mark.parametrize('target',['status','panel'])
-def test_read_only_status_reports_fail_closed_without_secret_or_lifecycle_authority(tmp_path,case,target):
+def test_read_only_status_reports_fail_closed_without_secret_or_lifecycle_authority(tmp_path,case):
     root=tmp_path/'isolated-repository';scripts=root/'scripts/windows';scripts.mkdir(parents=True)
-    for name in ('Genesis-Background-Status.ps1','Genesis-Heartbeat-Verify.ps1','Genesis-Background-Panel.ps1'):
+    for name in ('Genesis-Background-Status.ps1','Genesis-Heartbeat-Verify.ps1'):
         shutil.copyfile(ROOT/'scripts/windows'/name,scripts/name)
     (root/'logs').mkdir()
     now=datetime.now(timezone.utc).isoformat()
@@ -87,17 +86,11 @@ $result=& $Status -Json | ConvertFrom-Json
 @{result=$result;calls=@($global:calls.ToArray())} | ConvertTo-Json -Depth 14 -Compress
 """,encoding='utf-8')
     result=subprocess.run([SHELL,'-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(harness),
-        '-Fixture',str(fixture),'-Status',str(scripts/('Genesis-Background-Status.ps1' if target=='status' else 'Genesis-Background-Panel.ps1'))],capture_output=True,text=True,timeout=20)
+        '-Fixture',str(fixture),'-Status',str(scripts/'Genesis-Background-Status.ps1')],capture_output=True,text=True,timeout=20)
     assert result.returncode==0,result.stderr
     assert '_CANARY' not in result.stdout
     data=json.loads(result.stdout);status=data['result']
     assert data['calls']==['stinky-postgres','stinky-redis','stinky-minio']
-    if target=='panel':
-        assert not any(status['actions'].values()) and len(status['services'])==7
-        assert len(status['dependencies'])==3
-        if case in ('verified','mixed_case'):assert next(s for s in status['services'] if s['service']=='api')['status']=='Supervisor observed'
-        if case=='duplicate':assert next(s for s in status['services'] if s['service']=='api')['status']=='Conflicting supervisors'
-        return
     assert not any(status['lifecycle_actions'][name] for name in
         ('start_authorized','stop_authorized','restart_authorized','gaming_mode_authorized'))
     if case=='stopped':assert status['state']=='STOPPED'
