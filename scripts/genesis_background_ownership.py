@@ -87,19 +87,87 @@ $after=@(Census)
     for phase in ('before', 'after'):
         for row in data[phase]:
             command = row.pop('command')
-            row['argv'] = tokens(command) if command else []
+            row.update(command_evidence(command))
             row['command_sha256'] = hashlib.sha256(command.encode()).hexdigest()
     data['elapsed_seconds'] = time.monotonic() - started
     return data
 
 
+def command_evidence(command):
+    """Retain bounded, explicitly unverified evidence without publishing raw text.
+
+    Screening is exclusion only, never ownership: scan the entire bounded native
+    string for known invocation markers, including markers beyond token 128.
+    An unparsable string cannot establish a command identity.
+    """
+    try:
+        return {'argv': tokens(command)} if command else {'argv': []}
+    except ValueError:
+        folded = command.replace('"', '').casefold()
+        possible = ('run_genesis_service' in folded or
+                    any(module.casefold() in folded for module in MODULES.values()))
+        return {'argv': None, 'command_arguments': 'UNVERIFIED',
+                'possible_genesis_invocation': possible}
+
+
+def verified_arguments(row):
+    args = row.get('argv')
+    return (isinstance(args, list) and 1 <= len(args) <= 128 and
+            all(isinstance(a, str) for a in args) and
+            row.get('command_arguments') != 'UNVERIFIED')
+
+
 def listener_identity(data, pid, port):
     """Match an actual socket owner to unchanged bracketing native descriptors."""
+    try:
+        return _listener_identity(data, pid, port)
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return False
+
+
+def _listener_identity(data, pid, port):
     before = [r for r in data['before'] if r['pid'] == pid]
     after = [r for r in data['after'] if r['pid'] == pid]
     if len(before) != 1 or len(after) != 1 or before[0] != after[0]:
         return False
     row = before[0]
+    # Socket identity is not ancestry authentication. Inspect available ancestors
+    # for newly unverified commands; assess() separately certifies relevant chains.
+    current = pid; seen = set()
+    for _ in range(32):
+        a = [r for r in data['before'] if r['pid'] == current]
+        b = [r for r in data['after'] if r['pid'] == current]
+        if not a and not b and current != pid:
+            break
+        if (current in seen or len(a) != 1 or len(b) != 1 or a[0] != b[0] or
+                a[0].get('command_arguments') == 'UNVERIFIED' or
+                (current == pid and (not verified_arguments(a[0]) or
+                                     not a[0].get('executable'))) or
+                not a[0].get('created') or
+                not re.fullmatch('[0-9a-f]{64}', a[0].get('command_sha256', ''))):
+            return False
+        seen.add(current)
+        try:
+            created = datetime.fromisoformat(a[0]['created'].replace('Z', '+00:00'))
+            if created.tzinfo is None:
+                return False
+        except (ValueError, TypeError, AttributeError):
+            return False
+        current = a[0].get('parent_pid')
+        if type(current) is not int or current < 0:
+            return False
+        parent = next((r for r in data['after'] if r['pid'] == current), None)
+        if parent and parent.get('created'):
+            try:
+                parent_created = datetime.fromisoformat(parent['created'].replace('Z', '+00:00'))
+                if parent_created.tzinfo is None or parent_created > created:
+                    return False
+            except (ValueError, TypeError, AttributeError):
+                return False
+        if current == 0:
+            break
+    else:
+        return False
     return bool(row.get('created') and row.get('executable') and row.get('command_sha256') and
                 any(s['pid'] == pid and s['port'] == port and s['state'] == 'Listen'
                     for s in data['sockets']))
@@ -120,9 +188,12 @@ def assess(data, root):
                     (row.get('created') is not None and not isinstance(row['created'], str)) or
                     not isinstance(row.get('command_sha256'), str) or
                     not re.fullmatch('[0-9a-f]{64}', row['command_sha256']) or
-                    not isinstance(row.get('argv'), list) or
-                    len(row['argv']) > 128 or
-                    any(not isinstance(a, str) for a in row['argv'])):
+                    not ((isinstance(row.get('argv'), list) and
+                          len(row['argv']) <= 128 and
+                          all(isinstance(a, str) for a in row['argv'])) or
+                         (row.get('argv', False) is None and
+                          row.get('command_arguments') == 'UNVERIFIED' and
+                          type(row.get('possible_genesis_invocation')) is bool))):
                 raise ValueError('Invalid or duplicated process identity')
             result[row['pid']] = row
         return result
@@ -141,8 +212,16 @@ def assess(data, root):
               for n in ('python.exe', 'pythonw.exe')}
     roots = {}
     candidates = set()
+    # A changed command must not erase relevance established in the first census.
+    for pid, row in before.items():
+        if (row.get('possible_genesis_invocation') or
+                any(norm(a) == runner or a in MODULES.values() for a in (row['argv'] or []))):
+            candidates.add(pid)
     for pid, row in after.items():
-        args = row['argv']
+        args = row['argv'] or []
+        if row.get('command_arguments') == 'UNVERIFIED' and row['possible_genesis_invocation']:
+            candidates.add(pid)
+            holds.append('UNVERIFIED_POSSIBLE_INVOCATION')
         if any(norm(arg) == runner for arg in args):
             candidates.add(pid)
             if (len(args) == 4 and norm(args[0]) == norm(row['executable']) and
@@ -216,6 +295,8 @@ def assess(data, root):
             holds.append('MISSING_OR_CHANGING_PROCESS'); continue
         if a != b:
             holds.append('PROCESS_IDENTITY_CHANGED')
+        if not verified_arguments(b):
+            holds.append('UNVERIFIED_COMMAND_ARGUMENTS')
         if not b.get('created') or not b.get('executable') or not b.get('command_sha256'):
             holds.append('INCOMPLETE_PROCESS_IDENTITY')
         else:
@@ -232,7 +313,7 @@ def assess(data, root):
                 holds.append('INVALID_CREATION_OR_PARENT_ORDER')
         if pid in owners:
             holds.append('LAUNCH_PROVENANCE_UNATTESTED')
-            args = b['argv']
+            args = b['argv'] or []
             if not args or norm(args[0]) != norm(b['executable']):
                 holds.append('EXECUTABLE_COMMAND_MISMATCH')
             if pid not in roots:
@@ -249,7 +330,8 @@ def assess(data, root):
                     holds.append('UNVERIFIED_DESCENDANT_COMMAND')
     # Previously present roots/children disappearing are not evidence of clean exit.
     for pid in before.keys() - after.keys():
-        if any(norm(a) == runner or a in MODULES.values() for a in before[pid]['argv']):
+        if (before[pid].get('possible_genesis_invocation') or
+                any(norm(a) == runner or a in MODULES.values() for a in (before[pid]['argv'] or []))):
             holds.append('PROCESS_DISAPPEARED_DURING_CAPTURE')
     return {'status': 'HOLD' if holds else 'NO_OWNED_RUNTIME_OBSERVED',
             'holds': sorted(set(holds)), 'lifecycle_authorized': False,

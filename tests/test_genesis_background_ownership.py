@@ -123,3 +123,98 @@ def test_real_child_listener_and_creation_identity(tmp_path):
     finally:
         proc.stdin.close()
         assert proc.wait(timeout=10) == 0
+
+
+def oversized(data, pid, command='unrelated ' + 'x ' * 130):
+    from scripts.genesis_background_ownership import command_evidence
+    for phase in ('before', 'after'):
+        row = next(r for r in data[phase] if r['pid'] == pid)
+        row.update(command_evidence(command))
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows argument parser')
+def test_unrelated_oversized_capture_conversion_is_not_identity():
+    from scripts.genesis_background_ownership import command_evidence, tokens
+    command = 'git.exe ' + 'x ' * 130
+    with pytest.raises(ValueError, match='Command token bound'):
+        tokens(command)
+    evidence = command_evidence(command)
+    assert evidence == {'argv': None, 'command_arguments': 'UNVERIFIED',
+                        'possible_genesis_invocation': False}
+    data = fixture()
+    row = process(99, 0, ['git.exe']); row.update(evidence)
+    for phase in ('before', 'after'):
+        data[phase].append(copy.deepcopy(row))
+    assert listener_identity(data, 30, 8010)
+    assert assess(data, ROOT)['holds'] == ['LAUNCH_PROVENANCE_UNATTESTED']
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows argument parser')
+@pytest.mark.parametrize('pid', [10, 20, 30])
+def test_oversized_ancestor_supervisor_and_listener_fail_closed(pid):
+    data = fixture(); oversized(data, pid)
+    assert not listener_identity(data, 30, 8010)
+    assert 'UNVERIFIED_COMMAND_ARGUMENTS' in assess(data, ROOT)['holds']
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows argument parser')
+@pytest.mark.parametrize('suffix', ['run_genesis_service.py --name api', '-m stinky_api.cli',
+                                  'run_gen"esis_service.py --name api'])
+def test_oversized_possible_invocation_cannot_hide_past_bound(suffix):
+    data = fixture()
+    row = process(99, 0, ['git.exe'])
+    for phase in ('before', 'after'):
+        data[phase].append(copy.deepcopy(row))
+    oversized(data, 99, 'git.exe ' + 'x ' * 130 + suffix)
+    assert 'UNVERIFIED_POSSIBLE_INVOCATION' in assess(data, ROOT)['holds']
+
+
+@pytest.mark.parametrize('field,value', [('command_sha256', 'bad'), ('created', None),
+                                         ('executable', ''), ('argv', None)])
+def test_listener_rejects_incomplete_identity(field, value):
+    data = fixture()
+    for phase in ('before', 'after'):
+        data[phase][2][field] = value
+    assert not listener_identity(data, 30, 8010)
+
+
+def test_unverified_relevant_snapshot_change_holds():
+    data = fixture()
+    for phase in ('before', 'after'):
+        data[phase][0].update(argv=None, command_arguments='UNVERIFIED',
+                              possible_genesis_invocation=False)
+    data['after'][0]['command_sha256'] = 'b' * 64
+    assert 'PROCESS_IDENTITY_CHANGED' in assess(data, ROOT)['holds']
+    assert not listener_identity(data, 30, 8010)
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows argument parser')
+def test_capture_preserves_both_native_snapshots_without_global_parser_failure(monkeypatch):
+    import scripts.genesis_background_ownership as ownership
+    from types import SimpleNamespace
+    row = process(99, 0, ['git.exe'])
+    row.pop('argv'); row.pop('command_sha256')
+    row['command'] = 'git.exe ' + 'x ' * 130
+    raw = {'before': [copy.deepcopy(row)], 'after': [copy.deepcopy(row)], 'sockets': []}
+    monkeypatch.setattr(ownership.subprocess, 'run', lambda *a, **k:
+                        SimpleNamespace(returncode=0, stdout=json.dumps(raw).encode()))
+    data = capture()
+    for phase in ('before', 'after'):
+        observed = data[phase][0]
+        assert observed['pid'] == 99 and observed['parent_pid'] == 0
+        assert observed['created'] == row['created']
+        assert observed['executable'] == row['executable']
+        assert len(observed['command_sha256']) == 64
+        assert observed['argv'] is None
+        assert observed['command_arguments'] == 'UNVERIFIED'
+    assert data['before'] == data['after']
+
+
+def test_changed_unverified_possible_invocation_cannot_erase_relevance():
+    data = fixture()
+    row = process(99, 0, ['unrelated.exe'])
+    data['after'].append(copy.deepcopy(row))
+    row.update(argv=None, command_arguments='UNVERIFIED', possible_genesis_invocation=True)
+    data['before'].append(row)
+    assert 'PROCESS_IDENTITY_CHANGED' in assess(data, ROOT)['holds']
+    assert assess(data, ROOT)['status'] == 'HOLD'

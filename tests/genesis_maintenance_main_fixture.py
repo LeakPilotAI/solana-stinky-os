@@ -152,8 +152,55 @@ def main():
                     stage='NATIVE_IDENTITY'
                     observed=native(pid)
                     stage='SOCKET_OWNERSHIP'
-                    if {**observed,'creation_ticks':ticks(pid)}!=initial[pid] or not listener_identity(capture((port,)),pid,port):
-                        raise RuntimeError('Native admitted child socket missing')
+                    identity_match = (
+                        {**observed, 'creation_ticks': ticks(pid)} == initial[pid]
+                    )
+                    census = capture((port,)) if identity_match else None
+                    listener_match = (
+                        listener_identity(census, pid, port)
+                        if census is not None else False
+                    )
+
+                    if not identity_match or not listener_match:
+                        before = [
+                            r for r in census['before']
+                            if r['pid'] == pid
+                        ] if census is not None else []
+                        after = [
+                            r for r in census['after']
+                            if r['pid'] == pid
+                        ] if census is not None else []
+                        sockets = [
+                            s for s in census['sockets']
+                            if s['pid'] == pid and s['port'] == port
+                        ] if census is not None else []
+
+                        diagnostic = {
+                            'stage': 'SOCKET_OWNERSHIP',
+                            'pid': pid,
+                            'port': port,
+                            'native_identity_match': identity_match,
+                            'socket_listener_match': listener_match,
+                            'before_count': len(before),
+                            'after_count': len(after),
+                            'snapshot_identity_match': (
+                                len(before) == 1 and
+                                len(after) == 1 and
+                                before[0] == after[0]
+                            ),
+                            'socket_states': [
+                                s.get('state') for s in sockets
+                            ],
+                            'elapsed_seconds': (census.get('elapsed_seconds') if census is not None else None),
+                        }
+
+                        (root / 'socket-ownership-failure.json').write_text(
+                            json.dumps(diagnostic, indent=2)
+                        )
+
+                        raise RuntimeError(
+                            'Native admitted child socket missing'
+                        )
                     socket_proofs.append({'pid':pid,'port':port,'generation':gate.generation,'verified':True})
                     stage='COOPERATIVE_COMPLETION'
                     (root/f'finish-{pid}').write_text('cooperative fixture work completion')
